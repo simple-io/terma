@@ -1,0 +1,93 @@
+// main_window.slint — 主窗口
+//
+// 顶层组件，由 Rust 侧 App 持有。负责组合 TabBar + TerminalView + ProfileMenu。
+//
+// 数据流：
+//   Rust App
+//        │  (tabs / active state / profile list / cells / cursor)
+//        ▼
+//   MainWindow (in/out properties)
+//        │
+//        ├── TabBar      ──callbacks──> back to Rust
+//        ├── TerminalView (Cell 网格 + keyboard)
+//        └── ProfileMenu
+
+import { TabBar, TabInfo } from "tab_bar.slint";
+import { TerminalView, CellRun } from "terminal_view.slint";
+import { ProfileMenu, ProfileInfo } from "profile_menu.slint";
+
+export component MainWindow inherits Window {
+    title: "terma";
+    preferred-width: 1000px;
+    preferred-height: 640px;
+    background: #1f1f1f;
+
+    // ─── 对外暴露的数据属性（Rust 侧写入） ───
+    in-out property <[TabInfo]> tabs;
+    in-out property <[ProfileInfo]> profiles;
+    in-out property <string> active-title;
+    in-out property <string> active-profile-name;
+    in-out property <[CellRun]> cells;
+    in-out property <int> cursor-row;
+    in-out property <int> cursor-col;
+    in-out property <bool> cursor-visible;
+    in-out property <bool> profile-menu-visible: false;
+
+    // ─── 回调（Rust 侧绑定处理逻辑） ───
+    callback new-tab();
+    callback close-tab(string);
+    callback select-tab(string);
+    callback select-profile(string);
+    callback key-pressed(string, KeyboardModifiers) -> bool;
+    callback terminal-clicked();
+
+    VerticalLayout {
+        // Tab 栏
+        tab-bar := TabBar {
+            tabs: root.tabs;
+            default-profile-name: "Default";
+            new-tab => { root.new-tab(); }
+            close-tab(id) => { root.close-tab(id); }
+            select-tab(id) => { root.select-tab(id); }
+            show-profile-menu => {
+                root.profile-menu-visible = !root.profile-menu-visible;
+            }
+        }
+
+        // 分隔线
+        Rectangle {
+            height: 1px;
+            background: #333;
+        }
+
+        // Terminal 区域
+        terminal-area := TerminalView {
+            cells: root.cells;
+            cursor-row: root.cursor-row;
+            cursor-col: root.cursor-col;
+            cursor-visible: root.cursor-visible;
+            key-pressed(text, mods) => {
+                root.key-pressed(text, mods)
+            }
+            clicked => {
+                root.terminal-clicked();
+            }
+        }
+    }
+
+    // Profile 下拉菜单（浮层，覆盖在 Tab 栏右下方）
+    profile-menu := ProfileMenu {
+        x: tab-bar.width - 180px;
+        y: 38px;
+        width: 170px;
+        profiles: root.profiles;
+        menu-visible: root.profile-menu-visible;
+        select-profile(pid) => {
+            root.select-profile(pid);
+            root.profile-menu-visible = false;
+        }
+        dismissed => {
+            root.profile-menu-visible = false;
+        }
+    }
+}

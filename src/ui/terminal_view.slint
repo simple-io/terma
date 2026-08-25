@@ -1,0 +1,95 @@
+// terminal_view.slint — Terminal 渲染区域（Cell 网格）
+//
+// Phase 4：按 Run 绝对定位渲染字符（等宽字体），支持前景/背景色、粗体、下划线、光标块。
+// 字符度量：char-w / char-h 为等宽字体的 advance / 行高（可调）。
+//
+// 通信：
+//   in:  cells ([CellRun])、cursor-row/col/visible、char-w/char-h
+//   out: callback key-pressed(string, KeyboardModifiers) -> bool
+//   out: callback clicked()
+
+export struct CellRun {
+    text: string,
+    row: int,
+    col: int,
+    len: int,
+    fg: brush,
+    bg: brush,
+    has-bg: bool,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+}
+
+export component TerminalView inherits Rectangle {
+    in property <[CellRun]> cells;
+    in property <int> cursor-row;
+    in property <int> cursor-col;
+    in property <bool> cursor-visible;
+    in property <length> char-w: 8px;
+    in property <length> char-h: 16px;
+
+    callback key-pressed(string, KeyboardModifiers) -> bool;
+    callback clicked();
+
+    background: #0c0c0c;
+
+    // 光标块（半透明高亮）
+    if root.cursor-visible : Rectangle {
+        x: root.cursor-col * root.char-w;
+        y: root.cursor-row * root.char-h;
+        width: root.char-w;
+        height: root.char-h;
+        background: #ffffff44;
+    }
+
+    // 字符 Run 列表
+    for cell in root.cells : Rectangle {
+        x: cell.col * root.char-w;
+        y: cell.row * root.char-h;
+        width: cell.len * root.char-w;
+        height: root.char-h;
+        background: cell.has-bg ? cell.bg : transparent;
+
+        Text {
+            text: cell.text;
+            color: cell.fg;
+            font-family: "Menlo";
+            font-size: 13px;
+            font-weight: cell.bold ? 700 : 400;
+            horizontal-alignment: left;
+            vertical-alignment: center;
+        }
+
+        // 下划线
+        if cell.underline : Rectangle {
+            y: parent.height - 2px;
+            width: parent.width;
+            height: 1px;
+            background: cell.fg;
+        }
+    }
+
+    // 焦点作用域：捕获键盘事件并上抛
+    focus-scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        key-pressed(e) => {
+            if root.key-pressed(e.text, e.modifiers) {
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
+    // 点击终端区域获取焦点
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => {
+            focus-scope.focus();
+            root.clicked();
+        }
+    }
+}

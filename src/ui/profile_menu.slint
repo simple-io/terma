@@ -1,0 +1,65 @@
+// profile_menu.slint — Profile 下拉菜单（Phase 1 占位实现）
+//
+// 职责：
+//   - 显示可用的 Profile 列表
+//   - 用户选中某项时触发 select-profile 回调
+//   - Phase 6 接入真实 ProfileManager 后填充数据
+//
+// 通信：
+//   入：profiles (Model<ProfileInfo>)
+//   出：callback select-profile(profile-id)
+//   出：callback dismissed
+
+import { Button } from "std-widgets.slint";
+
+export struct ProfileInfo {
+    id: string,
+    name: string,
+    command: string,
+}
+
+export component ProfileMenu inherits Rectangle {
+    in property <[ProfileInfo]> profiles;
+    in property <bool> menu-visible: false;
+
+    callback select-profile(string /* profile-id */);
+    callback dismissed();
+
+    // 简单垂直列表浮层
+    if menu-visible : vertical-layout := VerticalLayout {
+        Rectangle {
+            background: #2d2d2d;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #444;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: #00000066;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+
+                for profile[i] in profiles : Rectangle {
+                    height: 30px;
+                    background: touch.pressed ? #3a3a3a : (touch.has-hover ? #353535 : transparent);
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        spacing: 8px;
+                        Text {
+                            text: profile.name;
+                            color: #e6e6e6;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    touch := TouchArea {
+                        clicked => {
+                            root.select-profile(profile.id);
+                            root.dismissed();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

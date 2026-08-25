@@ -1,0 +1,25 @@
+[package]
+name = "terma"
+version = "0.1.0"
+edition = "2024"
+description = "Cross-platform AI terminal built with Rust + Slint"
+license = "MIT"
+
+[dependencies]
+slint = "1.17"
+portable-pty = "0.8"
+anyhow = "1"
+vte = "0.13"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+# thiserror = "2"（anyhow 已够用，暂不引入）
+# crossbeam-channel = "0.5"（std::sync::mpsc 已够用）
+
+[build-dependencies]
+slint-build = "1.17"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1

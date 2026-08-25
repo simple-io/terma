@@ -1,0 +1,212 @@
+//! session — TerminalSession 抽象与真实 PTY 实现
+//!
+//! Phase 3：TerminalSession 持有 vte::Parser + TerminalState。
+//!   - Output Thread 把 PTY 字节送回 UI 线程（mpsc）
+//!   - UI 线程 drain 后用 parser.advance(&mut state, byte) 解析，更新 TerminalState/ScreenBuffer
+//!   - 渲染层读取 state 生成 Cell 网格
+//!
+//! 所有权与线程模型：
+//!   - TerminalSession 拥有：master、writer、child、receiver、parser、state。
+//!   - parser 与 state 仅 UI 线程访问（SessionManager 在 RefCell 中）。
+//!   - reader move 进 Output Thread，线程绝不接触 Slint / state。
+//!   - 关闭 Tab → Drop：kill child → wait → join thread → 释放资源。
+//!
+//! 跨线程边界：
+//!   PTY Output Thread ──(mpsc::Sender<Vec<u8>>)──> UI Thread (receiver → parser → state)
+
+use std::io::Read;
+use std::sync::mpsc;
+use std::thread::{self, JoinHandle};
+
+use anyhow::{Context, Result};
+use portable_pty::ChildKiller;
+
+use crate::profile::Profile;
+use crate::session::session_id::{ProfileId, SessionId};
+use crate::terminal::TerminalState;
+
+/// 一个终端会话对外暴露的最小接口（与具体实现解耦，便于测试与替换）。
+pub trait TerminalSessionLike {
+    fn id(&self) -> SessionId;
+    fn profile_id(&self) -> &ProfileId;
+    fn title(&self) -> &str;
+    fn profile_name(&self) -> &str;
+}
+
+/// 真实终端会话：一个 PTY + 一个子进程 + 一个 vte Parser + 一个 TerminalState(含 ScreenBuffer)。
+pub struct TerminalSession {
+    id: SessionId,
+    profile_id: ProfileId,
+    title: String,
+    profile_name: String,
+
+    /// PTY 主端：resize 用。take_writer / try_clone_reader 之后仍可调用 resize。
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    /// PTY 写端：转发用户键盘输入。仅 UI 线程访问（&mut）。
+    writer: Box<dyn std::io::Write + Send>,
+    /// 子进程句柄：关闭时 kill + wait。
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// Output Thread 句柄：关闭时 join。
+    output_thread: Option<JoinHandle<()>>,
+    /// PTY 输出接收端：UI 线程 try_recv drain。
+    receiver: mpsc::Receiver<Vec<u8>>,
+
+    /// VT 解析器（UI 线程独占）
+    parser: vte::Parser,
+    /// 终端状态（含 ScreenBuffer，UI 线程独占）
+    state: TerminalState,
+}
+
+impl TerminalSession {
+    /// 创建一个真实终端会话：openpty → spawn shell → take writer/reader → 启动 Output Thread。
+    pub fn new(id: SessionId, profile: &Profile, title: String) -> Result<Self> {
+        let pty_system = portable_pty::native_pty_system();
+        let pair = pty_system
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("openpty failed")?;
+
+        // 构造子进程命令
+        let mut cmd = portable_pty::CommandBuilder::new(&profile.command);
+        for arg in &profile.args {
+            cmd.arg(arg);
+        }
+        if let Some(cwd) = &profile.working_directory {
+            cmd.cwd(cwd);
+        }
+
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .context("spawn_command failed")?;
+
+        // 关键：丢弃 slave 端，否则 master 的 reader 永远收不到 EOF（子进程退出时）。
+        drop(pair.slave);
+
+        let writer = pair
+            .master
+            .take_writer()
+            .context("take_writer failed")?;
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .context("try_clone_reader failed")?;
+
+        // Output Thread：独立线程阻塞读 PTY，把字节块经 channel 送回 UI 线程。
+        // 线程只持有 reader + sender，不接触 Slint / SessionManager。
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let handle = thread::Builder::new()
+            .name(format!("pty-output-{}", id.0))
+            .spawn(move || {
+                let mut reader = reader;
+                let mut buf = [0u8; 8192];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break, // EOF：子进程已关闭
+                        Ok(n) => {
+                            // 接收端关闭（session 已 drop）则退出
+                            if tx.send(buf[..n].to_vec()).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(std::time::Duration::from_millis(5));
+                            continue;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+            })
+            .context("spawn output thread failed")?;
+
+        Ok(Self {
+            id,
+            profile_id: profile.id.clone(),
+            title,
+            profile_name: profile.name.clone(),
+            master: pair.master,
+            writer,
+            child,
+            output_thread: Some(handle),
+            receiver: rx,
+            parser: vte::Parser::new(),
+            state: TerminalState::new(24, 80),
+        })
+    }
+
+    /// 向 PTY 写入用户输入（键盘）。
+    pub fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
+        self.writer.write_all(data)?;
+        self.writer.flush()
+    }
+
+    /// 调整 PTY 尺寸（rows/cols）并同步 ScreenBuffer。
+    pub fn resize(&mut self, rows: u16, cols: u16) {
+        let _ = self.master.resize(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+        self.state.resize(rows as usize, cols as usize);
+    }
+
+    /// 非阻塞 drain 当前会话所有待处理输出，并经 vte::Parser 解析进 TerminalState。
+    /// UI 线程在 Timer 中调用。
+    pub fn pump_output(&mut self) {
+        while let Ok(chunk) = self.receiver.try_recv() {
+            for &b in &chunk {
+                self.parser.advance(&mut self.state, b);
+            }
+        }
+    }
+
+    /// 只读访问终端状态（供渲染层构建 Cell 网格）。
+    pub fn state(&self) -> &TerminalState {
+        &self.state
+    }
+
+    /// 检查子进程是否已退出（非阻塞）。
+    pub fn is_child_exited(&mut self) -> bool {
+        match self.child.try_wait() {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(_) => true,
+        }
+    }
+
+    /// 关闭会话：kill 子进程 → 等待退出 → reader 收 EOF 退出 → join 输出线程。
+    fn shutdown(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(handle) = self.output_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+impl TerminalSessionLike for TerminalSession {
+    fn id(&self) -> SessionId {
+        self.id
+    }
+    fn profile_id(&self) -> &ProfileId {
+        &self.profile_id
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn profile_name(&self) -> &str {
+        &self.profile_name
+    }
+}
