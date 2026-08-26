@@ -29,27 +29,31 @@ pub const DEFAULT_FG: (u8, u8, u8) = (230, 230, 230);
 pub const DEFAULT_BG: (u8, u8, u8) = (12, 12, 12);
 
 pub struct TerminalState {
+    // 终端尺寸
     pub rows: usize,
     pub cols: usize,
-
+    // 光标位置
     pub cursor: Cursor,
-    /// 延迟换行标志：光标停在行末，下一个 print 触发换行
+    // 延迟换行标志：光标停在行末，下一个 print 触发换行
     pending_wrap: bool,
 
     primary: ScreenBuffer,
     alternate: ScreenBuffer,
     active: ActiveScreen,
 
+    // 当前样式
     pub current_style: CellStyle,
 
-    /// Scroll region（0-based，含两端），默认整屏
+    // Scroll region（0-based，含两端），默认整屏
     scroll_top: usize,
     scroll_bottom: usize,
 
-    /// 1049 切换前的光标保存
+    // 1049 切换前的光标保存
     saved_cursor: Option<Cursor>,
 
+    // 终端状态
     pub cursor_visible: bool,
+    // Bracketed Paste 模式标志
     pub bracketed_paste: bool,
 }
 

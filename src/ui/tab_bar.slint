@@ -31,11 +31,12 @@ export component TabBar inherits HorizontalLayout {
 
     spacing: 2px;
     padding: 0px;
+    height: 32px;
 
     // Tab 列表
     for tab in tabs : tab-item := Rectangle {
         width: 160px;
-        height: 36px;
+        height: 100%;
         background: tab.active ? #2d2d2d : (self-touch.has-hover ? #252525 : #1f1f1f);
         border-radius: 6px;
 
@@ -91,7 +92,7 @@ export component TabBar inherits HorizontalLayout {
     // + 按钮：用默认 Profile 创建新 Tab
     add-touch := TouchArea {
         width: 30px;
-        height: 36px;
+        height: 100%;
         clicked => {
             root.new-tab();
         }

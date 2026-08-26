@@ -33,27 +33,30 @@ pub trait TerminalSessionLike {
     fn profile_name(&self) -> &str;
 }
 
-/// 真实终端会话：一个 PTY + 一个子进程 + 一个 vte Parser + 一个 TerminalState(含 ScreenBuffer)。
+/// 终端会话，一个会话包括：PTY + 一个子进程 + 一个 vte Parser + 一个 TerminalState(含 ScreenBuffer)。
 pub struct TerminalSession {
+    // 会话 id
     id: SessionId,
-    profile_id: ProfileId,
+    // 会话标题
     title: String,
+    // 会话所属 profile id
+    profile_id: ProfileId,
+    // 会话所属 profile 名称
     profile_name: String,
 
-    /// PTY 主端：resize 用。take_writer / try_clone_reader 之后仍可调用 resize。
+    // PTY 主端：resize 用。take_writer / try_clone_reader 之后仍可调用 resize。
     master: Box<dyn portable_pty::MasterPty + Send>,
-    /// PTY 写端：转发用户键盘输入。仅 UI 线程访问（&mut）。
+    // PTY 写端：转发用户键盘输入。仅 UI 线程访问（&mut）。
     writer: Box<dyn std::io::Write + Send>,
-    /// 子进程句柄：关闭时 kill + wait。
+    // 子进程句柄：关闭时 kill + wait。
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    /// Output Thread 句柄：关闭时 join。
+    // Output Thread 句柄：关闭时 join。
     output_thread: Option<JoinHandle<()>>,
-    /// PTY 输出接收端：UI 线程 try_recv drain。
+    // PTY 输出接收端：UI 线程 try_recv drain。
     receiver: mpsc::Receiver<Vec<u8>>,
-
-    /// VT 解析器（UI 线程独占）
+    // VT 解析器（UI 线程独占）
     parser: vte::Parser,
-    /// 终端状态（含 ScreenBuffer，UI 线程独占）
+    // 终端状态（含 ScreenBuffer，UI 线程独占）
     state: TerminalState,
 }
 
@@ -68,7 +71,7 @@ impl TerminalSession {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .context("openpty failed")?;
+            .context("openPty failed")?;
 
         // 构造子进程命令
         let mut cmd = portable_pty::CommandBuilder::new(&profile.command);
@@ -79,22 +82,15 @@ impl TerminalSession {
             cmd.cwd(cwd);
         }
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .context("spawn_command failed")?;
+        // 启动 pty 的 shell
+        let child = pair.slave.spawn_command(cmd).context("spawn_command failed")?;
 
         // 关键：丢弃 slave 端，否则 master 的 reader 永远收不到 EOF（子进程退出时）。
         drop(pair.slave);
 
-        let writer = pair
-            .master
-            .take_writer()
-            .context("take_writer failed")?;
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .context("try_clone_reader failed")?;
+        // 获取 pty 的 writer 和 reader
+        let writer = pair.master.take_writer().context("take_writer failed")?;
+        let reader = pair.master.try_clone_reader().context("try_clone_reader failed")?;
 
         // Output Thread：独立线程阻塞读 PTY，把字节块经 channel 送回 UI 线程。
         // 线程只持有 reader + sender，不接触 Slint / SessionManager。
@@ -106,9 +102,11 @@ impl TerminalSession {
                 let mut buf = [0u8; 8192];
                 loop {
                     match reader.read(&mut buf) {
-                        Ok(0) => break, // EOF：子进程已关闭
+                        // EOF：子进程已关闭
+                        Ok(0) => break,
+                        // 正常读取字节块
                         Ok(n) => {
-                            // 接收端关闭（session 已 drop）则退出
+                            // 把数据写入管道，如果异常则退出
                             if tx.send(buf[..n].to_vec()).is_err() {
                                 break;
                             }

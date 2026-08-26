@@ -16,16 +16,17 @@ impl ProfileManager {
     /// 加载配置：优先读 profiles.toml；不存在则生成平台默认并尝试落盘。
     pub fn new() -> Self {
         if let Some(file) = loader::load() {
-            let profiles: Vec<Profile> =
-                file.profiles.iter().map(loader::entry_to_profile).collect();
+            let profiles: Vec<Profile> = file.profiles.iter().map(loader::entry_to_profile).collect();
             if profiles.is_empty() {
                 return Self::default_platform();
             }
+            // 默认配置
             let default_id = ProfileId::new(file.default_profile);
-            // 若 default_profile 指向不存在的 id，回退到第一个
             let default_id = if profiles.iter().any(|p| p.id == default_id) {
+                // 有配置则使用
                 default_id
             } else {
+                // 无配置, 使用第一个
                 profiles[0].id.clone()
             };
             return Self {
@@ -99,11 +100,11 @@ impl ProfileManager {
         #[cfg(target_os = "macos")]
         {
             let mut list = Vec::new();
-            if std::path::Path::new("/bin/zsh").exists() {
-                list.push(Profile::new("zsh", "Zsh", "/bin/zsh"));
-            }
             if std::path::Path::new("/bin/bash").exists() {
                 list.push(Profile::new("bash", "Bash", "/bin/bash"));
+            }
+            if std::path::Path::new("/bin/zsh").exists() {
+                list.push(Profile::new("zsh", "Zsh", "/bin/zsh"));
             }
             if list.is_empty() {
                 list.push(Profile::new("sh", "Shell", "/bin/sh"));

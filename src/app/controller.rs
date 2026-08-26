@@ -50,11 +50,11 @@ pub struct App {
     profiles: ProfileManager,
     tabs_model: Rc<VecModel<TabInfo>>,
     profiles_model: Rc<VecModel<ProfileInfo>>,
-    /// 终端 Cell 渲染模型（Run 列表）
+    // 终端 Cell 渲染模型（Run 列表）
     cells_model: Rc<VecModel<CellRun>>,
-    /// 上次同步给 PTY 的 (rows, cols)，用于检测窗口尺寸变化
+    // 上次同步给 PTY 的 (rows, cols)，用于检测窗口尺寸变化
     last_size: Cell<(u16, u16)>,
-    /// 主循环定时器（持有以保活）
+    // 主循环定时器（持有以保活）
     _tick_timer: slint::Timer,
 }
 
@@ -94,13 +94,10 @@ impl App {
         });
 
         app.main_window.show().expect("failed to show window");
-
-        let _keep_alive = app;
         slint::run_event_loop().expect("event loop error");
     }
 
     // ─── UI 数据同步 ───
-
     fn populate_profiles(&self) {
         let items: Vec<ProfileInfo> = self
             .profiles
@@ -115,7 +112,7 @@ impl App {
         self.profiles_model.set_vec(items);
     }
 
-    /// 同步 Tab 列表 + 激活态标题 + 终端渲染。
+    // 同步 Tab 列表 + 激活态标题 + 终端渲染。
     fn sync_tabs(&self) {
         let sessions = self.sessions.borrow();
         let tabs: Vec<TabInfo> = sessions
@@ -144,7 +141,7 @@ impl App {
         self.render();
     }
 
-    /// 把激活会话的 TerminalState 渲染为 Cell 网格 + 光标。
+    // 把激活会话的 TerminalState 渲染为 Cell 网格 + 光标。
     fn render(&self) {
         let sessions = self.sessions.borrow();
         match sessions.active_state() {
@@ -181,27 +178,7 @@ impl App {
         }
     }
 
-    // ─── 业务操作 ───
-
-    fn create_default_session(self: &Rc<Self>) {
-        let profile = self.profiles.default_profile().clone();
-        self.create_session_for_profile(&profile);
-    }
-
-    fn create_session_for_profile(self: &Rc<Self>, profile: &Profile) {
-        let next_index = self.sessions.borrow().len() + 1;
-        let title = format!("{} {}", profile.name, next_index);
-        if let Err(e) = self.sessions.borrow_mut().create_session(profile, title) {
-            eprintln!("[terma] create session failed: {e:#}");
-        }
-    }
-
-    fn close_session(&self, id: SessionId) {
-        self.sessions.borrow_mut().close_session(id);
-    }
-
-    // ─── 回调绑定 ───
-
+    // UI 回调绑定
     fn bind_callbacks(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         self.main_window.on_new_tab(move || {
@@ -257,12 +234,31 @@ impl App {
         });
     }
 
-    // ─── 主循环：尺寸同步 + PTY pump + 渲染 ───
+    /// ─── 业务操作 ───
+    // 创建默认会话
+    fn create_default_session(self: &Rc<Self>) {
+        let profile = self.profiles.default_profile().clone();
+        self.create_session_for_profile(&profile);
+    }
 
+    // 根据 id 创建会话
+    fn create_session_for_profile(self: &Rc<Self>, profile: &Profile) {
+        let next_index = self.sessions.borrow().len() + 1;
+        let title = format!("{} {}", profile.name, next_index);
+        if let Err(e) = self.sessions.borrow_mut().create_session(profile, title) {
+            eprintln!("[terma] create session failed: {e:#}");
+        }
+    }
+
+    // 根据 id 关闭会话
+    fn close_session(&self, id: SessionId) {
+        self.sessions.borrow_mut().close_session(id);
+    }
+
+    // ─── 主循环：尺寸同步 + PTY pump + 渲染 ───
     fn start_tick_timer(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
-        self._tick_timer
-            .start(slint::TimerMode::Repeated, TICK_INTERVAL, move || {
+        self._tick_timer.start(slint::TimerMode::Repeated, TICK_INTERVAL, move || {
                 if let Some(app) = weak.upgrade() {
                     app.tick();
                 }
@@ -275,7 +271,7 @@ impl App {
         self.render();
     }
 
-    /// 根据窗口尺寸计算 cols/rows，变化时同步 PTY + ScreenBuffer。
+    // 根据窗口尺寸计算 cols/rows，变化时同步 PTY + ScreenBuffer。
     fn maybe_resize(&self) {
         let win = self.main_window.window();
         let phys = win.size();
