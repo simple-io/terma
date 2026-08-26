@@ -44,9 +44,12 @@ impl SessionManager {
 
     /// 用指定 Profile 创建一个真实终端会话并设为激活。
     /// 返回新 Session 的 ID；PTY 创建失败时返回 Err。
-    pub fn create_session(&mut self, profile: &Profile, title: String) -> Result<SessionId> {
+    ///
+    /// `rows` / `cols` 为初始终端网格，调用方需根据当前主窗口实际尺寸计算，
+    /// 使新会话与既有会话、渲染层保持尺寸一致。
+    pub fn create_session(&mut self, profile: &Profile, title: String, rows: u16, cols: u16, ) -> Result<SessionId> {
         let id = self.id_gen.next_session_id();
-        let session = TerminalSession::new(id, profile, title)?;
+        let session = TerminalSession::new(id, profile, title, rows, cols)?;
         self.sessions.insert(id, session);
         self.order.push(id);
         self.active = Some(id);
@@ -129,12 +132,13 @@ impl SessionManager {
             .map(|s| s.state())
     }
 
-    /// 调整激活会话的 PTY 尺寸 + ScreenBuffer。
-    pub fn resize_active(&mut self, rows: u16, cols: u16) {
-        if let Some(id) = self.active {
-            if let Some(s) = self.sessions.get_mut(&id) {
-                s.resize(rows, cols);
-            }
+    /// 调整所有会话的 PTY 尺寸 + ScreenBuffer。
+    ///
+    /// 窗口只有一个 TerminalView，所有 Tab 共享同一网格尺寸，因此窗口尺寸变化时
+    /// 必须同步全部会话，避免切换 Tab 时出现尺寸不同步 / 渲染错位。
+    pub fn resize_all(&mut self, rows: u16, cols: u16) {
+        for s in self.sessions.values_mut() {
+            s.resize(rows, cols);
         }
     }
 }

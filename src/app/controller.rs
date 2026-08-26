@@ -42,6 +42,16 @@ const CHAR_W: i32 = 8;
 const CHAR_H: i32 = 16;
 /// Tab 栏 + 分隔线高度（逻辑像素）
 const CHROME_H: i32 = 37;
+/// 默认终端网格（启动目标尺寸，也作为无窗口尺寸可参考时的回退值）
+const DEFAULT_ROWS: u16 = 36;
+const DEFAULT_COLS: u16 = 120;
+/// 窗口水平方向 chrome（终端区域左右留白，逻辑像素）
+const H_PADDING: i32 = 16;
+/// 窗口垂直方向底部留白（顶部 Tab 栏高度见 CHROME_H，逻辑像素）
+const V_PADDING: i32 = 8;
+/// 终端网格尺寸上限（防止异常窗口尺寸下分配过大缓冲）
+const MAX_COLS: i32 = 400;
+const MAX_ROWS: i32 = 200;
 
 /// 应用控制器：持有窗口、会话管理器、Profile 管理器与 UI Model。
 pub struct App {
@@ -77,11 +87,13 @@ impl App {
             tabs_model,
             profiles_model,
             cells_model,
-            last_size: Cell::new((24, 80)),
+            last_size: Cell::new((0, 0)),
             _tick_timer: slint::Timer::default(),
         });
 
         app.populate_profiles();
+        // 先按目标终端网格设置窗口初始物理尺寸，使首个会话能以正确网格创建。
+        app.apply_initial_window_size();
         app.create_default_session();
         app.sync_tabs();
         app.bind_callbacks();
@@ -243,9 +255,15 @@ impl App {
 
     // 根据 id 创建会话
     fn create_session_for_profile(self: &Rc<Self>, profile: &Profile) {
+        // 用当前主窗口实际尺寸计算初始终端网格，避免新建会话回到固定 24×80。
+        let (rows, cols) = self.current_grid();
         let next_index = self.sessions.borrow().len() + 1;
         let title = format!("{} {}", profile.name, next_index);
-        if let Err(e) = self.sessions.borrow_mut().create_session(profile, title) {
+        if let Err(e) = self
+            .sessions
+            .borrow_mut()
+            .create_session(profile, title, rows, cols)
+        {
             eprintln!("[terma] create session failed: {e:#}");
         }
     }
@@ -271,27 +289,63 @@ impl App {
         self.render();
     }
 
-    // 根据窗口尺寸计算 cols/rows，变化时同步 PTY + ScreenBuffer。
-    fn maybe_resize(&self) {
+    /// 按目标终端网格设置主窗口初始尺寸（物理像素），供启动时创建首个会话使用。
+    ///
+    /// 使用 `WindowSize::Logical` 传入逻辑尺寸：CHAR_W / CHAR_H 均为逻辑像素度量，
+    /// 平台会在窗口创建时按真实 scale_factor 换算为物理尺寸，与 `compute_grid`
+    /// 的反向推导精确对应。
+    fn apply_initial_window_size(&self) {
         let win = self.main_window.window();
-        let phys = win.size();
-        let scale = win.scale_factor();
-        if scale <= 0.0 {
+        let logical = grid_to_logical_size(DEFAULT_ROWS, DEFAULT_COLS);
+        win.set_size(slint::WindowSize::Logical(logical));
+    }
+
+    /// 当前主窗口对应的终端网格（rows, cols）。
+    /// 窗口尺寸不可用（未显示 / scale 无效 / 尺寸过小）时回退到默认网格。
+    fn current_grid(&self) -> (u16, u16) {
+        compute_grid(self.main_window.window()).unwrap_or((DEFAULT_ROWS, DEFAULT_COLS))
+    }
+
+    // 根据窗口尺寸计算 cols/rows，变化时同步所有会话的 PTY + ScreenBuffer。
+    fn maybe_resize(&self) {
+        let Some((rows, cols)) = compute_grid(self.main_window.window()) else {
             return;
-        }
-        let lw = (phys.width as f64 / scale as f64) as i32;
-        let lh = (phys.height as f64 / scale as f64) as i32;
-        let term_w = lw - 16;
-        let term_h = lh - CHROME_H - 8;
-        let cols = ((term_w / CHAR_W).max(1).min(400)) as u16;
-        let rows = ((term_h / CHAR_H).max(1).min(200)) as u16;
+        };
 
         let last = self.last_size.get();
         if last != (rows, cols) {
             self.last_size.set((rows, cols));
-            self.sessions.borrow_mut().resize_active(rows, cols);
+            self.sessions.borrow_mut().resize_all(rows, cols);
         }
     }
+}
+
+/// 由终端网格（rows/cols）计算窗口逻辑尺寸（与 `compute_grid` 互为逆运算）。
+fn grid_to_logical_size(rows: u16, cols: u16) -> slint::LogicalSize {
+    slint::LogicalSize::new(
+        (cols as i32 * CHAR_W + H_PADDING) as f32,
+        (rows as i32 * CHAR_H + CHROME_H + V_PADDING) as f32,
+    )
+}
+
+/// 由窗口当前物理尺寸推导终端网格（rows, cols）。
+/// scale 无效或终端区域非正时返回 None（交由调用方回退）。
+fn compute_grid(win: &slint::Window) -> Option<(u16, u16)> {
+    let phys = win.size();
+    let scale = win.scale_factor();
+    if scale <= 0.0 {
+        return None;
+    }
+    let lw = (phys.width as f64 / scale as f64) as i32;
+    let lh = (phys.height as f64 / scale as f64) as i32;
+    let term_w = lw - H_PADDING;
+    let term_h = lh - CHROME_H - V_PADDING;
+    if term_w <= 0 || term_h <= 0 {
+        return None;
+    }
+    let cols = (term_w / CHAR_W).clamp(1, MAX_COLS) as u16;
+    let rows = (term_h / CHAR_H).clamp(1, MAX_ROWS) as u16;
+    Some((rows, cols))
 }
 
 /// 把 Slint 传回的 id 字符串解析回 SessionId(u64)。

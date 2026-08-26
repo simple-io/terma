@@ -62,12 +62,15 @@ pub struct TerminalSession {
 
 impl TerminalSession {
     /// 创建一个真实终端会话：openpty → spawn shell → take writer/reader → 启动 Output Thread。
-    pub fn new(id: SessionId, profile: &Profile, title: String) -> Result<Self> {
+    ///
+    /// `rows` / `cols` 为初始终端网格，由调用方根据当前主窗口实际尺寸计算得出，
+    /// 确保 PTY 与 TerminalState 从一开始就与渲染层尺寸一致（不再硬编码 24×80）。
+    pub fn new(id: SessionId, profile: &Profile, title: String, rows: u16, cols: u16) -> Result<Self> {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
             .openpty(portable_pty::PtySize {
-                rows: 24,
-                cols: 80,
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -133,7 +136,7 @@ impl TerminalSession {
             output_thread: Some(handle),
             receiver: rx,
             parser: vte::Parser::new(),
-            state: TerminalState::new(24, 80),
+            state: TerminalState::new(rows as usize, cols as usize),
         })
     }
 

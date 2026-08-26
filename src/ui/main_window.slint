@@ -18,8 +18,12 @@ import { ProfileMenu, ProfileInfo } from "profile_menu.slint";
 
 export component MainWindow inherits Window {
     title: "terma";
-    preferred-width: 1000px;
-    preferred-height: 640px;
+    // 初始窗口尺寸（逻辑像素），与 Rust 侧 `grid_to_logical_size(DEFAULT_ROWS=36, DEFAULT_COLS=120)` 一致：
+    //   宽 = 120 * 8(char-w) + 16(水平留白) = 976
+    //   高 = 36 * 16(char-h) + 37(Tab栏) + 8(底部留白) = 621
+    // 运行时 Rust 侧会按此网格再次显式设置，并随窗口缩放动态联动 PTY。
+    preferred-width: 976px;
+    preferred-height: 621px;
     background: #1f1f1f;
 
     // ─── 对外暴露的数据属性（Rust 侧写入） ───
