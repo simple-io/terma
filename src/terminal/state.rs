@@ -96,6 +96,13 @@ impl TerminalState {
         }
     }
 
+    /// 获取并清除激活屏的脏行索引（供渲染层增量重建使用）
+    /// 使用 `&self`（通过 ScreenBuffer 的 RefCell 内部可变性），
+    /// 使渲染层可在持有不可变 state 引用时调用。
+    pub fn take_dirty_rows(&self) -> Vec<usize> {
+        self.screen().take_dirty_rows()
+    }
+
     /// 调整终端尺寸：同步两块屏 + 光标 clamp
     pub fn resize(&mut self, rows: usize, cols: usize) {
         self.primary.resize(rows, cols);
@@ -136,6 +143,7 @@ impl TerminalState {
         let cell = self.current_style.apply(c);
         let (row, col) = (self.cursor.row, self.cursor.col);
         self.screen_mut().grid[row][col] = cell;
+        self.screen_mut().mark_row_dirty(row);
         if self.cursor.col + 1 >= self.cols {
             // 到达行末：设置延迟换行，光标停在最后一列
             self.pending_wrap = true;
@@ -370,6 +378,7 @@ impl Perform for TerminalState {
                     let row = &mut self.screen_mut().grid[r];
                     row.drain(c..c + take);
                     row.resize(avail, Cell::default());
+                    self.screen_mut().mark_row_dirty(r);
                 }
             }
             // 插入字符（光标处 n 个空格，右侧推出）
@@ -389,6 +398,7 @@ impl Perform for TerminalState {
                     for i in 0..n {
                         row[c + i] = Cell::default();
                     }
+                    self.screen_mut().mark_row_dirty(r);
                 }
             }
             // 删除字符但保留位置（用空格覆盖）
@@ -402,6 +412,7 @@ impl Perform for TerminalState {
                             self.screen_mut().grid[r][c + i] = Cell::default();
                         }
                     }
+                    self.screen_mut().mark_row_dirty(r);
                 }
             }
 
@@ -493,11 +504,13 @@ impl TerminalState {
                             self.saved_cursor = Some(self.cursor);
                             self.active = ActiveScreen::Alternate;
                             self.alternate.clear();
+                            self.alternate.mark_all_rows_dirty();
                             self.cursor = Cursor::new(0, 0);
                             self.pending_wrap = false;
                         }
                     } else if self.active == ActiveScreen::Alternate {
                         self.active = ActiveScreen::Primary;
+                        self.primary.mark_all_rows_dirty();
                         if let Some(c) = self.saved_cursor.take() {
                             self.cursor = c;
                             self.clamp_cursor();

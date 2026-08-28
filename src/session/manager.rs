@@ -16,6 +16,7 @@
 //!   - 每个 TerminalSession 内部有自己的 Output Thread，与 manager 解耦
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 
@@ -47,9 +48,17 @@ impl SessionManager {
     ///
     /// `rows` / `cols` 为初始终端网格，调用方需根据当前主窗口实际尺寸计算，
     /// 使新会话与既有会话、渲染层保持尺寸一致。
-    pub fn create_session(&mut self, profile: &Profile, title: String, rows: u16, cols: u16, ) -> Result<SessionId> {
+    /// `notify_tx` 是 PTY 输出通知回调，Output Thread 每次写入 channel 后调用。
+    pub fn create_session(
+        &mut self,
+        profile: &Profile,
+        title: String,
+        rows: u16,
+        cols: u16,
+        notify_tx: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<SessionId> {
         let id = self.id_gen.next_session_id();
-        let session = TerminalSession::new(id, profile, title, rows, cols)?;
+        let session = TerminalSession::new(id, profile, title, rows, cols, notify_tx)?;
         self.sessions.insert(id, session);
         self.order.push(id);
         self.active = Some(id);
@@ -121,6 +130,23 @@ impl SessionManager {
         if let Some(id) = self.active {
             if let Some(s) = self.sessions.get_mut(&id) {
                 s.pump_output();
+            }
+        }
+    }
+
+    /// 激活会话是否有未渲染的变更（脏标记）。
+    pub fn is_active_dirty(&self) -> bool {
+        self.active
+            .and_then(|id| self.sessions.get(&id))
+            .map(|s| s.is_dirty())
+            .unwrap_or(false)
+    }
+
+    /// 清除激活会话的脏标记。
+    pub fn clear_active_dirty(&mut self) {
+        if let Some(id) = self.active {
+            if let Some(s) = self.sessions.get_mut(&id) {
+                s.clear_dirty();
             }
         }
     }

@@ -5,6 +5,16 @@
 //!   - UI 线程 drain 后用 parser.advance(&mut state, byte) 解析，更新 TerminalState/ScreenBuffer
 //!   - 渲染层读取 state 生成 Cell 网格
 //!
+//! 脏标记（Dirty Flag）：
+//!   - pump_output 解析到数据后置 dirty = true
+//!   - App 层仅在 dirty 时触发 build_runs + UI 更新，避免无效全量重绘
+//!   - resize / 屏幕切换（1049）同样置 dirty
+//!
+//! 事件触发通知：
+//!   - Output Thread 写入 mpsc channel 后调用 notify_tx 回调
+//!   - 回调通过 slint::invoke_from_event_loop 通知 UI 线程立即 pump + render
+//!   - 彻底移除 16ms 轮询定时器，空闲状态下零 CPU 占用
+//!
 //! 所有权与线程模型：
 //!   - TerminalSession 拥有：master、writer、child、receiver、parser、state。
 //!   - parser 与 state 仅 UI 线程访问（SessionManager 在 RefCell 中）。
@@ -16,6 +26,7 @@
 
 use std::io::Read;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
@@ -58,6 +69,12 @@ pub struct TerminalSession {
     parser: vte::Parser,
     // 终端状态（含 ScreenBuffer，UI 线程独占）
     state: TerminalState,
+    /// 脏标记：pump_output 解析到新数据、resize、屏幕切换后置 true。
+    /// App 层据此决定是否触发 build_runs + UI 刷新，避免无变更时的无效重绘。
+    dirty: bool,
+    /// PTY 输出通知回调：Output Thread 写入 channel 后调用，
+    /// 用于触发 slint::invoke_from_event_loop 通知 UI 线程。
+    pub notify_tx: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl TerminalSession {
@@ -65,7 +82,16 @@ impl TerminalSession {
     ///
     /// `rows` / `cols` 为初始终端网格，由调用方根据当前主窗口实际尺寸计算得出，
     /// 确保 PTY 与 TerminalState 从一开始就与渲染层尺寸一致（不再硬编码 24×80）。
-    pub fn new(id: SessionId, profile: &Profile, title: String, rows: u16, cols: u16) -> Result<Self> {
+    /// `notify_tx` 是 PTY 输出通知回调，Output Thread 每次写入 channel 后调用，
+    /// 用于触发 slint::invoke_from_event_loop 通知 UI 线程。
+    pub fn new(
+        id: SessionId,
+        profile: &Profile,
+        title: String,
+        rows: u16,
+        cols: u16,
+        notify_tx: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Self> {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
             .openpty(portable_pty::PtySize {
@@ -95,9 +121,10 @@ impl TerminalSession {
         let writer = pair.master.take_writer().context("take_writer failed")?;
         let reader = pair.master.try_clone_reader().context("try_clone_reader failed")?;
 
-        // Output Thread：独立线程阻塞读 PTY，把字节块经 channel 送回 UI 线程。
-        // 线程只持有 reader + sender，不接触 Slint / SessionManager。
+        // Output thread：独立线程阻塞读 PTY，把字节块经 channel 送回 UI 线程。
+        // 线程只持有 reader + sender + notify_tx，不接触 Slint / SessionManager。
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let thread_notify = notify_tx.clone();
         let handle = thread::Builder::new()
             .name(format!("pty-output-{}", id.0))
             .spawn(move || {
@@ -113,6 +140,8 @@ impl TerminalSession {
                             if tx.send(buf[..n].to_vec()).is_err() {
                                 break;
                             }
+                            // 通知 UI 线程有新数据到达（事件触发式渲染）
+                            thread_notify();
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(std::time::Duration::from_millis(5));
@@ -137,6 +166,8 @@ impl TerminalSession {
             receiver: rx,
             parser: vte::Parser::new(),
             state: TerminalState::new(rows as usize, cols as usize),
+            dirty: false,
+            notify_tx,
         })
     }
 
@@ -147,6 +178,7 @@ impl TerminalSession {
     }
 
     /// 调整 PTY 尺寸（rows/cols）并同步 ScreenBuffer。
+    /// 尺寸变更会导致 ScreenBuffer 内容重排，标记 dirty 触发重绘。
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let _ = self.master.resize(portable_pty::PtySize {
             rows,
@@ -155,16 +187,34 @@ impl TerminalSession {
             pixel_height: 0,
         });
         self.state.resize(rows as usize, cols as usize);
+        self.dirty = true;
     }
 
     /// 非阻塞 drain 当前会话所有待处理输出，并经 vte::Parser 解析进 TerminalState。
-    /// UI 线程在 Timer 中调用。
-    pub fn pump_output(&mut self) {
+    /// 返回是否解析到了新数据（用于上层脏标记判定）。
+    /// UI 线程在 Timer / 事件回调中调用。
+    pub fn pump_output(&mut self) -> bool {
+        let mut processed = false;
         while let Ok(chunk) = self.receiver.try_recv() {
             for &b in &chunk {
                 self.parser.advance(&mut self.state, b);
             }
+            processed = true;
         }
+        if processed {
+            self.dirty = true;
+        }
+        processed
+    }
+
+    /// 当前会话是否有未渲染的变更。
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// 清除脏标记（在 UI 完成渲染后调用）。
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
     }
 
     /// 只读访问终端状态（供渲染层构建 Cell 网格）。

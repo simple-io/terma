@@ -4,13 +4,20 @@
 //!   - Primary Screen 拥有 scrollback（行滚出顶部时存入历史）
 //!   - Alternate Screen 不带 scrollback（vim/top 等全屏程序退出后恢复 Primary）
 //!   - 滚动区域（scroll region）默认为整屏，CSI r 可设置（本阶段实现整屏滚动）
+//!
+//! 脏行追踪（Dirty Row Tracking）：
+//!   - 使用 RefCell<Vec<usize>> 记录被修改的行索引，支持通过 &self 调用 take_dirty_rows
+//!   - 所有修改 grid 的方法自动标记对应行为脏
+//!   - 渲染层据此仅重建脏行的 Run 列表，未变更行复用缓存
+
+use std::cell::RefCell;
 
 use crate::terminal::cell::Cell;
 
 pub type Row = Vec<Cell>;
 
 /// 一块屏幕缓冲：rows × cols 的 Cell 网格
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ScreenBuffer {
     // 行
     pub rows: usize,
@@ -22,6 +29,21 @@ pub struct ScreenBuffer {
     pub scrollback: Vec<Row>,
     /// scrollback 最大行数
     pub scrollback_limit: usize,
+    /// 脏行索引：记录自上次 take 后被修改的行号（RefCell 支持通过 &self 取出行）
+    dirty_rows: RefCell<Vec<usize>>,
+}
+
+impl Clone for ScreenBuffer {
+    fn clone(&self) -> Self {
+        Self {
+            rows: self.rows,
+            cols: self.cols,
+            grid: self.grid.clone(),
+            scrollback: self.scrollback.clone(),
+            scrollback_limit: self.scrollback_limit,
+            dirty_rows: RefCell::new(self.dirty_rows.borrow().clone()),
+        }
+    }
 }
 
 impl ScreenBuffer {
@@ -32,6 +54,7 @@ impl ScreenBuffer {
             grid: new_grid(rows, cols),
             scrollback: Vec::new(),
             scrollback_limit: 10_000,
+            dirty_rows: RefCell::new(Vec::new()),
         }
     }
 
@@ -43,6 +66,7 @@ impl ScreenBuffer {
             grid: new_grid(rows, cols),
             scrollback: Vec::new(),
             scrollback_limit: 0,
+            dirty_rows: RefCell::new(Vec::new()),
         }
     }
 
@@ -51,6 +75,7 @@ impl ScreenBuffer {
     }
 
     pub fn cell_mut(&mut self, row: usize, col: usize) -> &mut Cell {
+        self.mark_row_dirty(row);
         &mut self.grid[row][col]
     }
 
@@ -82,15 +107,19 @@ impl ScreenBuffer {
             self.grid.resize(rows, new_row(cols));
         }
         self.rows = rows;
+        // resize 后所有行内容变化，标记全部为脏
+        self.mark_all_rows_dirty();
     }
 
     /// 整屏清空为默认 Cell
     pub fn clear(&mut self) {
-        for row in &mut self.grid {
+        for row in self.grid.iter_mut() {
             for cell in row.iter_mut() {
                 *cell = Cell::default();
             }
         }
+        // clear 修改了所有行
+        self.mark_all_rows_dirty();
     }
 
     /// 清除从 (start_row,start_col) 到 (end_row,end_col) 含端点的区域
@@ -105,6 +134,7 @@ impl ScreenBuffer {
             for c in c_start..=c_end {
                 self.grid[r][c] = Cell::default();
             }
+            self.mark_row_dirty(r);
         }
     }
 
@@ -114,6 +144,7 @@ impl ScreenBuffer {
             for cell in &mut self.grid[row] {
                 *cell = Cell::default();
             }
+            self.mark_row_dirty(row);
         }
     }
 
@@ -123,6 +154,7 @@ impl ScreenBuffer {
             for c in col..self.cols {
                 self.grid[row][c] = Cell::default();
             }
+            self.mark_row_dirty(row);
         }
     }
 
@@ -132,6 +164,7 @@ impl ScreenBuffer {
             for c in 0..=col.min(self.cols.saturating_sub(1)) {
                 self.grid[row][c] = Cell::default();
             }
+            self.mark_row_dirty(row);
         }
     }
 
@@ -168,6 +201,10 @@ impl ScreenBuffer {
             region.push(new_row(self.cols));
         }
         self.grid.splice(top..top, region);
+        // 滚动区域内所有行内容变化
+        for r in top..=bottom {
+            self.mark_row_dirty(r);
+        }
     }
 
     /// 区域向下滚动
@@ -186,6 +223,10 @@ impl ScreenBuffer {
             region.insert(0, new_row(self.cols));
         }
         self.grid.splice(top..top, region);
+        // 滚动区域内所有行内容变化
+        for r in top..=bottom {
+            self.mark_row_dirty(r);
+        }
     }
 
     fn push_scrollback(&mut self, row: Row) {
@@ -199,6 +240,31 @@ impl ScreenBuffer {
     /// 取可见行（grid），用于渲染
     pub fn visible_rows(&self) -> &[Row] {
         &self.grid
+    }
+
+    // ─── 脏行追踪（通过 &self 操作 RefCell，支持在不可变借用上下文中调用） ───
+
+    /// 获取并清除脏行索引列表（返回自上次取出后被修改的行号）。
+    /// 使用 `&self`（而非 `&mut self`），使渲染层可在持有不可变 state 引用时调用。
+    pub fn take_dirty_rows(&self) -> Vec<usize> {
+        std::mem::take(&mut *self.dirty_rows.borrow_mut())
+    }
+
+    /// 标记所有行为脏（用于强制全量重绘：resize、屏幕切换等）
+    pub fn mark_all_rows_dirty(&self) {
+        let mut rows = self.dirty_rows.borrow_mut();
+        rows.clear();
+        for i in 0..self.rows {
+            rows.push(i);
+        }
+    }
+
+    /// 标记指定行为脏（用于直接修改 grid 的场景）
+    pub fn mark_row_dirty(&self, row: usize) {
+        let mut rows = self.dirty_rows.borrow_mut();
+        if !rows.contains(&row) {
+            rows.push(row);
+        }
     }
 }
 
