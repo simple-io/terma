@@ -1,6 +1,6 @@
 //! manager — ProfileManager
 //!
-//! Phase 6：从 <config_dir>/terma/profiles.toml 加载；文件不存在时生成平台默认并落盘。
+//! 从 <config_dir>/terma/profiles.toml 加载；文件不存在时生成平台默认并落盘。
 //! 支持 set_default_profile + save。
 
 use crate::profile::loader;

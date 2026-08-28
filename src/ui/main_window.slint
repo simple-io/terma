@@ -27,10 +27,13 @@ export component MainWindow inherits Window {
     background: #1f1f1f;
 
     // ─── 对外暴露的数据属性（Rust 侧写入） ───
+    // 会话标签
     in-out property <[TabInfo]> tabs;
+    // 配置文件
     in-out property <[ProfileInfo]> profiles;
     in-out property <string> active-title;
     in-out property <string> active-profile-name;
+    // 终端网格数据
     in-out property <[CellRun]> cells;
     in-out property <int> cursor-row;
     in-out property <int> cursor-col;

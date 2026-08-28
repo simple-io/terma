@@ -12,9 +12,11 @@ pub type Row = Vec<Cell>;
 /// 一块屏幕缓冲：rows × cols 的 Cell 网格
 #[derive(Debug, Clone)]
 pub struct ScreenBuffer {
+    // 行
     pub rows: usize,
+    // 列
     pub cols: usize,
-    /// 行数据，grid[0] 为顶行
+    /// 数据缓冲区，是个二维数组，以行和列的模式，包含所有数据
     pub grid: Vec<Row>,
     /// 滚动历史（仅 Primary 使用）
     pub scrollback: Vec<Row>,

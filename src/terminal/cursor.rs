@@ -1,10 +1,13 @@
 //! cursor — 终端光标
 
-/// 光标位置（0-based 行列）+ 可见性
+/// 表示光标位置和可见性，有两个坐标轴
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cursor {
+    /// 表示行坐标轴，光标在水平方向的位置
     pub row: usize,
+    /// 表示列坐标轴，光标在垂直方向的位置
     pub col: usize,
+    /// 是否可见
     pub visible: bool,
 }
 

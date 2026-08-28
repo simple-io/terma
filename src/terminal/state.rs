@@ -18,6 +18,10 @@ use crate::terminal::cell::{CellStyle, Cell};
 use crate::terminal::color::Color;
 use crate::terminal::cursor::Cursor;
 
+
+/// 激活的屏幕类型, 终端有两个屏幕，适用于不同的模式
+/// Primary: 支持 CLI 模式，正常屏幕, 逐行输入命令，逐行输出结果，支持窗口滚动等, 例如：bash、ls、git 等
+/// Alternate: 支持 TUI 模式，全屏文本界面，可在屏幕任意位置定位光标绘制, 例如：top、htop、vim 等
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveScreen {
     Primary,
@@ -29,18 +33,19 @@ pub const DEFAULT_FG: (u8, u8, u8) = (230, 230, 230);
 pub const DEFAULT_BG: (u8, u8, u8) = (12, 12, 12);
 
 pub struct TerminalState {
-    // 终端尺寸
+    // 终端网格
     pub rows: usize,
     pub cols: usize,
-    // 光标位置
+    // 光标对象
     pub cursor: Cursor,
     // 延迟换行标志：光标停在行末，下一个 print 触发换行
     pending_wrap: bool,
-
+    // CLI 屏幕缓冲区
     primary: ScreenBuffer,
+    // TUI 屏幕缓冲区
     alternate: ScreenBuffer,
+    // 当前激活的屏幕
     active: ActiveScreen,
-
     // 当前样式
     pub current_style: CellStyle,
 
@@ -50,7 +55,6 @@ pub struct TerminalState {
 
     // 1049 切换前的光标保存
     saved_cursor: Option<Cursor>,
-
     // 终端状态
     pub cursor_visible: bool,
     // Bracketed Paste 模式标志
@@ -110,7 +114,6 @@ impl TerminalState {
     }
 
     // ─── 内部辅助 ───
-
     fn clamp_cursor(&mut self) {
         if self.cursor.row >= self.rows {
             self.cursor.row = self.rows.saturating_sub(1);
@@ -141,7 +144,7 @@ impl TerminalState {
         }
     }
 
-    /// 换行：光标下移；若超出滚动区底部则在区域内向上滚动
+    /// 换行：光标下移，若超出滚动区底部则在区域内向上滚动
     fn linefeed(&mut self) {
         let (top, bottom) = (self.scroll_top, self.scroll_bottom);
         if self.cursor.row == bottom {
@@ -183,11 +186,14 @@ impl TerminalState {
     }
 }
 
+/// 伪终端状态机, 实现 vte::Perform Trait 接口
 impl Perform for TerminalState {
+    /// 普通字符写入光标位置
     fn print(&mut self, c: char) {
         self.put_char(c);
     }
 
+    /// C0 控制字符
     fn execute(&mut self, byte: u8) {
         match byte {
             b'\n' | 0x0b | 0x0c => self.linefeed(),
@@ -213,6 +219,12 @@ impl Perform for TerminalState {
         }
     }
 
+    /// OSC 序列：操作系统命令
+    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
+        // OSC 0/2 设置窗口标题等：Phase 3 暂忽略
+    }
+
+    /// CSI 序列：光标移动 / 清屏 / 清行 / 滚动 / SGR / 私有模式
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
         // 把参数扁平化为 u16 序列（同时兼容 ; 与 : 分隔，用于 SGR/定位）
         let p: Vec<u16> = params.iter().flat_map(|g| g.iter().copied()).collect();
@@ -401,6 +413,7 @@ impl Perform for TerminalState {
         }
     }
 
+    /// ESC 序列：光标移动 / 保存/恢复光标 / 滚动
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
         match byte {
             b'M' => self.reverse_index(), // RI
@@ -421,10 +434,6 @@ impl Perform for TerminalState {
             }
             _ => {}
         }
-    }
-
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
-        // OSC 0/2 设置窗口标题等：Phase 3 暂忽略
     }
 }
 

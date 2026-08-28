@@ -46,14 +46,14 @@ pub struct TerminalSession {
 
     // PTY 主端：resize 用。take_writer / try_clone_reader 之后仍可调用 resize。
     master: Box<dyn portable_pty::MasterPty + Send>,
-    // PTY 写端：转发用户键盘输入。仅 UI 线程访问（&mut）。
+    // PTY 写入端：转发用户键盘输入。仅 UI 线程访问（&mut）。
     writer: Box<dyn std::io::Write + Send>,
+    // PTY 读取端：读取Shell结果显示到窗口，UI 线程 try_recv drain。
+    receiver: mpsc::Receiver<Vec<u8>>,
     // 子进程句柄：关闭时 kill + wait。
     child: Box<dyn portable_pty::Child + Send + Sync>,
     // Output Thread 句柄：关闭时 join。
     output_thread: Option<JoinHandle<()>>,
-    // PTY 输出接收端：UI 线程 try_recv drain。
-    receiver: mpsc::Receiver<Vec<u8>>,
     // VT 解析器（UI 线程独占）
     parser: vte::Parser,
     // 终端状态（含 ScreenBuffer，UI 线程独占）

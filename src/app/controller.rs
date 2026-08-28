@@ -91,9 +91,11 @@ impl App {
             _tick_timer: slint::Timer::default(),
         });
 
+        // 加载配置文件
         app.populate_profiles();
         // 先按目标终端网格设置窗口初始物理尺寸，使首个会话能以正确网格创建。
         app.apply_initial_window_size();
+        // 创建默认会话
         app.create_default_session();
         app.sync_tabs();
         app.bind_callbacks();
@@ -353,7 +355,7 @@ fn parse_session_id(s: &slint::SharedString) -> Option<SessionId> {
     s.as_str().parse::<u64>().ok().map(SessionId)
 }
 
-/// 把键盘事件编码为写入 PTY 的字节序列（Phase 7 完整键盘映射）。
+/// 把键盘事件编码为写入 PTY 的字节序列
 ///
 /// Slint 特殊键在 e.text 中以专用 Unicode 码点传递：
 ///   Backspace=\u{8}  Tab=\u{9}  Return=\u{a}  Escape=\u{1b}
