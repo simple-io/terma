@@ -5,16 +5,16 @@
 //! 设计要点：
 //!   - `App` 用 `Rc` 包装，`SessionManager` / `last_size` 用 `RefCell` 提供内部可变性，
 //!     Slint 的 `'static` 回调闭包通过 `Weak<App>` 回访业务状态。
-//!   - PTY 输出在独立 Output Thread 中读取 → mpsc channel → 原子标志通知 UI 线程：
-//!     Output Thread 写入 channel 后设置 AtomicBool 标志，UI 线程定时器检测标志
-//!     后立即 pump + render，实现低延迟的事件触发式渲染。
+//!   - PTY 输出在独立 Output Thread 中读取 → mpsc channel；Output Thread 额外经
+//!     `SyncSender(1)` 唤醒通道通知渲染分发线程，由后者 `invoke_from_event_loop` 调度
+//!     UI 线程 pump + render，实现低延迟事件触发式渲染，彻底移除渲染轮询定时器。
 //!     Slint 对象绝不跨线程，PTY 线程不接触 Slint。
 //!   - 渲染采用脏行标记（Dirty Rows）+ 按行缓存（Per-Row Cache）的增量渲染机制：
 //!     ScreenBuffer 追踪哪些行被修改，渲染层仅对脏行调用 build_row_runs，
 //!     未变更行复用上一帧的缓存结果，大幅降低 CPU 占用（尤其对少量字符输出场景）。
 //!   - Tab 切换、窗口 resize、新建/关闭会话等交互事件立即触发渲染。
 //!   - 键盘：TerminalView 的 FocusScope 接 key-pressed → encode_key（完整键盘映射）→ PTY。
-//!   - 尺寸：定时器内同步检查窗口 resize，变化时同步 PTY + ScreenBuffer。
+//!   - 尺寸：独立的低频率定时器轮询 window().size()，变化时同步 PTY + ScreenBuffer。
 //!
 //! 回调（全部在 Slint UI 线程执行）：
 //!   on_new_tab        → 用默认 Profile 创建 Session
@@ -25,14 +25,13 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::rc::{Rc, Weak};
+use std::sync::mpsc::{self, SyncSender};
 
 use slint::{ComponentHandle, VecModel};
 
 use crate::profile::{Profile, ProfileManager};
-use crate::renderer::{build_row_runs, RunRender};
+use crate::renderer::{RunRender, build_row_runs};
 use crate::session::SessionManager;
 use crate::session::session::TerminalSessionLike;
 use crate::session::session_id::{ProfileId, SessionId};
@@ -43,8 +42,8 @@ mod ui_generated {
 
 pub use ui_generated::{CellRun, MainWindow, ProfileInfo, TabInfo};
 
-/// UI 刷新定时器间隔（检查原子标志 + resize + 按需渲染）
-const TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+/// 窗口 resize 轮询间隔（仅检测尺寸变化，与渲染解耦；PTY 输出采用事件驱动，不再定时驱动渲染）
+const RESIZE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 /// 等宽字体度量（与 terminal_view.slint 中 char-w/char-h 保持一致）
 const CHAR_W: i32 = 8;
 const CHAR_H: i32 = 16;
@@ -60,6 +59,14 @@ const V_PADDING: i32 = 8;
 /// 终端网格尺寸上限（防止异常窗口尺寸下分配过大缓冲）
 const MAX_COLS: i32 = 400;
 const MAX_ROWS: i32 = 200;
+
+// UI 线程独占的 App 弱引用：供渲染分发线程的 `invoke_from_event_loop` 回调回访 App。
+//
+// App 用 `Rc` 管理（非 Send），无法跨线程捕获；此处借助 thread_local 让回调在 UI 线程上
+// 安全 upgrade 到 App，避免把非 Send 的 `Weak<App>` 移入其他线程。
+thread_local! {
+    static APP_WEAK: RefCell<Option<Weak<App>>> = const { RefCell::new(None) };
+}
 
 /// 按行渲染缓存：每行维护独立的 RunRender 列表，
 /// 仅脏行触发 build_row_runs 重建，未变更行直接复用缓存。
@@ -96,13 +103,12 @@ pub struct App {
     cells_model: Rc<VecModel<CellRun>>,
     // 上次同步给 PTY 的 (rows, cols)，用于检测窗口尺寸变化
     last_size: Cell<(u16, u16)>,
-    // 主循环定时器（PTY 数据检查 + resize + 按需渲染）
-    _tick_timer: slint::Timer,
+    // 窗口 resize 轮询定时器（仅检测尺寸变化，与渲染解耦）
+    resize_timer: slint::Timer,
     // 按行渲染缓存（增量渲染核心）
     row_cache: RefCell<RowRenderCache>,
-    // PTY 数据到达标志：Output Thread 写入 channel 后置 true，
-    // UI 线程 tick 检测后立即 pump + render。空闲时 tick 仅做廉价原子检查。
-    data_flag: Arc<AtomicBool>,
+    // PTY 输出唤醒通道发送端：新建会话时 clone 给对应 Output Thread
+    wake_tx: SyncSender<()>,
 }
 
 impl App {
@@ -117,7 +123,9 @@ impl App {
         main_window.set_profiles(profiles_model.clone().into());
         main_window.set_cells(cells_model.clone().into());
 
-        // let data_flag = Arc::new(AtomicBool::new(false));
+        // 唤醒通道：SyncSender(1) 容量为 1，`try_send` 满时自动合并，避免 PTY 高频输出
+        // 刷爆事件队列；数据经独立的 mpsc 通道传输，唤醒仅作「有数据待消费」的信号。
+        let (wake_tx, wake_rx) = mpsc::sync_channel::<()>(1);
 
         let app = Rc::new(Self {
             main_window,
@@ -127,20 +135,40 @@ impl App {
             profiles_model,
             cells_model,
             last_size: Cell::new((0, 0)),
-            _tick_timer: slint::Timer::default(),
+            resize_timer: slint::Timer::default(),
             row_cache: RefCell::new(RowRenderCache::new()),
-            data_flag: Arc::new(AtomicBool::new(false))
+            wake_tx,
         });
+
+        // 注册 UI 线程弱引用，供渲染分发线程回访
+        APP_WEAK.with(|slot| *slot.borrow_mut() = Some(Rc::downgrade(&app)));
+
+        // 渲染分发线程：阻塞等待 PTY 输出唤醒，再调度 UI 线程 pump + 按需渲染。
+        // 该线程只与 mpsc / Slint 的线程安全入口交互，不接触 App / Slint 组件。
+        let _ = std::thread::Builder::new()
+            .name("terma-render-wake".into())
+            .spawn(move || {
+                while wake_rx.recv().is_ok() {
+                    // 合并连续唤醒，减少事件队列压力
+                    while wake_rx.try_recv().is_ok() {}
+                    let _ = slint::invoke_from_event_loop(|| {
+                        APP_WEAK.with(|slot| {
+                            if let Some(app) = slot.borrow().as_ref().and_then(|w| w.upgrade()) {
+                                app.pump_and_render_ui();
+                            }
+                        });
+                    });
+                }
+            });
 
         // 加载配置文件
         app.populate_profiles();
         // 先按目标终端网格设置窗口初始物理尺寸，使首个会话能以正确网格创建。
         app.apply_initial_window_size();
-        // 创建默认会话
+        // 创建默认会话（内部 create_session_for_profile 已 sync_tabs 并渲染）
         app.create_default_session();
-        app.sync_tabs();
         app.bind_callbacks();
-        app.start_tick_timer();
+        app.start_resize_timer();
 
         let weak = Rc::downgrade(&app);
         app.main_window.window().on_close_requested(move || {
@@ -167,7 +195,7 @@ impl App {
         self.profiles_model.set_vec(items);
     }
 
-    // 同步 Tab 列表 + 激活态标题（不触发渲染，渲染由调用方按需处理）。
+    // 同步 Tab 列表 + 激活态标题，切/关/建 Tab 后激活会话可能变化，并强制渲染激活会话。
     fn sync_tabs(&self) {
         let sessions = self.sessions.borrow();
         let tabs: Vec<TabInfo> = sessions
@@ -192,9 +220,15 @@ impl App {
                 self.main_window.set_active_profile_name("".into());
             }
         }
+        drop(sessions);
+        self.render();
     }
 
-    // ─── 增量渲染核心 ───
+    // 事件驱动，由 pty 唤醒回调，尝试触发渲染 UI 终端内容
+    fn pump_and_render_ui(&self) {
+        self.sessions.borrow_mut().pump_all();
+        self.render_if_dirty();
+    }
 
     // 按需渲染：仅当激活会话有脏标记时才执行增量渲染。
     fn render_if_dirty(&self) {
@@ -257,12 +291,8 @@ impl App {
                 row: r.row,
                 col: r.col,
                 len: r.len,
-                fg: slint::Brush::SolidColor(slint::Color::from_rgb_u8(
-                    r.fg.0, r.fg.1, r.fg.2,
-                )),
-                bg: slint::Brush::SolidColor(slint::Color::from_rgb_u8(
-                    r.bg.0, r.bg.1, r.bg.2,
-                )),
+                fg: slint::Brush::SolidColor(slint::Color::from_rgb_u8(r.fg.0, r.fg.1, r.fg.2)),
+                bg: slint::Brush::SolidColor(slint::Color::from_rgb_u8(r.bg.0, r.bg.1, r.bg.2)),
                 has_bg: r.has_bg,
                 bold: r.bold,
                 italic: r.italic,
@@ -286,32 +316,15 @@ impl App {
         self.sessions.borrow_mut().clear_active_dirty();
     }
 
-    // ─── 定时器：原子标志检测 + resize + 按需渲染 ───
-
-    fn start_tick_timer(self: &Rc<Self>) {
+    // 窗口 resize 轮询：仅检测尺寸变化并同步 PTY；变化会置脏标记，随后按需渲染。
+    fn start_resize_timer(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
-        self._tick_timer.start(slint::TimerMode::Repeated, TICK_INTERVAL, move || {
-            if let Some(app) = weak.upgrade() {
-                app.tick();
-            }
-        });
-    }
-
-    /// 定时器回调：检测 PTY 数据标志 + resize + 按需渲染。
-    /// 空闲状态（data_flag=false）下仅做廉价原子检查 + resize，
-    /// 完全不触发 build_row_runs / set_vec，CPU 占用趋近于零。
-    fn tick(&self) {
-        // 检测 PTY 数据到达标志（原子操作，开销极低）
-        let has_data = self.data_flag.swap(false, Ordering::Relaxed);
-
-        // resize 检查（每次 tick 都执行，开销极低）
-        self.maybe_resize();
-
-        if has_data {
-            // PTY 有新数据 → drain channel + 解析 + 按需渲染
-            self.sessions.borrow_mut().pump_active();
-            self.render_if_dirty();
-        }
+        self.resize_timer
+            .start(slint::TimerMode::Repeated, RESIZE_INTERVAL, move || {
+                if let Some(app) = weak.upgrade() {
+                    app.maybe_resize();
+                }
+            });
     }
 
     // UI 回调绑定
@@ -319,8 +332,8 @@ impl App {
         let weak = Rc::downgrade(self);
         self.main_window.on_new_tab(move || {
             if let Some(app) = weak.upgrade() {
+                // create_default_session 内部已 sync_tabs（含强制渲染）
                 app.create_default_session();
-                app.sync_tabs();
             }
         });
 
@@ -330,6 +343,8 @@ impl App {
                 if let Some(id) = parse_session_id(&id_str) {
                     app.close_session(id);
                 }
+                // 关闭后激活会话可能切换，清空按行缓存再强制渲染新激活会话
+                app.row_cache.borrow_mut().clear();
                 app.sync_tabs();
             }
         });
@@ -339,11 +354,11 @@ impl App {
             if let Some(app) = weak.upgrade() {
                 if let Some(id) = parse_session_id(&id_str) {
                     app.sessions.borrow_mut().set_active_session(id);
+                    // 立即 drain 所有会话（含新激活）的待处理 PTY 数据
+                    app.sessions.borrow_mut().pump_all();
                     // 切换 Tab 时清空按行缓存（新会话的行内容与旧会话无关）
                     app.row_cache.borrow_mut().clear();
-                    // 立即 drain 新激活会话的待处理 PTY 数据并渲染
-                    app.sessions.borrow_mut().pump_active();
-                    app.render_if_dirty();
+                    // sync_tabs 末尾强制渲染，立即显示新会话最新状态（无白屏）
                     app.sync_tabs();
                 }
             }
@@ -355,7 +370,6 @@ impl App {
                 let pid = ProfileId::new(pid_str.to_string());
                 if let Some(profile) = app.profiles.get_profile(&pid) {
                     app.create_session_for_profile(profile);
-                    app.sync_tabs();
                 }
             }
         });
@@ -375,7 +389,6 @@ impl App {
         });
     }
 
-    /// ─── 业务操作 ───
     // 创建默认会话
     fn create_default_session(self: &Rc<Self>) {
         let profile = self.profiles.default_profile().clone();
@@ -389,24 +402,19 @@ impl App {
         let next_index = self.sessions.borrow().len() + 1;
         let title = format!("{} {}", profile.name, next_index);
 
-        // 创建 PTY 输出通知回调：Output Thread 写入 channel 后调用，
-        // 设置原子标志通知 UI 线程有新数据到达。
-        let data_flag = self.data_flag.clone();
-        let notify_tx: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            data_flag.store(true, Ordering::Release);
-        });
-
-        if let Err(e) = self
-            .sessions
-            .borrow_mut()
-            .create_session(profile, title, rows, cols, notify_tx)
-        {
+        if let Err(e) = self.sessions.borrow_mut().create_session(
+            profile,
+            title,
+            rows,
+            cols,
+            self.wake_tx.clone(),
+        ) {
             eprintln!("[terma] create session failed: {e:#}");
         }
-        // 新建会话后清空按行缓存并强制渲染（新会话 dirty=false，但需要清空旧内容）
+        // 新建会话后清空按行缓存（新会话的行内容与旧会话无关），
+        // sync_tabs 末尾强制渲染，立即显示新会话（空屏 + prompt）。
         self.row_cache.borrow_mut().clear();
         self.sync_tabs();
-        self.render();
     }
 
     // 根据 id 关闭会话
@@ -427,7 +435,7 @@ impl App {
     }
 
     // 根据窗口尺寸计算 cols/rows，变化时同步所有会话的 PTY + ScreenBuffer。
-    // resize 会标记 dirty_rows，下一次 tick 检测到 has_data 时自动渲染。
+    // resize 会标记 dirty_rows，此处立即按需渲染，确保窗口缩放无延迟。
     fn maybe_resize(&self) {
         let Some((rows, cols)) = compute_grid(self.main_window.window()) else {
             return;
@@ -487,24 +495,24 @@ fn encode_key(text: &slint::SharedString, control: bool, _alt: bool, _shift: boo
 
     // 特殊键
     match c {
-        '\u{0008}' => return vec![0x7f],                          // Backspace → DEL
-        '\u{0009}' => return vec![0x09],                          // Tab
-        '\u{000a}' => return vec![0x0d],                          // Return → CR
-        '\u{001b}' => return vec![0x1b],                          // Escape
-        '\u{007f}' => return b"\x1b[3~".to_vec(),                 // Delete
-        '\u{F700}' => return b"\x1b[A".to_vec(),                  // Up
-        '\u{F701}' => return b"\x1b[B".to_vec(),                  // Down
-        '\u{F702}' => return b"\x1b[D".to_vec(),                  // Left
-        '\u{F703}' => return b"\x1b[C".to_vec(),                  // Right
-        '\u{F729}' => return b"\x1b[H".to_vec(),                  // Home
-        '\u{F72B}' => return b"\x1b[F".to_vec(),                  // End
-        '\u{F72C}' => return b"\x1b[5~".to_vec(),                 // PageUp
-        '\u{F72D}' => return b"\x1b[6~".to_vec(),                 // PageDown
-        '\u{F727}' => return b"\x1b[2~".to_vec(),                 // Insert
-        '\u{F704}' => return b"\x1b[11~".to_vec(),                // F1
-        '\u{F705}' => return b"\x1b[12~".to_vec(),                // F2
-        '\u{F706}' => return b"\x1b[13~".to_vec(),                // F3
-        '\u{F707}' => return b"\x1b[14~".to_vec(),                // F4
+        '\u{0008}' => return vec![0x7f],           // Backspace → DEL
+        '\u{0009}' => return vec![0x09],           // Tab
+        '\u{000a}' => return vec![0x0d],           // Return → CR
+        '\u{001b}' => return vec![0x1b],           // Escape
+        '\u{007f}' => return b"\x1b[3~".to_vec(),  // Delete
+        '\u{F700}' => return b"\x1b[A".to_vec(),   // Up
+        '\u{F701}' => return b"\x1b[B".to_vec(),   // Down
+        '\u{F702}' => return b"\x1b[D".to_vec(),   // Left
+        '\u{F703}' => return b"\x1b[C".to_vec(),   // Right
+        '\u{F729}' => return b"\x1b[H".to_vec(),   // Home
+        '\u{F72B}' => return b"\x1b[F".to_vec(),   // End
+        '\u{F72C}' => return b"\x1b[5~".to_vec(),  // PageUp
+        '\u{F72D}' => return b"\x1b[6~".to_vec(),  // PageDown
+        '\u{F727}' => return b"\x1b[2~".to_vec(),  // Insert
+        '\u{F704}' => return b"\x1b[11~".to_vec(), // F1
+        '\u{F705}' => return b"\x1b[12~".to_vec(), // F2
+        '\u{F706}' => return b"\x1b[13~".to_vec(), // F3
+        '\u{F707}' => return b"\x1b[14~".to_vec(), // F4
         _ => {}
     }
 

@@ -16,7 +16,7 @@
 //!   - 每个 TerminalSession 内部有自己的 Output Thread，与 manager 解耦
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::mpsc::SyncSender;
 
 use anyhow::Result;
 
@@ -48,17 +48,10 @@ impl SessionManager {
     ///
     /// `rows` / `cols` 为初始终端网格，调用方需根据当前主窗口实际尺寸计算，
     /// 使新会话与既有会话、渲染层保持尺寸一致。
-    /// `notify_tx` 是 PTY 输出通知回调，Output Thread 每次写入 channel 后调用。
-    pub fn create_session(
-        &mut self,
-        profile: &Profile,
-        title: String,
-        rows: u16,
-        cols: u16,
-        notify_tx: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<SessionId> {
+    /// `wake_tx` 是渲染唤醒通道，透传给 Output Thread 用于事件触发式渲染。
+    pub fn create_session(&mut self, profile: &Profile, title: String, rows: u16, cols: u16, wake_tx: SyncSender<()>, ) -> Result<SessionId> {
         let id = self.id_gen.next_session_id();
-        let session = TerminalSession::new(id, profile, title, rows, cols, notify_tx)?;
+        let session = TerminalSession::new(id, profile, title, rows, cols, wake_tx)?;
         self.sessions.insert(id, session);
         self.order.push(id);
         self.active = Some(id);
@@ -125,12 +118,19 @@ impl SessionManager {
         Ok(())
     }
 
-    /// 非阻塞 drain 激活会话的 PTY 输出，并经 vte::Parser 解析进 TerminalState。
+    // 处理激活会话 pty 输出，使用对应的 vte::Parser 解析
     pub fn pump_active(&mut self) {
         if let Some(id) = self.active {
             if let Some(s) = self.sessions.get_mut(&id) {
                 s.pump_output();
             }
+        }
+    }
+
+    /// 处理所有会话的 PTY 输出，各自经 vte::Parser 解析进 TerminalState 并置脏标记。
+    pub fn pump_all(&mut self) {
+        for s in self.sessions.values_mut() {
+            s.pump_output();
         }
     }
 

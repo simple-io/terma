@@ -1,6 +1,6 @@
 //! session — TerminalSession 抽象与真实 PTY 实现
 //!
-//! Phase 3：TerminalSession 持有 vte::Parser + TerminalState。
+//! TerminalSession 持有 vte::Parser + TerminalState。
 //!   - Output Thread 把 PTY 字节送回 UI 线程（mpsc）
 //!   - UI 线程 drain 后用 parser.advance(&mut state, byte) 解析，更新 TerminalState/ScreenBuffer
 //!   - 渲染层读取 state 生成 Cell 网格
@@ -11,9 +11,9 @@
 //!   - resize / 屏幕切换（1049）同样置 dirty
 //!
 //! 事件触发通知：
-//!   - Output Thread 写入 mpsc channel 后调用 notify_tx 回调
-//!   - 回调通过 slint::invoke_from_event_loop 通知 UI 线程立即 pump + render
-//!   - 彻底移除 16ms 轮询定时器，空闲状态下零 CPU 占用
+//!   - Output Thread 写入 mpsc channel 后经 SyncSender(1) 唤醒通道通知渲染分发线程
+//!   - 分发线程通过 slint::invoke_from_event_loop 通知 UI 线程立即 pump + render
+//!   - 彻底移除渲染轮询定时器，空闲状态下零渲染 CPU 占用
 //!
 //! 所有权与线程模型：
 //!   - TerminalSession 拥有：master、writer、child、receiver、parser、state。
@@ -23,10 +23,10 @@
 //!
 //! 跨线程边界：
 //!   PTY Output Thread ──(mpsc::Sender<Vec<u8>>)──> UI Thread (receiver → parser → state)
+//!   PTY Output Thread ──(SyncSender<()> 唤醒)──> 渲染分发线程 ──(invoke_from_event_loop)──> UI Thread
 
 use std::io::Read;
-use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
@@ -72,26 +72,16 @@ pub struct TerminalSession {
     /// 脏标记：pump_output 解析到新数据、resize、屏幕切换后置 true。
     /// App 层据此决定是否触发 build_runs + UI 刷新，避免无变更时的无效重绘。
     dirty: bool,
-    /// PTY 输出通知回调：Output Thread 写入 channel 后调用，
-    /// 用于触发 slint::invoke_from_event_loop 通知 UI 线程。
-    pub notify_tx: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl TerminalSession {
     /// 创建一个真实终端会话：openpty → spawn shell → take writer/reader → 启动 Output Thread。
     ///
     /// `rows` / `cols` 为初始终端网格，由调用方根据当前主窗口实际尺寸计算得出，
-    /// 确保 PTY 与 TerminalState 从一开始就与渲染层尺寸一致（不再硬编码 24×80）。
-    /// `notify_tx` 是 PTY 输出通知回调，Output Thread 每次写入 channel 后调用，
-    /// 用于触发 slint::invoke_from_event_loop 通知 UI 线程。
-    pub fn new(
-        id: SessionId,
-        profile: &Profile,
-        title: String,
-        rows: u16,
-        cols: u16,
-        notify_tx: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<Self> {
+    /// 确保 PTY 与 TerminalState 渲染层尺寸一致。
+    /// `wake_tx` 是渲染唤醒通道：Output Thread 每次写入 channel 后 `try_send(())`，
+    /// 由渲染分发线程经 `invoke_from_event_loop` 通知 UI 线程立即 pump + 渲染。
+    pub fn new(id: SessionId, profile: &Profile, title: String, rows: u16, cols: u16, wake_tx: SyncSender<()>, ) -> Result<Self> {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
             .openpty(portable_pty::PtySize {
@@ -122,9 +112,8 @@ impl TerminalSession {
         let reader = pair.master.try_clone_reader().context("try_clone_reader failed")?;
 
         // Output thread：独立线程阻塞读 PTY，把字节块经 channel 送回 UI 线程。
-        // 线程只持有 reader + sender + notify_tx，不接触 Slint / SessionManager。
+        // 线程只持有 reader + sender + wake_tx，不接触 Slint / SessionManager。
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        let thread_notify = notify_tx.clone();
         let handle = thread::Builder::new()
             .name(format!("pty-output-{}", id.0))
             .spawn(move || {
@@ -140,8 +129,8 @@ impl TerminalSession {
                             if tx.send(buf[..n].to_vec()).is_err() {
                                 break;
                             }
-                            // 通知 UI 线程有新数据到达（事件触发式渲染）
-                            thread_notify();
+                            // 通知 UI 线程有数据待消费（SyncSender(1) 自动合并连续唤醒）
+                            let _ = wake_tx.try_send(());
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(std::time::Duration::from_millis(5));
@@ -167,7 +156,6 @@ impl TerminalSession {
             parser: vte::Parser::new(),
             state: TerminalState::new(rows as usize, cols as usize),
             dirty: false,
-            notify_tx,
         })
     }
 
