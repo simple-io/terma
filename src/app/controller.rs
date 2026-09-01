@@ -23,12 +23,12 @@
 //!   on_select_profile(pid) → 用指定 Profile 创建 Session
 //!   on_key_pressed(text, mods) → 转发到激活 Session 的 PTY
 
+use slint::{ComponentHandle, VecModel};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
-use std::sync::mpsc::{self, SyncSender};
-
-use slint::{ComponentHandle, VecModel};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex};
 
 use crate::profile::{Profile, ProfileManager};
 use crate::renderer::{RunRender, build_row_runs};
@@ -109,6 +109,8 @@ pub struct App {
     row_cache: RefCell<RowRenderCache>,
     // PTY 输出唤醒通道发送端：新建会话时 clone 给对应 Output Thread
     wake_tx: SyncSender<()>,
+    // PTY 输出唤醒通道接收端：渲染分发线程经此通道接收唤醒信号
+    wake_rx: Arc<Mutex<Receiver<()>>>,
 }
 
 impl App {
@@ -123,8 +125,7 @@ impl App {
         main_window.set_profiles(profiles_model.clone().into());
         main_window.set_cells(cells_model.clone().into());
 
-        // 唤醒通道：SyncSender(1) 容量为 1，`try_send` 满时自动合并，避免 PTY 高频输出
-        // 刷爆事件队列；数据经独立的 mpsc 通道传输，唤醒仅作「有数据待消费」的信号。
+        // 唤醒通道，使用容量为 1 的同步队列，避免 PTY 高频输出，通道仅作为「有数据待消费」信号传递，不传输数据数据
         let (wake_tx, wake_rx) = mpsc::sync_channel::<()>(1);
 
         let app = Rc::new(Self {
@@ -138,31 +139,13 @@ impl App {
             resize_timer: slint::Timer::default(),
             row_cache: RefCell::new(RowRenderCache::new()),
             wake_tx,
+            wake_rx: Arc::new(Mutex::new(wake_rx)),
         });
-
-        // 注册 UI 线程弱引用，供渲染分发线程回访
-        APP_WEAK.with(|slot| *slot.borrow_mut() = Some(Rc::downgrade(&app)));
-
-        // 渲染分发线程：阻塞等待 PTY 输出唤醒，再调度 UI 线程 pump + 按需渲染。
-        // 该线程只与 mpsc / Slint 的线程安全入口交互，不接触 App / Slint 组件。
-        let _ = std::thread::Builder::new()
-            .name("terma-render-wake".into())
-            .spawn(move || {
-                while wake_rx.recv().is_ok() {
-                    // 合并连续唤醒，减少事件队列压力
-                    while wake_rx.try_recv().is_ok() {}
-                    let _ = slint::invoke_from_event_loop(|| {
-                        APP_WEAK.with(|slot| {
-                            if let Some(app) = slot.borrow().as_ref().and_then(|w| w.upgrade()) {
-                                app.pump_and_render_ui();
-                            }
-                        });
-                    });
-                }
-            });
 
         // 加载配置文件
         app.populate_profiles();
+        // 启动异步渲染线程
+        app.async_render_ui();
         // 先按目标终端网格设置窗口初始物理尺寸，使首个会话能以正确网格创建。
         app.apply_initial_window_size();
         // 创建默认会话（内部 create_session_for_profile 已 sync_tabs 并渲染）
@@ -178,6 +161,30 @@ impl App {
 
         app.main_window.show().expect("failed to show window");
         slint::run_event_loop().expect("event loop error");
+    }
+
+    fn async_render_ui(self: &Rc<Self>) {
+        // 在 UI 线程中注册 thread_local 的 App 弱引用，以便在供渲染分发线程回访
+        APP_WEAK.with(|slot| *slot.borrow_mut() = Some(Rc::downgrade(self)));
+        // 获取管道的接收端
+        let wake_rx_mux = self.wake_rx.clone();
+        // 启动异步线程
+        let _ = std::thread::Builder::new()
+            .name("terma-render-wake".into())
+            .spawn(move || {
+                let wake_rx = wake_rx_mux.lock().unwrap();
+                while wake_rx.recv().is_ok() {
+                    // 合并连续唤醒，减少事件队列压力
+                    // while wake_rx.try_recv().is_ok() {}
+                    let _ = slint::invoke_from_event_loop(|| {
+                        APP_WEAK.with(|slot| {
+                            if let Some(app) = slot.borrow().as_ref().and_then(|w| w.upgrade()) {
+                                app.pump_and_render_ui();
+                            }
+                        });
+                    });
+                }
+            });
     }
 
     // ─── UI 数据同步 ───
@@ -213,7 +220,8 @@ impl App {
         match sessions.active_session() {
             Some(s) => {
                 self.main_window.set_active_title(s.title().into());
-                self.main_window.set_active_profile_name(s.profile_name().into());
+                self.main_window
+                    .set_active_profile_name(s.profile_name().into());
             }
             None => {
                 self.main_window.set_active_title("".into());
