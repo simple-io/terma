@@ -2,8 +2,8 @@
 //!
 //! 职责：
 //!   - 管理所有 TerminalSession 的生命周期
-//!   - 维护当前激活的 Session
-//!   - 提供 create / close / switch / resize / write / drain 接口
+//!   - 维护当前激活的 Session（含共享的 ActiveSession 追踪器，供解析线程查询）
+//!   - 提供 create / close / switch / resize / write / 状态访问 接口
 //!
 //! 设计要点：
 //!   - 使用 HashMap<SessionId, TerminalSession> 保证 ID 稳定且 O(1) 查找
@@ -13,14 +13,18 @@
 //!
 //! 线程模型：
 //!   - SessionManager 仅在 UI 线程访问（被 App 的 RefCell 包裹）
-//!   - 每个 TerminalSession 内部有自己的 Output Thread，与 manager 解耦
+//!   - 每个 TerminalSession 内部有自己的 Output Thread（含 vte 解析），与 manager 解耦
+//!   - active_tracker（Arc<ActiveSession>）在切换/新建/关闭时由 manager 更新，
+//!     解析线程据此判断是否唤醒 UI 渲染（仅激活会话唤醒）
 
 use std::collections::HashMap;
 use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
 use crate::profile::Profile;
+use crate::session::active::ActiveSession;
 use crate::session::session::{TerminalSession, TerminalSessionLike};
 use crate::session::session_id::{IdGenerator, ProfileId, SessionId};
 use crate::terminal::TerminalState;
@@ -30,6 +34,8 @@ pub struct SessionManager {
     /// 插入顺序，用于 UI 按创建顺序展示 Tab
     order: Vec<SessionId>,
     active: Option<SessionId>,
+    /// 共享的激活会话追踪器（跨线程），切换/新建/关闭时同步更新
+    active_tracker: Arc<ActiveSession>,
     id_gen: IdGenerator,
 }
 
@@ -39,6 +45,7 @@ impl SessionManager {
             sessions: HashMap::new(),
             order: Vec::new(),
             active: None,
+            active_tracker: Arc::new(ActiveSession::new()),
             id_gen: IdGenerator::default(),
         }
     }
@@ -49,12 +56,28 @@ impl SessionManager {
     /// `rows` / `cols` 为初始终端网格，调用方需根据当前主窗口实际尺寸计算，
     /// 使新会话与既有会话、渲染层保持尺寸一致。
     /// `wake_tx` 是渲染唤醒通道，透传给 Output Thread 用于事件触发式渲染。
-    pub fn create_session(&mut self, profile: &Profile, title: String, rows: u16, cols: u16, wake_tx: SyncSender<()>, ) -> Result<SessionId> {
+    pub fn create_session(
+        &mut self,
+        profile: &Profile,
+        title: String,
+        rows: u16,
+        cols: u16,
+        wake_tx: SyncSender<()>,
+    ) -> Result<SessionId> {
         let id = self.id_gen.next_session_id();
-        let session = TerminalSession::new(id, profile, title, rows, cols, wake_tx)?;
+        let session = TerminalSession::new(
+            id,
+            profile,
+            title,
+            rows,
+            cols,
+            wake_tx,
+            self.active_tracker.clone(),
+        )?;
         self.sessions.insert(id, session);
         self.order.push(id);
         self.active = Some(id);
+        self.active_tracker.set(Some(id));
         Ok(id)
     }
 
@@ -68,6 +91,7 @@ impl SessionManager {
 
         if self.active == Some(id) {
             self.active = self.order.first().copied();
+            self.active_tracker.set(self.active);
         }
         self.active
     }
@@ -80,10 +104,12 @@ impl SessionManager {
         self.active
     }
 
-    /// 切换激活会话。不重建任何底层资源。
+    /// 切换激活会话。不重建任何底层资源。同步更新共享追踪器，
+    /// 使新激活会话的解析线程开始唤醒 UI，原会话解析线程停止唤醒。
     pub fn set_active_session(&mut self, id: SessionId) -> bool {
         if self.sessions.contains_key(&id) {
             self.active = Some(id);
+            self.active_tracker.set(Some(id));
             true
         } else {
             false
@@ -118,44 +144,11 @@ impl SessionManager {
         Ok(())
     }
 
-    // 处理激活会话 pty 输出，使用对应的 vte::Parser 解析
-    pub fn pump_active(&mut self) {
-        if let Some(id) = self.active {
-            if let Some(s) = self.sessions.get_mut(&id) {
-                s.pump_output();
-            }
-        }
-    }
-
-    /// 处理所有会话的 PTY 输出，各自经 vte::Parser 解析进 TerminalState 并置脏标记。
-    pub fn pump_all(&mut self) {
-        for s in self.sessions.values_mut() {
-            s.pump_output();
-        }
-    }
-
-    /// 激活会话是否有未渲染的变更（脏标记）。
-    pub fn is_active_dirty(&self) -> bool {
+    /// 激活会话的终端状态共享句柄（只读，供渲染）。
+    pub fn active_state(&self) -> Option<Arc<Mutex<TerminalState>>> {
         self.active
             .and_then(|id| self.sessions.get(&id))
-            .map(|s| s.is_dirty())
-            .unwrap_or(false)
-    }
-
-    /// 清除激活会话的脏标记。
-    pub fn clear_active_dirty(&mut self) {
-        if let Some(id) = self.active {
-            if let Some(s) = self.sessions.get_mut(&id) {
-                s.clear_dirty();
-            }
-        }
-    }
-
-    /// 激活会话的终端状态（只读，供渲染）。
-    pub fn active_state(&self) -> Option<&TerminalState> {
-        self.active
-            .and_then(|id| self.sessions.get(&id))
-            .map(|s| s.state())
+            .map(|s| s.state().clone())
     }
 
     /// 调整所有会话的 PTY 尺寸 + ScreenBuffer。

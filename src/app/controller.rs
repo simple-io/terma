@@ -5,13 +5,15 @@
 //! 设计要点：
 //!   - `App` 用 `Rc` 包装，`SessionManager` / `last_size` 用 `RefCell` 提供内部可变性，
 //!     Slint 的 `'static` 回调闭包通过 `Weak<App>` 回访业务状态。
-//!   - PTY 输出在独立 Output Thread 中读取 → mpsc channel；Output Thread 额外经
-//!     `SyncSender(1)` 唤醒通道通知渲染分发线程，由后者 `invoke_from_event_loop` 调度
-//!     UI 线程 pump + render，实现低延迟事件触发式渲染，彻底移除渲染轮询定时器。
-//!     Slint 对象绝不跨线程，PTY 线程不接触 Slint。
-//!   - 渲染采用脏行标记（Dirty Rows）+ 按行缓存（Per-Row Cache）的增量渲染机制：
-//!     ScreenBuffer 追踪哪些行被修改，渲染层仅对脏行调用 build_row_runs，
+//!   - PTY 输出在独立 Output Thread 中读取并完成 vte 解析；
+//!     仅激活会话经 `SyncSender(1)` 唤醒通道通知渲染分发线程，由后者
+//!     `invoke_from_event_loop` 调度 UI 线程渲染，实现低延迟事件触发式渲染，
+//!     彻底移除渲染轮询定时器。Slint 对象绝不跨线程，PTY 线程不接触 Slint。
+//!   - 非激活会话的输出在后台静默解析、不唤醒 UI 线程，避免浪费 UI 线程资源。
+//!   - 渲染采用脏标记（Dirty）+ 脏行标记（Dirty Rows）+ 按行缓存（Per-Row Cache）：
+//!     UI 线程锁 `Arc<Mutex<TerminalState>>` 快照脏行，仅对脏行调用 build_row_runs，
 //!     未变更行复用上一帧的缓存结果，大幅降低 CPU 占用（尤其对少量字符输出场景）。
+//!   - Tab 切换、窗口 resize、新建/关闭会话等交互事件立即强制全量渲染。
 //!   - Tab 切换、窗口 resize、新建/关闭会话等交互事件立即触发渲染。
 //!   - 键盘：TerminalView 的 FocusScope 接 key-pressed → encode_key（完整键盘映射）→ PTY。
 //!   - 尺寸：独立的低频率定时器轮询 window().size()，变化时同步 PTY + ScreenBuffer。
@@ -19,7 +21,7 @@
 //! 回调（全部在 Slint UI 线程执行）：
 //!   on_new_tab        → 用默认 Profile 创建 Session
 //!   on_close_tab(id)  → 关闭对应 Session
-//!   on_select_tab(id) → 切换激活 Session（立即 pump + render）
+//!   on_select_tab(id) → 切换激活 Session（立即强制全量渲染）
 //!   on_select_profile(pid) → 用指定 Profile 创建 Session
 //!   on_key_pressed(text, mods) → 转发到激活 Session 的 PTY
 
@@ -35,6 +37,7 @@ use crate::renderer::{RunRender, build_row_runs};
 use crate::session::SessionManager;
 use crate::session::session::TerminalSessionLike;
 use crate::session::session_id::{ProfileId, SessionId};
+use crate::terminal::Cell as TerminalCell;
 
 mod ui_generated {
     slint::include_modules!();
@@ -174,12 +177,10 @@ impl App {
             .spawn(move || {
                 let wake_rx = wake_rx_mux.lock().unwrap();
                 while wake_rx.recv().is_ok() {
-                    // 合并连续唤醒，减少事件队列压力
-                    // while wake_rx.try_recv().is_ok() {}
                     let _ = slint::invoke_from_event_loop(|| {
                         APP_WEAK.with(|slot| {
                             if let Some(app) = slot.borrow().as_ref().and_then(|w| w.upgrade()) {
-                                app.pump_and_render_ui();
+                                app.render();
                             }
                         });
                     });
@@ -229,34 +230,28 @@ impl App {
             }
         }
         drop(sessions);
-        self.render();
+        self.force_full_render();
     }
 
-    // 事件驱动，由 pty 唤醒回调，尝试触发渲染 UI 终端内容
-    fn pump_and_render_ui(&self) {
-        self.sessions.borrow_mut().pump_all();
-        self.render_if_dirty();
-    }
-
-    // 按需渲染：仅当激活会话有脏标记时才执行增量渲染。
-    fn render_if_dirty(&self) {
-        if !self.sessions.borrow().is_active_dirty() {
-            return;
+    // 会话变化（建/切/关 Tab）后强制全量重建激活会话整屏，将激活会话状态标为全脏，再走统一 render 路径。
+    fn force_full_render(&self) {
+        if let Some(state) = self.sessions.borrow().active_state() {
+            state.lock().unwrap().mark_all_dirty();
         }
         self.render();
     }
 
     // 增量渲染：仅对脏行调用 build_row_runs，未变更行复用缓存。
-    // 利用 ScreenBuffer 的 dirty_rows 追踪 + RowRenderCache 按行缓存，
-    // 将 O(全屏行数) 的 build_runs 降低到 O(脏行数)。
+    // 利用 TerminalState 的 dirty 标记 + ScreenBuffer 的 dirty_rows 追踪 +
+    // RowRenderCache 按行缓存，将 O(全屏行数) 的 build_runs 降低到 O(脏行数)。
+    //
+    // 解析已在 Output Thread 完成，这里只读状态并渲染：
+    // 锁状态快照脏行与光标 → 克隆脏行释放锁 → 锁外重建 runs → 更新 Slint Model。
     fn render(&self) {
-        let sessions = self.sessions.borrow();
-
-        // 无激活会话 → 清空
-        let state = match sessions.active_state() {
+        let state = match self.sessions.borrow().active_state() {
             Some(s) => s,
             None => {
-                drop(sessions);
+                // 无激活会话 → 清空
                 let mut cache = self.row_cache.borrow_mut();
                 if !cache.prev_cells.is_empty() {
                     cache.clear();
@@ -267,24 +262,34 @@ impl App {
             }
         };
 
-        // 通过 RefCell 内部可变性获取脏行（&self，无需 &mut）
-        let dirty_rows = state.take_dirty_rows();
-        let cursor_row = state.cursor.row as i32;
-        let cursor_col = state.cursor.col as i32;
-        let cursor_visible = state.cursor_visible;
+        // 锁状态快照：取脏行 + 光标信息，克隆脏行后立即释放锁，
+        // 避免在持锁期间执行 build_row_runs 阻塞解析线程。
+        let mut guard = state.lock().unwrap();
+        if !guard.is_dirty() {
+            // 无变更（可能是残余唤醒），直接跳过
+            return;
+        }
+        let dirty_rows = guard.take_dirty_rows();
+        let cursor_row = guard.cursor.row as i32;
+        let cursor_col = guard.cursor.col as i32;
+        let cursor_visible = guard.cursor_visible;
+        let visible = guard.screen().visible_rows();
+        let num_rows = visible.len();
+        let snapshots: Vec<(usize, Vec<TerminalCell>)> = dirty_rows
+            .iter()
+            .filter(|&&r| r < num_rows)
+            .map(|&r| (r, visible[r].clone()))
+            .collect();
+        guard.clear_dirty();
+        drop(guard);
 
-        // 对脏行重建 runs，未变更行复用缓存
+        // 对脏行重建 runs（锁外），未变更行复用缓存
         let mut cache = self.row_cache.borrow_mut();
-        let visible = state.screen().visible_rows();
-        for &row_idx in &dirty_rows {
-            if row_idx < visible.len() {
-                let new_runs = build_row_runs(&visible[row_idx], row_idx);
-                cache.rows.insert(row_idx, new_runs);
-            }
+        for (row_idx, row) in snapshots {
+            cache.rows.insert(row_idx, build_row_runs(&row, row_idx));
         }
 
         // 组装所有行的 runs → CellRun
-        let num_rows = visible.len();
         let mut all_runs: Vec<RunRender> = Vec::new();
         for r in 0..num_rows {
             if let Some(row_runs) = cache.rows.get(&r) {
@@ -316,12 +321,9 @@ impl App {
 
         // 光标属性始终更新（开销极低）
         drop(cache);
-        drop(sessions);
         self.main_window.set_cursor_row(cursor_row);
         self.main_window.set_cursor_col(cursor_col);
         self.main_window.set_cursor_visible(cursor_visible);
-
-        self.sessions.borrow_mut().clear_active_dirty();
     }
 
     // 窗口 resize 轮询：仅检测尺寸变化并同步 PTY；变化会置脏标记，随后按需渲染。
@@ -362,11 +364,9 @@ impl App {
             if let Some(app) = weak.upgrade() {
                 if let Some(id) = parse_session_id(&id_str) {
                     app.sessions.borrow_mut().set_active_session(id);
-                    // 立即 drain 所有会话（含新激活）的待处理 PTY 数据
-                    app.sessions.borrow_mut().pump_all();
                     // 切换 Tab 时清空按行缓存（新会话的行内容与旧会话无关）
                     app.row_cache.borrow_mut().clear();
-                    // sync_tabs 末尾强制渲染，立即显示新会话最新状态（无白屏）
+                    // sync_tabs 末尾强制全量渲染，立即显示新会话最新状态（无白屏）
                     app.sync_tabs();
                 }
             }
@@ -456,7 +456,7 @@ impl App {
             // resize 后清空按行缓存（所有行内容因重排而变化）
             self.row_cache.borrow_mut().clear();
             // resize 标记了 dirty，立即渲染确保窗口缩放无延迟
-            self.render_if_dirty();
+            self.render();
         }
     }
 }

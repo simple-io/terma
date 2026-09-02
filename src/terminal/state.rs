@@ -59,6 +59,10 @@ pub struct TerminalState {
     pub cursor_visible: bool,
     // Bracketed Paste 模式标志
     pub bracketed_paste: bool,
+    /// 脏标记：解析线程解析到新输出（含纯光标移动）后置 true，
+    /// UI 线程渲染完成后 clear。与 ScreenBuffer 的逐行 dirty_rows 互补：
+    /// dirty_rows 用于增量重建行，dirty 用于区分「有变更」与「完全无变更」。
+    dirty: bool,
 }
 
 impl TerminalState {
@@ -77,7 +81,32 @@ impl TerminalState {
             saved_cursor: None,
             cursor_visible: true,
             bracketed_paste: false,
+            dirty: false,
         }
+    }
+
+    /// 是否有未渲染的变更（解析线程写入，UI 线程渲染后清除）。
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// 清除脏标记（UI 线程渲染完成后调用）。
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
+    }
+
+    /// 标记有变更但不确定具体行（解析线程每解析一段输出后调用，
+    /// 覆盖纯光标移动等不触碰 grid 但需要重绘光标的情形）。
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// 强制全量重绘：置脏标记并将两块屏的所有行标为脏。
+    /// 用于 Tab 切换 / 新建 / 关闭会话等需要整屏重建的场景。
+    pub fn mark_all_dirty(&mut self) {
+        self.dirty = true;
+        self.primary.mark_all_rows_dirty();
+        self.alternate.mark_all_rows_dirty();
     }
 
     /// 当前激活屏的只读引用
@@ -118,6 +147,7 @@ impl TerminalState {
             self.cursor.col = cols.saturating_sub(1);
         }
         self.pending_wrap = false;
+        self.dirty = true;
     }
 
     // ─── 内部辅助 ───

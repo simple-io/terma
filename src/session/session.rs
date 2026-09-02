@@ -1,38 +1,43 @@
 //! session — TerminalSession 抽象与真实 PTY 实现
 //!
-//! TerminalSession 持有 vte::Parser + TerminalState。
-//!   - Output Thread 把 PTY 字节送回 UI 线程（mpsc）
-//!   - UI 线程 drain 后用 parser.advance(&mut state, byte) 解析，更新 TerminalState/ScreenBuffer
-//!   - 渲染层读取 state 生成 Cell 网格
+//! TerminalSession 持有 PTY 资源，并把 vte 解析下沉到 Output Thread：
+//!   - Output Thread（解析线程）阻塞读 PTY，逐字节 feed 给 vte::Parser 解析进
+//!     TerminalState；解析完成后若本会话为激活会话，才经唤醒通道通知 UI 线程渲染。
+//!   - UI 线程只读取 `Arc<Mutex<TerminalState>>` 里的脏行做增量渲染，不再执行
+//!     任何 vte 解析，解析与渲染彻底解耦。
 //!
 //! 脏标记（Dirty Flag）：
-//!   - pump_output 解析到数据后置 dirty = true
-//!   - App 层仅在 dirty 时触发 build_runs + UI 更新，避免无效全量重绘
-//!   - resize / 屏幕切换（1049）同样置 dirty
+//!   - 解析线程每解析一段输出调用 `mark_dirty`，置 `TerminalState.dirty = true`；
+//!     纯光标移动（不触碰 grid）也能被捕获，保证光标位置实时刷新。
+//!   - `ScreenBuffer` 内部另有逐行 dirty_rows，供渲染层只重建脏行。
+//!   - resize / 屏幕切换（1049）同样置脏。
 //!
-//! 事件触发通知：
-//!   - Output Thread 写入 mpsc channel 后经 SyncSender(1) 唤醒通道通知渲染分发线程
-//!   - 分发线程通过 slint::invoke_from_event_loop 通知 UI 线程立即 pump + render
-//!   - 彻底移除渲染轮询定时器，空闲状态下零渲染 CPU 占用
+//! 事件触发通知（仅激活会话）：
+//!   - 解析线程经 `ActiveSession`（AtomicU64）判断本会话是否激活，仅激活会话
+//!     `wake_tx.try_send(())` 唤醒渲染分发线程，再由 `invoke_from_event_loop`
+//!     调度 UI 线程渲染。非激活会话静默解析、不唤醒 UI，避免浪费 UI 线程资源。
 //!
 //! 所有权与线程模型：
-//!   - TerminalSession 拥有：master、writer、child、receiver、parser、state。
-//!   - parser 与 state 仅 UI 线程访问（SessionManager 在 RefCell 中）。
-//!   - reader move 进 Output Thread，线程绝不接触 Slint / state。
+//!   - TerminalSession 拥有：master、writer、child、output_thread 与
+//!     `Arc<Mutex<TerminalState>>`（与解析线程共享）。
+//!   - reader / parser / active_tracker / wake_tx move 进 Output Thread，
+//!     线程绝不接触 Slint / SessionManager。
 //!   - 关闭 Tab → Drop：kill child → wait → join thread → 释放资源。
 //!
 //! 跨线程边界：
-//!   PTY Output Thread ──(mpsc::Sender<Vec<u8>>)──> UI Thread (receiver → parser → state)
-//!   PTY Output Thread ──(SyncSender<()> 唤醒)──> 渲染分发线程 ──(invoke_from_event_loop)──> UI Thread
+//!   PTY Output Thread ──(vte 解析)→ Arc<Mutex<TerminalState>>
+//!   PTY Output Thread ──(active? wake_tx)──> 渲染分发线程 ──(invoke_from_event_loop)──> UI Thread
 
 use std::io::Read;
-use std::sync::mpsc::{self, SyncSender};
+use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
 use portable_pty::ChildKiller;
 
 use crate::profile::Profile;
+use crate::session::active::ActiveSession;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::TerminalState;
 
@@ -44,7 +49,8 @@ pub trait TerminalSessionLike {
     fn profile_name(&self) -> &str;
 }
 
-/// 终端会话，一个会话包括：PTY + 一个子进程 + 一个 vte Parser + 一个 TerminalState(含 ScreenBuffer)。
+/// 终端会话，一个会话包括：PTY + 一个子进程 + 一个 Output Thread（内含 vte 解析）。
+/// `TerminalState` 与解析线程通过 `Arc<Mutex<>>` 共享，UI 线程只读并渲染。
 pub struct TerminalSession {
     // 会话 id
     id: SessionId,
@@ -59,19 +65,13 @@ pub struct TerminalSession {
     master: Box<dyn portable_pty::MasterPty + Send>,
     // PTY 写入端：转发用户键盘输入。仅 UI 线程访问（&mut）。
     writer: Box<dyn std::io::Write + Send>,
-    // PTY 读取端：读取Shell结果显示到窗口，UI 线程 try_recv drain。
-    receiver: mpsc::Receiver<Vec<u8>>,
     // 子进程句柄：关闭时 kill + wait。
     child: Box<dyn portable_pty::Child + Send + Sync>,
     // Output Thread 句柄：关闭时 join。
     output_thread: Option<JoinHandle<()>>,
-    // VT 解析器（UI 线程独占）
-    parser: vte::Parser,
-    // 终端状态（含 ScreenBuffer，UI 线程独占）
-    state: TerminalState,
-    /// 脏标记：pump_output 解析到新数据、resize、屏幕切换后置 true。
-    /// App 层据此决定是否触发 build_runs + UI 刷新，避免无变更时的无效重绘。
-    dirty: bool,
+    // 终端状态（含 ScreenBuffer）：与 Output Thread 共享。
+    // UI 线程读脏行渲染 / resize，解析线程写状态，二者经 Mutex 串行化。
+    state: Arc<Mutex<TerminalState>>,
 }
 
 impl TerminalSession {
@@ -79,9 +79,18 @@ impl TerminalSession {
     ///
     /// `rows` / `cols` 为初始终端网格，由调用方根据当前主窗口实际尺寸计算得出，
     /// 确保 PTY 与 TerminalState 渲染层尺寸一致。
-    /// `wake_tx` 是渲染唤醒通道：Output Thread 每次写入 channel 后 `try_send(())`，
-    /// 由渲染分发线程经 `invoke_from_event_loop` 通知 UI 线程立即 pump + 渲染。
-    pub fn new(id: SessionId, profile: &Profile, title: String, rows: u16, cols: u16, wake_tx: SyncSender<()>, ) -> Result<Self> {
+    /// `wake_tx` 是渲染唤醒通道：Output Thread 仅在本会话激活时 `try_send(())`，
+    /// 由渲染分发线程经 `invoke_from_event_loop` 通知 UI 线程渲染。
+    /// `active_tracker` 是共享的激活会话追踪器，供解析线程判断是否唤醒。
+    pub fn new(
+        id: SessionId,
+        profile: &Profile,
+        title: String,
+        rows: u16,
+        cols: u16,
+        wake_tx: SyncSender<()>,
+        active_tracker: Arc<ActiveSession>,
+    ) -> Result<Self> {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
             .openpty(portable_pty::PtySize {
@@ -111,26 +120,37 @@ impl TerminalSession {
         let writer = pair.master.take_writer().context("take_writer failed")?;
         let reader = pair.master.try_clone_reader().context("try_clone_reader failed")?;
 
-        // Output thread：独立线程阻塞读 PTY，把字节块经 channel 送回 UI 线程。
-        // 线程只持有 reader + sender + wake_tx，不接触 Slint / SessionManager。
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        // 共享终端状态：解析线程写，UI 线程读。
+        let state = Arc::new(Mutex::new(TerminalState::new(rows as usize, cols as usize)));
+
+        // Output thread（兼作解析线程）：独立线程阻塞读 PTY，逐字节 vte 解析进 state。
+        // 解析完成后仅在本会话激活时唤醒 UI 线程。线程只持有 reader + parser +
+        // state(Arc) + active_tracker + wake_tx，不接触 Slint / SessionManager。
+        let state_for_thread = state.clone();
         let handle = thread::Builder::new()
             .name(format!("pty-output-{}", id.0))
             .spawn(move || {
                 let mut reader = reader;
+                let mut parser = vte::Parser::new();
                 let mut buf = [0u8; 8192];
                 loop {
                     match reader.read(&mut buf) {
                         // EOF：子进程已关闭
                         Ok(0) => break,
-                        // 正常读取字节块
+                        // 正常读取字节块：后台解析，不再占用 UI 线程
                         Ok(n) => {
-                            // 把数据写入管道，如果异常则退出
-                            if tx.send(buf[..n].to_vec()).is_err() {
-                                break;
+                            {
+                                let state = &mut *state_for_thread.lock().unwrap();
+                                for &b in &buf[..n] {
+                                    parser.advance(state, b);
+                                }
+                                // 标记有变更（含纯光标移动），供 UI 线程判定是否渲染
+                                state.mark_dirty();
                             }
-                            // 通知 UI 线程有数据待消费（SyncSender(1) 自动合并连续唤醒）
-                            let _ = wake_tx.try_send(());
+                            // 仅激活会话唤醒 UI 线程渲染；非激活会话静默保持状态最新
+                            if active_tracker.is_active(id) {
+                                let _ = wake_tx.try_send(());
+                            }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(std::time::Duration::from_millis(5));
@@ -152,10 +172,7 @@ impl TerminalSession {
             writer,
             child,
             output_thread: Some(handle),
-            receiver: rx,
-            parser: vte::Parser::new(),
-            state: TerminalState::new(rows as usize, cols as usize),
-            dirty: false,
+            state,
         })
     }
 
@@ -166,7 +183,7 @@ impl TerminalSession {
     }
 
     /// 调整 PTY 尺寸（rows/cols）并同步 ScreenBuffer。
-    /// 尺寸变更会导致 ScreenBuffer 内容重排，标记 dirty 触发重绘。
+    /// 尺寸变更会导致 ScreenBuffer 内容重排，`TerminalState::resize` 内部已置脏。
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let _ = self.master.resize(portable_pty::PtySize {
             rows,
@@ -174,39 +191,14 @@ impl TerminalSession {
             pixel_width: 0,
             pixel_height: 0,
         });
-        self.state.resize(rows as usize, cols as usize);
-        self.dirty = true;
+        self.state
+            .lock()
+            .unwrap()
+            .resize(rows as usize, cols as usize);
     }
 
-    /// 非阻塞 drain 当前会话所有待处理输出，并经 vte::Parser 解析进 TerminalState。
-    /// 返回是否解析到了新数据（用于上层脏标记判定）。
-    /// UI 线程在 Timer / 事件回调中调用。
-    pub fn pump_output(&mut self) -> bool {
-        let mut processed = false;
-        while let Ok(chunk) = self.receiver.try_recv() {
-            for &b in &chunk {
-                self.parser.advance(&mut self.state, b);
-            }
-            processed = true;
-        }
-        if processed {
-            self.dirty = true;
-        }
-        processed
-    }
-
-    /// 当前会话是否有未渲染的变更。
-    pub fn is_dirty(&self) -> bool {
-        self.dirty
-    }
-
-    /// 清除脏标记（在 UI 完成渲染后调用）。
-    pub fn clear_dirty(&mut self) {
-        self.dirty = false;
-    }
-
-    /// 只读访问终端状态（供渲染层构建 Cell 网格）。
-    pub fn state(&self) -> &TerminalState {
+    /// 终端状态的共享句柄（供渲染层只读 + 解析线程写）。
+    pub fn state(&self) -> &Arc<Mutex<TerminalState>> {
         &self.state
     }
 

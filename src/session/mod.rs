@@ -10,9 +10,11 @@
 //!   One Tab == One TerminalSession == One PTY + Child + Parser + State + ScreenBuffer
 //!   多个 TerminalSession 完全隔离，严禁共享上述任何资源。
 
+pub mod active;
 pub mod manager;
 pub mod session;
 pub mod session_id;
 
+pub use active::ActiveSession;
 pub use manager::SessionManager;
 pub use session::{TerminalSession, TerminalSessionLike};
