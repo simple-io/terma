@@ -24,17 +24,15 @@ use crate::terminal::cursor::Cursor;
 /// Alternate: 支持 TUI 模式，全屏文本界面，可在屏幕任意位置定位光标绘制, 例如：top、htop、vim 等
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveScreen {
-    Primary,
-    Alternate,
+    Primary,        // CLI 正常屏幕
+    Alternate,      // TUI 全屏文本界面
 }
 
-/// 终端默认前景/背景色（渲染层也会用到）
-pub const DEFAULT_FG: (u8, u8, u8) = (230, 230, 230);
-pub const DEFAULT_BG: (u8, u8, u8) = (12, 12, 12);
-
+/// 终端仿真状态机类型，维护终端网格、光标位置、屏幕缓冲区等状态信息
 pub struct TerminalState {
-    // 终端网格
+    // 终端网格行数
     pub rows: usize,
+    // 终端网格列数
     pub cols: usize,
     // 光标对象
     pub cursor: Cursor,
@@ -59,12 +57,11 @@ pub struct TerminalState {
     pub cursor_visible: bool,
     // Bracketed Paste 模式标志
     pub bracketed_paste: bool,
-    /// 脏标记：解析线程解析到新输出（含纯光标移动）后置 true，
-    /// UI 线程渲染完成后 clear。与 ScreenBuffer 的逐行 dirty_rows 互补：
-    /// dirty_rows 用于增量重建行，dirty 用于区分「有变更」与「完全无变更」。
+    // 脏标记用于区分「有变更」与「完全无变更」，解析后待渲染 True，完成渲染后置 False，避免无谓的 UI 重绘。
     dirty: bool,
 }
 
+/// 终端仿真状态机实现
 impl TerminalState {
     pub fn new(rows: usize, cols: usize) -> Self {
         Self {
@@ -222,9 +219,88 @@ impl TerminalState {
         self.cursor.col = c;
         self.pending_wrap = false;
     }
+
+    // 处理 SGR 参数, 也就是终端字符颜色
+    fn handle_sgr(&mut self, p: &[u16]) {
+        if p.is_empty() {
+            self.current_style = CellStyle::default();
+            return;
+        }
+        let mut i = 0;
+        while i < p.len() {
+            let v = p[i];
+            match v {
+                0 => self.current_style = CellStyle::default(),
+                1 => self.current_style.bold = true,
+                2 => { /* dim/faint 忽略 */ }
+                3 => self.current_style.italic = true,
+                4 => self.current_style.underline = true,
+                7 => self.current_style.inverse = true,
+                9 => { /* strikethrough 忽略 */ }
+                22 => self.current_style.bold = false,
+                23 => self.current_style.italic = false,
+                24 => self.current_style.underline = false,
+                27 => self.current_style.inverse = false,
+                29 => { /* strikethrough off 忽略 */ }
+                30..=37 => self.current_style.foreground = Color::Index((v - 30) as u8),
+                38 => {
+                    if let Some((c, consumed)) = parse_color(&p[i + 1..]) {
+                        self.current_style.foreground = c;
+                        i += consumed;
+                    }
+                }
+                39 => self.current_style.foreground = Color::Default,
+                40..=47 => self.current_style.background = Color::Index((v - 40) as u8),
+                48 => {
+                    if let Some((c, consumed)) = parse_color(&p[i + 1..]) {
+                        self.current_style.background = c;
+                        i += consumed;
+                    }
+                }
+                49 => self.current_style.background = Color::Default,
+                90..=97 => self.current_style.foreground = Color::Index((v - 90 + 8) as u8),
+                100..=107 => self.current_style.background = Color::Index((v - 100 + 8) as u8),
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    // 处理私有模式参数
+    fn set_private_mode(&mut self, p: &[u16], set: bool) {
+        for &v in p {
+            match v {
+                1049 | 1047 => {
+                    // Alternate Screen
+                    if set {
+                        if self.active == ActiveScreen::Primary {
+                            self.saved_cursor = Some(self.cursor);
+                            self.active = ActiveScreen::Alternate;
+                            self.alternate.clear();
+                            self.alternate.mark_all_rows_dirty();
+                            self.cursor = Cursor::new(0, 0);
+                            self.pending_wrap = false;
+                        }
+                    } else if self.active == ActiveScreen::Alternate {
+                        self.active = ActiveScreen::Primary;
+                        self.primary.mark_all_rows_dirty();
+                        if let Some(c) = self.saved_cursor.take() {
+                            self.cursor = c;
+                            self.clamp_cursor();
+                        }
+                        self.pending_wrap = false;
+                    }
+                }
+                25 => self.cursor_visible = set,
+                2004 => self.bracketed_paste = set,
+                _ => {}
+            }
+        }
+    }
+
 }
 
-/// 伪终端状态机, 实现 vte::Perform Trait 接口
+/// 伪终端状态机实现 vte::Perform Trait 接口
 impl Perform for TerminalState {
     /// 普通字符写入光标位置
     fn print(&mut self, c: char) {
@@ -275,31 +351,37 @@ impl Perform for TerminalState {
         }
 
         match c {
-            // 光标移动
+            // 向上移动光标
             'A' => {
+                // 向上移动光标
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.row = self.cursor.row.saturating_sub(n);
                 self.pending_wrap = false;
             }
+            // 向下移动光标
             'B' => {
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.row = (self.cursor.row + n).min(self.rows.saturating_sub(1));
                 self.pending_wrap = false;
             }
+            // 向右移动光标
             'C' => {
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.col = (self.cursor.col + n).min(self.cols.saturating_sub(1));
                 self.pending_wrap = false;
+            // 向左移动光标
             }
             'D' => {
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.col = self.cursor.col.saturating_sub(n);
                 self.pending_wrap = false;
+            // 向下移动光标并置行首
             }
             'E' => {
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.row = (self.cursor.row + n).min(self.rows.saturating_sub(1));
                 self.cursor.col = 0;
+            // 向上移动光标并置行首
                 self.pending_wrap = false;
             }
             'F' => {
@@ -474,84 +556,6 @@ impl Perform for TerminalState {
                 }
             }
             _ => {}
-        }
-    }
-}
-
-impl TerminalState {
-    fn handle_sgr(&mut self, p: &[u16]) {
-        if p.is_empty() {
-            self.current_style = CellStyle::default();
-            return;
-        }
-        let mut i = 0;
-        while i < p.len() {
-            let v = p[i];
-            match v {
-                0 => self.current_style = CellStyle::default(),
-                1 => self.current_style.bold = true,
-                2 => { /* dim/faint 忽略 */ }
-                3 => self.current_style.italic = true,
-                4 => self.current_style.underline = true,
-                7 => self.current_style.inverse = true,
-                9 => { /* strikethrough 忽略 */ }
-                22 => self.current_style.bold = false,
-                23 => self.current_style.italic = false,
-                24 => self.current_style.underline = false,
-                27 => self.current_style.inverse = false,
-                29 => { /* strikethrough off 忽略 */ }
-                30..=37 => self.current_style.foreground = Color::Index((v - 30) as u8),
-                38 => {
-                    if let Some((c, consumed)) = parse_color(&p[i + 1..]) {
-                        self.current_style.foreground = c;
-                        i += consumed;
-                    }
-                }
-                39 => self.current_style.foreground = Color::Default,
-                40..=47 => self.current_style.background = Color::Index((v - 40) as u8),
-                48 => {
-                    if let Some((c, consumed)) = parse_color(&p[i + 1..]) {
-                        self.current_style.background = c;
-                        i += consumed;
-                    }
-                }
-                49 => self.current_style.background = Color::Default,
-                90..=97 => self.current_style.foreground = Color::Index((v - 90 + 8) as u8),
-                100..=107 => self.current_style.background = Color::Index((v - 100 + 8) as u8),
-                _ => {}
-            }
-            i += 1;
-        }
-    }
-
-    fn set_private_mode(&mut self, p: &[u16], set: bool) {
-        for &v in p {
-            match v {
-                1049 | 1047 => {
-                    // Alternate Screen
-                    if set {
-                        if self.active == ActiveScreen::Primary {
-                            self.saved_cursor = Some(self.cursor);
-                            self.active = ActiveScreen::Alternate;
-                            self.alternate.clear();
-                            self.alternate.mark_all_rows_dirty();
-                            self.cursor = Cursor::new(0, 0);
-                            self.pending_wrap = false;
-                        }
-                    } else if self.active == ActiveScreen::Alternate {
-                        self.active = ActiveScreen::Primary;
-                        self.primary.mark_all_rows_dirty();
-                        if let Some(c) = self.saved_cursor.take() {
-                            self.cursor = c;
-                            self.clamp_cursor();
-                        }
-                        self.pending_wrap = false;
-                    }
-                }
-                25 => self.cursor_visible = set,
-                2004 => self.bracketed_paste = set,
-                _ => {}
-            }
         }
     }
 }

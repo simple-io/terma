@@ -118,19 +118,16 @@ impl TerminalSession {
 
         // 获取 pty 的 writer 和 reader
         let writer = pair.master.take_writer().context("take_writer failed")?;
-        let reader = pair.master.try_clone_reader().context("try_clone_reader failed")?;
+        let mut reader = pair.master.try_clone_reader().context("try_clone_reader failed")?;
 
-        // 共享终端状态：解析线程写，UI 线程读。
+        // 终端状态对象，用于解析线程写 和 UI 线程读。
         let state = Arc::new(Mutex::new(TerminalState::new(rows as usize, cols as usize)));
-
-        // Output thread（兼作解析线程）：独立线程阻塞读 PTY，逐字节 vte 解析进 state。
-        // 解析完成后仅在本会话激活时唤醒 UI 线程。线程只持有 reader + parser +
-        // state(Arc) + active_tracker + wake_tx，不接触 Slint / SessionManager。
         let state_for_thread = state.clone();
+
+        // 独立线程响应 pty 输出，逐字节 vte 解析进 state
         let handle = thread::Builder::new()
             .name(format!("pty-output-{}", id.0))
             .spawn(move || {
-                let mut reader = reader;
                 let mut parser = vte::Parser::new();
                 let mut buf = [0u8; 8192];
                 loop {

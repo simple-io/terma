@@ -3,7 +3,12 @@
 //! 支持 ANSI 16 色 / 256 色 / TrueColor。
 //! `Color::Default` 表示使用终端默认前景/背景（由渲染层决定）。
 
-/// 一个 Cell 的颜色。
+/// 终端默认前景色（渲染层也会用到）
+pub const DEFAULT_FG: (u8, u8, u8) = (230, 230, 230);
+/// 终端默认背景色（渲染层也会用到）
+pub const DEFAULT_BG: (u8, u8, u8) = (12, 12, 12);
+
+/// 一个 Cell 的颜色，通常表示一个可见字符的颜色
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Color {
     /// 终端默认色（前景或背景，由上下文决定）
@@ -27,18 +32,18 @@ impl Color {
 }
 
 /// 前景色 → RGB（Default 用 default_fg）
-pub fn fg_rgb(color: Color, default_fg: (u8, u8, u8)) -> (u8, u8, u8) {
+pub fn fg_rgb(color: Color) -> (u8, u8, u8) {
     match color {
-        Color::Default => default_fg,
+        Color::Default => DEFAULT_FG,
         Color::Index(i) => ansi256_to_rgb(i),
         Color::Rgb(r, g, b) => (r, g, b),
     }
 }
 
 /// 背景色 → RGB（Default 用 default_bg）
-pub fn bg_rgb(color: Color, default_bg: (u8, u8, u8)) -> (u8, u8, u8) {
+pub fn bg_rgb(color: Color) -> (u8, u8, u8) {
     match color {
-        Color::Default => default_bg,
+        Color::Default => DEFAULT_BG,
         Color::Index(i) => ansi256_to_rgb(i),
         Color::Rgb(r, g, b) => (r, g, b),
     }

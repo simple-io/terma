@@ -17,9 +17,10 @@ pub mod color;
 pub mod cursor;
 pub mod parser;
 pub mod state;
+pub mod control;
 
 pub use buffer::{Row, ScreenBuffer};
 pub use cell::{Cell, CellStyle};
 pub use color::Color;
 pub use cursor::Cursor;
-pub use state::{TerminalState, DEFAULT_BG, DEFAULT_FG};
+pub use state::{TerminalState};

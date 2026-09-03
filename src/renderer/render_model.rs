@@ -12,8 +12,8 @@
 //!   - `build_runs` 遍历所有行（全量重建，用于回退或初始化）
 
 use crate::terminal::cell::Cell;
-use crate::terminal::color::Color;
-use crate::terminal::state::{TerminalState, DEFAULT_BG, DEFAULT_FG};
+use crate::terminal::color::{Color, DEFAULT_BG, DEFAULT_FG};
+use crate::terminal::state::{TerminalState};
 
 /// 一个渲染运行：同行连续相同样式的字符段
 #[derive(Debug, Clone)]
@@ -88,7 +88,7 @@ pub fn build_row_runs(row: &[crate::terminal::cell::Cell], row_idx: usize) -> Ve
             continue;
         }
         let key = StyleKey::from_cell(cell);
-        let (fg, bg) = cell.resolved_colors(DEFAULT_FG, DEFAULT_BG);
+        let (fg, bg) = cell.resolved_colors();
         let has_bg = cell.background != Color::Default || cell.inverse;
         let start = c;
         let mut text = String::new();

@@ -153,7 +153,9 @@ impl App {
         app.apply_initial_window_size();
         // 创建默认会话（内部 create_session_for_profile 已 sync_tabs 并渲染）
         app.create_default_session();
+        // 设置 UI 回调函数
         app.bind_callbacks();
+        // 启动窗口 resize 定时器
         app.start_resize_timer();
 
         let weak = Rc::downgrade(&app);

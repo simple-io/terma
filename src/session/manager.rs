@@ -30,11 +30,13 @@ use crate::session::session_id::{IdGenerator, ProfileId, SessionId};
 use crate::terminal::TerminalState;
 
 pub struct SessionManager {
+    // 会话映射表
     sessions: HashMap<SessionId, TerminalSession>,
-    /// 插入顺序，用于 UI 按创建顺序展示 Tab
+    // 插入顺序，用于 UI 按创建顺序展示 Tab
     order: Vec<SessionId>,
-    /// 共享的激活会话追踪器（跨线程），切换/新建/关闭时同步更新
+    // 共享的激活会话追踪器（跨线程），切换/新建/关闭时同步更新
     active_tracker: Arc<ActiveSession>,
+    // id 生成器，确保不重复
     id_gen: IdGenerator,
 }
 
@@ -85,10 +87,12 @@ impl SessionManager {
         self.active_tracker.get()
     }
 
+    /// 返回激活会话引用（只读，供渲染）。
     pub fn active_session(&self) -> Option<&TerminalSession> {
         self.active_tracker.get().and_then(|id| self.sessions.get(&id))
     }
 
+    /// 返回激活会话 ID（只读，供渲染）。
     pub fn active_id(&self) -> Option<SessionId> {
         self.active_tracker.get()
     }
@@ -119,8 +123,6 @@ impl SessionManager {
     pub fn len(&self) -> usize {
         self.sessions.len()
     }
-
-    // ─── PTY I/O 接口 ───
 
     /// 向激活会话的 PTY 写入用户输入。
     pub fn write_to_active(&mut self, data: &[u8]) -> std::io::Result<()> {
