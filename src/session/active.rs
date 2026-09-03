@@ -29,10 +29,18 @@ impl ActiveSession {
 
     /// UI 线程更新当前激活会话（None 表示无激活会话）。
     pub fn set(&self, id: Option<SessionId>) {
-        self.active
-            .store(id.map(|i| i.0).unwrap_or(0), Ordering::Relaxed);
+        self.active.store(id.map(|i| i.0).unwrap_or(0), Ordering::Relaxed);
     }
 
+    pub fn get(&self) -> Option<SessionId> {
+        let id = self.active.load(Ordering::Relaxed);
+        if id == 0 {
+            None
+        } else {
+            Some(SessionId(id))
+        }
+    }
+    
     /// 解析线程查询：给定会话当前是否为激活会话。
     pub fn is_active(&self, id: SessionId) -> bool {
         id.0 != 0 && self.active.load(Ordering::Relaxed) == id.0

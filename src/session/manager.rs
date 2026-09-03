@@ -8,7 +8,7 @@
 //! 设计要点：
 //!   - 使用 HashMap<SessionId, TerminalSession> 保证 ID 稳定且 O(1) 查找
 //!   - 不复用已关闭的 ID（IdGenerator 单调递增）
-//!   - 切换 Tab 仅切换 active_session_id，绝不销毁/重建底层 Session
+//!   - 切换 Tab 仅切换 active_session_id，不销毁/重建底层 Session
 //!   - 关闭 Tab 时 remove session → Drop 自动 shutdown PTY/child/thread
 //!
 //! 线程模型：
@@ -33,7 +33,6 @@ pub struct SessionManager {
     sessions: HashMap<SessionId, TerminalSession>,
     /// 插入顺序，用于 UI 按创建顺序展示 Tab
     order: Vec<SessionId>,
-    active: Option<SessionId>,
     /// 共享的激活会话追踪器（跨线程），切换/新建/关闭时同步更新
     active_tracker: Arc<ActiveSession>,
     id_gen: IdGenerator,
@@ -44,7 +43,6 @@ impl SessionManager {
         Self {
             sessions: HashMap::new(),
             order: Vec::new(),
-            active: None,
             active_tracker: Arc::new(ActiveSession::new()),
             id_gen: IdGenerator::default(),
         }
@@ -56,14 +54,7 @@ impl SessionManager {
     /// `rows` / `cols` 为初始终端网格，调用方需根据当前主窗口实际尺寸计算，
     /// 使新会话与既有会话、渲染层保持尺寸一致。
     /// `wake_tx` 是渲染唤醒通道，透传给 Output Thread 用于事件触发式渲染。
-    pub fn create_session(
-        &mut self,
-        profile: &Profile,
-        title: String,
-        rows: u16,
-        cols: u16,
-        wake_tx: SyncSender<()>,
-    ) -> Result<SessionId> {
+    pub fn create_session(&mut self, profile: &Profile, title: String, rows: u16, cols: u16, wake_tx: SyncSender<()>) -> Result<SessionId> {
         let id = self.id_gen.next_session_id();
         let session = TerminalSession::new(
             id,
@@ -76,7 +67,6 @@ impl SessionManager {
         )?;
         self.sessions.insert(id, session);
         self.order.push(id);
-        self.active = Some(id);
         self.active_tracker.set(Some(id));
         Ok(id)
     }
@@ -85,30 +75,28 @@ impl SessionManager {
     /// 如果关闭的是激活会话，则自动切到相邻会话。
     pub fn close_session(&mut self, id: SessionId) -> Option<SessionId> {
         if self.sessions.remove(&id).is_none() {
-            return self.active;
+            return self.active_tracker.get();
         }
         self.order.retain(|s| *s != id);
 
-        if self.active == Some(id) {
-            self.active = self.order.first().copied();
-            self.active_tracker.set(self.active);
+        if self.active_tracker.get() == Some(id) {
+            self.active_tracker.set(self.order.first().copied());
         }
-        self.active
+        self.active_tracker.get()
     }
 
     pub fn active_session(&self) -> Option<&TerminalSession> {
-        self.active.and_then(|id| self.sessions.get(&id))
+        self.active_tracker.get().and_then(|id| self.sessions.get(&id))
     }
 
     pub fn active_id(&self) -> Option<SessionId> {
-        self.active
+        self.active_tracker.get()
     }
 
     /// 切换激活会话。不重建任何底层资源。同步更新共享追踪器，
     /// 使新激活会话的解析线程开始唤醒 UI，原会话解析线程停止唤醒。
     pub fn set_active_session(&mut self, id: SessionId) -> bool {
         if self.sessions.contains_key(&id) {
-            self.active = Some(id);
             self.active_tracker.set(Some(id));
             true
         } else {
@@ -136,7 +124,7 @@ impl SessionManager {
 
     /// 向激活会话的 PTY 写入用户输入。
     pub fn write_to_active(&mut self, data: &[u8]) -> std::io::Result<()> {
-        if let Some(id) = self.active {
+        if let Some(id) = self.active_tracker.get() {
             if let Some(s) = self.sessions.get_mut(&id) {
                 return s.write(data);
             }
@@ -146,7 +134,8 @@ impl SessionManager {
 
     /// 激活会话的终端状态共享句柄（只读，供渲染）。
     pub fn active_state(&self) -> Option<Arc<Mutex<TerminalState>>> {
-        self.active
+        self.active_tracker
+            .get()
             .and_then(|id| self.sessions.get(&id))
             .map(|s| s.state().clone())
     }
