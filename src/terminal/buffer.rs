@@ -238,7 +238,7 @@ impl ScreenBuffer {
     }
 
     /// 取可见行（grid），用于渲染
-    pub fn visible_rows(&self) -> &[Row] {
+    pub fn visible_rows(&self) -> &Vec<Row> {
         &self.grid
     }
 

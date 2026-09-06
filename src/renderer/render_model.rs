@@ -18,15 +18,26 @@ use crate::terminal::state::{TerminalState};
 /// 一个渲染运行：同行连续相同样式的字符段
 #[derive(Debug, Clone)]
 pub struct RunRender {
+    // 文本内容
     pub text: String,
+    // 行列用于绝对定位
     pub row: i32,
+    // 列用于绝对定位
     pub col: i32,
+    // 文本长度
     pub len: i32,
+    // 前景色
     pub fg: (u8, u8, u8),
+    // 背景色
     pub bg: (u8, u8, u8),
+    // 是否显式设置了背景色
     pub has_bg: bool,
+    // 样式标志
+    // 是否粗体、斜体、下划线
     pub bold: bool,
+    // 是否斜体
     pub italic: bool,
+    // 是否下划线
     pub underline: bool,
 }
 
@@ -78,7 +89,7 @@ pub fn build_runs(state: &TerminalState) -> Vec<RunRender> {
 }
 
 /// 由单行构建 Run 列表（增量渲染用，仅处理指定行）
-pub fn build_row_runs(row: &[crate::terminal::cell::Cell], row_idx: usize) -> Vec<RunRender> {
+pub fn build_row_runs(row: &Vec<Cell>, row_idx: usize) -> Vec<RunRender> {
     let mut runs = Vec::new();
     let mut c = 0;
     while c < row.len() {
@@ -87,20 +98,21 @@ pub fn build_row_runs(row: &[crate::terminal::cell::Cell], row_idx: usize) -> Ve
             c += 1;
             continue;
         }
-        let key = StyleKey::from_cell(cell);
         let (fg, bg) = cell.resolved_colors();
         let has_bg = cell.background != Color::Default || cell.inverse;
         let start = c;
         let mut text = String::new();
         text.push(cell.character);
         c += 1;
+        // 样式指纹
+        let style_key = StyleKey::from_cell(cell);
         // 合并后续相同样式（且非完全默认空白）的 Cell
         while c < row.len() {
             let nc = &row[c];
             if is_blank(nc) {
                 break;
             }
-            if StyleKey::from_cell(nc) != key {
+            if StyleKey::from_cell(nc) != style_key {
                 break;
             }
             text.push(nc.character);
@@ -115,9 +127,9 @@ pub fn build_row_runs(row: &[crate::terminal::cell::Cell], row_idx: usize) -> Ve
             fg,
             bg,
             has_bg,
-            bold: key.bold,
-            italic: key.italic,
-            underline: key.underline,
+            bold: style_key.bold,
+            italic: style_key.italic,
+            underline: style_key.underline,
         });
     }
     runs

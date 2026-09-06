@@ -5,5 +5,6 @@
 //! 空闲状态下完全跳过重建，大幅降低 CPU 占用。
 
 pub mod render_model;
+pub mod buffer;
 
 pub use render_model::{build_runs, build_row_runs, RunRender};

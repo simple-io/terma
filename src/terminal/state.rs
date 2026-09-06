@@ -339,11 +339,15 @@ impl Perform for TerminalState {
     }
 
     /// CSI 序列：光标移动 / 清屏 / 清行 / 滚动 / SGR / 私有模式
+    ///     params: 参数组，每个参数组内参数用 ; 或 : 分隔
+    ///     intermediates: 中介符，目前只处理 ? 表示私有模式
+    ///     c: 终端命令
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
         // 把参数扁平化为 u16 序列（同时兼容 ; 与 : 分隔，用于 SGR/定位）
         let p: Vec<u16> = params.iter().flat_map(|g| g.iter().copied()).collect();
         let private = intermediates.contains(&b'?');
 
+        // 定义参数获取宏
         macro_rules! param {
             ($i:expr, $def:expr) => {
                 p.get($i).copied().unwrap_or($def)
@@ -371,12 +375,14 @@ impl Perform for TerminalState {
                 self.pending_wrap = false;
             // 向左移动光标
             }
+            // 向左移动光标
             'D' => {
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.col = self.cursor.col.saturating_sub(n);
                 self.pending_wrap = false;
             // 向下移动光标并置行首
             }
+            // 光标下一行
             'E' => {
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.row = (self.cursor.row + n).min(self.rows.saturating_sub(1));
@@ -384,20 +390,24 @@ impl Perform for TerminalState {
             // 向上移动光标并置行首
                 self.pending_wrap = false;
             }
+            // 光标上一行
             'F' => {
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.row = self.cursor.row.saturating_sub(n);
                 self.cursor.col = 0;
                 self.pending_wrap = false;
             }
+            // 光标垂直移动到 <第 n>个位置
             'G' | '`' => {
                 let col1 = param!(0, 1).max(1);
                 self.set_cursor_col(col1 as usize - 1);
             }
+            // 光标水平移动到 <第 n>个位置
             'd' => {
                 let row1 = param!(0, 1).max(1);
                 self.set_cursor_row(row1 as usize - 1);
             }
+            // 光标移动到 <第 n>行 <第 m>列
             'H' | 'f' => {
                 let row1 = param!(0, 1).max(1);
                 let col1 = param!(1, 1).max(1);
@@ -434,19 +444,20 @@ impl Perform for TerminalState {
                 }
             }
 
-            // 滚动
+            // 向上滚动
             'S' => {
                 let n = param!(0, 1).max(1) as usize;
                 let (top, bottom) = (self.scroll_top, self.scroll_bottom);
                 self.screen_mut().scroll_up_region(top, bottom, n);
             }
+            // 向下滚动
             'T' => {
                 let n = param!(0, 1).max(1) as usize;
                 let (top, bottom) = (self.scroll_top, self.scroll_bottom);
                 self.screen_mut().scroll_down_region(top, bottom, n);
             }
 
-            // Scroll region（DECSTBM）
+            // 设置滚动区域，Scroll region（DECSTBM）
             'r' => {
                 let top1 = param!(0, 1).max(1) as usize;
                 let bot1 = param!(1, self.rows as u16).max(1) as usize;
@@ -537,19 +548,23 @@ impl Perform for TerminalState {
     }
 
     /// ESC 序列：光标移动 / 保存/恢复光标 / 滚动
+    ///     _intermediates: 中介符，目前只处理 ? 表示私有模式
+    ///     _ignore: 是否忽略该序列
+    ///     byte: 终端命令
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
         match byte {
-            b'M' => self.reverse_index(), // RI
+            // RI：Reverse Index，光标上移一行
+            b'M' => self.reverse_index(),
+            // RIS：完全复位
             b'c' => {
-                // RIS：完全复位
                 *self = TerminalState::new(self.rows, self.cols);
             }
+            // DECSC：Save Cursor，保存光标
             b'7' => {
-                // DECSC 保存光标
                 self.saved_cursor = Some(self.cursor);
             }
+            // DECRC：Restore Cursor，恢复光标
             b'8' => {
-                // DECRC 恢复光标
                 if let Some(c) = self.saved_cursor {
                     self.cursor = c;
                     self.clamp_cursor();

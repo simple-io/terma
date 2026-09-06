@@ -5,9 +5,7 @@
 //! 设计要点：
 //!   - `App` 用 `Rc` 包装，`SessionManager` / `last_size` 用 `RefCell` 提供内部可变性，
 //!     Slint 的 `'static` 回调闭包通过 `Weak<App>` 回访业务状态。
-//!   - PTY 输出在独立 Output Thread 中读取并完成 vte 解析；
-//!     仅激活会话经 `SyncSender(1)` 唤醒通道通知渲染分发线程，由后者
-//!     `invoke_from_event_loop` 调度 UI 线程渲染，实现低延迟事件触发式渲染，
+//!   - PTY 输出在独立 Output Thread 中读取并完成 vte use slint :: private_unstable_api :: re_exports as sp;     `invoke_from_event_loop` 调度 UI 线程渲染，实现低延迟事件触发式渲染，
 //!     彻底移除渲染轮询定时器。Slint 对象绝不跨线程，PTY 线程不接触 Slint。
 //!   - 非激活会话的输出在后台静默解析、不唤醒 UI 线程，避免浪费 UI 线程资源。
 //!   - 渲染采用脏标记（Dirty）+ 脏行标记（Dirty Rows）+ 按行缓存（Per-Row Cache）：
@@ -43,6 +41,7 @@ mod ui_generated {
     slint::include_modules!();
 }
 
+use crate::renderer::buffer::RenderCache;
 pub use ui_generated::{CellRun, MainWindow, ProfileInfo, TabInfo};
 
 /// 窗口 resize 轮询间隔（仅检测尺寸变化，与渲染解耦；PTY 输出采用事件驱动，不再定时驱动渲染）
@@ -110,6 +109,8 @@ pub struct App {
     resize_timer: slint::Timer,
     // 按行渲染缓存（增量渲染核心）
     row_cache: RefCell<RowRenderCache>,
+    // 渲染缓存：用于存储上一帧的渲染结果，避免重复渲染
+    render_cache: RenderCache,
     // PTY 输出唤醒通道发送端：新建会话时 clone 给对应 Output Thread
     wake_tx: SyncSender<()>,
     // PTY 输出唤醒通道接收端：渲染分发线程经此通道接收唤醒信号
@@ -141,6 +142,7 @@ impl App {
             last_size: Cell::new((0, 0)),
             resize_timer: slint::Timer::default(),
             row_cache: RefCell::new(RowRenderCache::new()),
+            render_cache: RenderCache::new(),
             wake_tx,
             wake_rx: Arc::new(Mutex::new(wake_rx)),
         });
@@ -266,66 +268,21 @@ impl App {
 
         // 锁状态快照：取脏行 + 光标信息，克隆脏行后立即释放锁，
         // 避免在持锁期间执行 build_row_runs 阻塞解析线程。
-        let mut guard = state.lock().unwrap();
+        let guard = state.lock().unwrap();
         if !guard.is_dirty() {
             // 无变更（可能是残余唤醒），直接跳过
             return;
         }
-        let dirty_rows = guard.take_dirty_rows();
-        let cursor_row = guard.cursor.row as i32;
-        let cursor_col = guard.cursor.col as i32;
-        let cursor_visible = guard.cursor_visible;
-        let visible = guard.screen().visible_rows();
-        let num_rows = visible.len();
-        let snapshots: Vec<(usize, Vec<TerminalCell>)> = dirty_rows
-            .iter()
-            .filter(|&&r| r < num_rows)
-            .map(|&r| (r, visible[r].clone()))
-            .collect();
-        guard.clear_dirty();
-        drop(guard);
 
-        // 对脏行重建 runs（锁外），未变更行复用缓存
-        let mut cache = self.row_cache.borrow_mut();
-        for (row_idx, row) in snapshots {
-            cache.rows.insert(row_idx, build_row_runs(&row, row_idx));
-        }
-
-        // 组装所有行的 runs → CellRun
-        let mut all_runs: Vec<RunRender> = Vec::new();
-        for r in 0..num_rows {
-            if let Some(row_runs) = cache.rows.get(&r) {
-                all_runs.extend(row_runs.iter().cloned());
-            }
-        }
-
-        let cells: Vec<CellRun> = all_runs
-            .into_iter()
-            .map(|r| CellRun {
-                text: r.text.into(),
-                row: r.row,
-                col: r.col,
-                len: r.len,
-                fg: slint::Brush::SolidColor(slint::Color::from_rgb_u8(r.fg.0, r.fg.1, r.fg.2)),
-                bg: slint::Brush::SolidColor(slint::Color::from_rgb_u8(r.bg.0, r.bg.1, r.bg.2)),
-                has_bg: r.has_bg,
-                bold: r.bold,
-                italic: r.italic,
-                underline: r.underline,
-            })
-            .collect();
-
-        // 仅在内容变更时更新 Slint Model（避免无效 set_vec 开销）
-        if cache.prev_cells != cells {
-            self.cells_model.set_vec(cells.clone());
-            cache.prev_cells = cells;
-        }
+        // 增量渲染：仅对脏行调用 build_row_runs，未变更行复用缓存
+        self.render_cache.update(guard.take_dirty_rows(), guard.screen().visible_rows());
+        let cells = self.render_cache.build_cell_runs();
+        self.cells_model.set_vec(cells);
 
         // 光标属性始终更新（开销极低）
-        drop(cache);
-        self.main_window.set_cursor_row(cursor_row);
-        self.main_window.set_cursor_col(cursor_col);
-        self.main_window.set_cursor_visible(cursor_visible);
+        self.main_window.set_cursor_row(guard.cursor.row as i32);
+        self.main_window.set_cursor_col(guard.cursor.col as i32);
+        self.main_window.set_cursor_visible(guard.cursor_visible);
     }
 
     // 窗口 resize 轮询：仅检测尺寸变化并同步 PTY；变化会置脏标记，随后按需渲染。

@@ -9,15 +9,26 @@
 //   out: callback clicked()
 
 export struct CellRun {
+    // 文本内容、行号、列号、长度、前景色、背景色、是否有背景色、粗体、斜体、下划线
+    // 文本内容
     text: string,
+    // 行号
     row: int,
+    // 列号
     col: int,
+    // 文本长度
     len: int,
+    // 前景色
     fg: brush,
+    // 背景色
     bg: brush,
+    // 是否有背景色
     has-bg: bool,
+    // 是否粗体
     bold: bool,
+    // 是否斜体
     italic: bool,
+    // 是否下划线
     underline: bool,
 }
 
@@ -35,7 +46,7 @@ export component TerminalView inherits Rectangle {
     background: #0c0c0c;
 
     // 光标块（半透明高亮）
-    if root.cursor-visible : Rectangle {
+    if root.cursor-visible: Rectangle {
         x: root.cursor-col * root.char-w;
         y: root.cursor-row * root.char-h;
         width: root.char-w;
@@ -44,7 +55,7 @@ export component TerminalView inherits Rectangle {
     }
 
     // 字符 Run 列表
-    for cell in root.cells : Rectangle {
+    for cell in root.cells: Rectangle {
         x: cell.col * root.char-w;
         y: cell.row * root.char-h;
         width: cell.len * root.char-w;
@@ -62,7 +73,7 @@ export component TerminalView inherits Rectangle {
         }
 
         // 下划线
-        if cell.underline : Rectangle {
+        if cell.underline: Rectangle {
             y: parent.height - 2px;
             width: parent.width;
             height: 1px;
