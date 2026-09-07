@@ -40,6 +40,13 @@ export component TabBar inherits HorizontalLayout {
         background: tab.active ? #2d2d2d : (self-touch.has-hover ? #252525 : #1f1f1f);
         border-radius: 6px;
 
+        // 整个 Tab 的点击区域（置于底层，关闭按钮在其上方拦截点击）
+        self-touch := TouchArea {
+            clicked => {
+                root.select-tab(tab.id);
+            }
+        }
+
         HorizontalLayout {
             padding-left: 12px;
             padding-right: 6px;
@@ -78,13 +85,6 @@ export component TabBar inherits HorizontalLayout {
                         vertical-alignment: center;
                     }
                 }
-            }
-        }
-
-        // 整个 Tab 的点击区域（排除关闭按钮区域）
-        self-touch := TouchArea {
-            clicked => {
-                root.select-tab(tab.id);
             }
         }
     }

@@ -315,6 +315,10 @@ impl App {
                 // 关闭后激活会话可能切换，清空按行缓存再强制渲染新激活会话
                 app.row_cache.borrow_mut().clear();
                 app.sync_tabs();
+                // 关闭的是最后一个会话（管理器已无会话）→ 退出整个应用
+                if app.sessions.borrow().is_empty() {
+                    let _ = slint::quit_event_loop();
+                }
             }
         });
 
