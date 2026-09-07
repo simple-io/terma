@@ -391,9 +391,13 @@ impl App {
 
     /// 按目标终端网格设置主窗口初始尺寸（物理像素），供启动时创建首个会话使用。
     fn apply_initial_window_size(&self) {
-        let win = self.main_window.window();
-        let logical = grid_to_logical_size(DEFAULT_ROWS, DEFAULT_COLS);
-        win.set_size(slint::WindowSize::Logical(logical));
+        let logical = slint::LogicalSize::new(
+            (DEFAULT_COLS as i32 * CHAR_W + H_PADDING) as f32,
+            (DEFAULT_ROWS as i32 * CHAR_H + CHROME_H + V_PADDING) as f32,
+        );
+        self.main_window
+            .window()
+            .set_size(slint::WindowSize::Logical(logical));
     }
 
     /// 当前主窗口对应的终端网格（rows, cols）。
@@ -430,15 +434,13 @@ fn grid_to_logical_size(rows: u16, cols: u16) -> slint::LogicalSize {
 
 /// 由窗口当前物理尺寸推导终端网格（rows, cols）。
 fn compute_grid(win: &slint::Window) -> Option<(u16, u16)> {
-    let phys = win.size();
     let scale = win.scale_factor();
     if scale <= 0.0 {
         return None;
     }
-    let lw = (phys.width as f64 / scale as f64) as i32;
-    let lh = (phys.height as f64 / scale as f64) as i32;
-    let term_w = lw - H_PADDING;
-    let term_h = lh - CHROME_H - V_PADDING;
+    let logical = win.size().to_logical(scale);
+    let term_w = logical.width as i32 - H_PADDING;
+    let term_h = logical.height as i32 - CHROME_H - V_PADDING;
     if term_w <= 0 || term_h <= 0 {
         return None;
     }
