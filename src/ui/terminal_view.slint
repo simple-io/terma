@@ -48,6 +48,11 @@ export component TerminalView inherits Rectangle {
     // 滚动条的大小, 按照窗口高度比例计算（历史 + 当前屏），用于计算滚动条滑块高度
     in property <float> viewport-ratio: 1;
 
+    // ─── 滚动条显隐（自动隐藏机制） ───
+    // 滚动条默认隐藏，仅在滚动交互（滚轮 / 拖动 / 点击滚动条）时短暂显示；
+    // 每次交互重置 3 秒计时，超时自动隐藏。此状态由 UI 层独立管理，无需 Rust 侧介入。
+    property <bool> scrollbar-visible: false;
+
     callback key-pressed(string, KeyboardModifiers) -> bool;
     callback clicked();
     // 鼠标滚轮滚动：参数为竖直方向滚动量（像素，正 = 向上滚入历史）
@@ -56,6 +61,24 @@ export component TerminalView inherits Rectangle {
     callback scroll-to(float);
 
     background: #0c0c0c;
+
+    // 显示滚动条并重置 3 秒自动隐藏计时（滚动交互时调用）
+    function show-scrollbar() {
+        root.scrollbar-visible = true;
+        // 重置 3 秒自动隐藏倒计时：先停后启，确保每次滚动交互都从头计时
+        hide-timer.stop();
+        hide-timer.start();
+    }
+
+    // 3 秒无滚动交互后自动隐藏滚动条
+    hide-timer := Timer {
+        interval: 3s;
+        running: false;
+        triggered => {
+            root.scrollbar-visible = false;
+            self.running = false;
+        }
+    }
 
     // 光标块（半透明高亮）
     if root.cursor-visible: Rectangle {
@@ -117,25 +140,30 @@ export component TerminalView inherits Rectangle {
         // 鼠标滚轮：滚入/滚出历史
         scroll-event(event) => {
             root.scroll-delta(event.delta-y);
+            root.show-scrollbar();
             accept
         }
     }
 
-    // 右侧滚动条（有历史内容时显示）
-    if root.has-scrollback: scrollbar := Rectangle {
+    // 右侧滚动条（有历史内容且滚动交互后短暂显示，3 秒无交互自动隐藏）
+    if root.has-scrollback && root.scrollbar-visible: scrollbar := Rectangle {
         y: 0px;
         x: parent.width - 12px;
-        width: 10px;
+        width: 8px;
         height: parent.height - 10px;
+        // 轨道保持透明，避免遮挡下方终端文字（仅滑块着色）
+        background: transparent;
+        // border-width: 1px;
+        // border-color: #8885;
 
         // 滚动条滑块的长度
         property <length> thumb-height: max(16px, self.height * root.viewport-ratio);
         // 滚动条滑块的位置
         property <length> thumb-y: (self.height - self.thumb-height) * (1.0 - root.scroll-ratio);
 
-        // 滚动条滑块
+        // 滚动条滑块（低不透明度，重叠时尽量不遮挡文字）
         thumb := Rectangle {
-            x: 2px;
+            x: 1px;
             width: 6px;
             height: parent.thumb-height;
             y: parent.thumb-y;
@@ -150,16 +178,19 @@ export component TerminalView inherits Rectangle {
             pointer-event(event) => {
                 if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
                     root.scroll-to(scrollbar.ratio-from-y(self.mouse-y));
+                    root.show-scrollbar();
                 }
             }
             moved => {
                 if (self.pressed) {
                     root.scroll-to(scrollbar.ratio-from-y(self.mouse-y));
+                    root.show-scrollbar();
                 }
             }
             // 滚动条上滚轮同样生效
             scroll-event(event) => {
                 root.scroll-delta(event.delta-y);
+                root.show-scrollbar();
                 accept
             }
         }
