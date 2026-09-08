@@ -40,8 +40,20 @@ export component TerminalView inherits Rectangle {
     in property <length> char-w: 8px;
     in property <length> char-h: 16px;
 
+    // ─── 滚动（scrollback 历史查看） ───
+    // 是否显示滚动条
+    in property <bool> has-scrollback;
+    // 滚动条的位置, 按照比例模式计算：0 = 底部（最新），1 = 顶部（最老历史）
+    in property <float> scroll-ratio: 0;
+    // 滚动条的大小, 按照窗口高度比例计算（历史 + 当前屏），用于计算滚动条滑块高度
+    in property <float> viewport-ratio: 1;
+
     callback key-pressed(string, KeyboardModifiers) -> bool;
     callback clicked();
+    // 鼠标滚轮滚动：参数为竖直方向滚动量（像素，正 = 向上滚入历史）
+    callback scroll-delta(length);
+    // 滚动条拖动/点击：参数为目标位置比例（0 = 底部，1 = 顶部）
+    callback scroll-to(float);
 
     background: #0c0c0c;
 
@@ -65,7 +77,7 @@ export component TerminalView inherits Rectangle {
         Text {
             text: cell.text;
             color: cell.fg;
-            font-family: "Menlo";
+            font-family: "Monaco";
             font-size: 13px;
             font-weight: cell.bold ? 700 : 400;
             horizontal-alignment: left;
@@ -101,6 +113,66 @@ export component TerminalView inherits Rectangle {
         clicked => {
             focus-scope.focus();
             root.clicked();
+        }
+        // 鼠标滚轮：滚入/滚出历史
+        scroll-event(event) => {
+            root.scroll-delta(event.delta-y);
+            accept
+        }
+    }
+
+    // 右侧滚动条（有历史内容时显示）
+    if root.has-scrollback: scrollbar := Rectangle {
+        y: 0px;
+        x: parent.width - 12px;
+        width: 10px;
+        height: parent.height - 10px;
+
+        // 滚动条滑块的长度
+        property <length> thumb-height: max(16px, self.height * root.viewport-ratio);
+        // 滚动条滑块的位置
+        property <length> thumb-y: (self.height - self.thumb-height) * (1.0 - root.scroll-ratio);
+
+        // 滚动条滑块
+        thumb := Rectangle {
+            x: 2px;
+            width: 6px;
+            height: parent.thumb-height;
+            y: parent.thumb-y;
+            border-radius: 4px;
+            background: #888a;
+        }
+
+        // 拖动手势区：点击跳转 + 拖动滚动
+        touch := TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => {
+                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    root.scroll-to(scrollbar.ratio-from-y(self.mouse-y));
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    root.scroll-to(scrollbar.ratio-from-y(self.mouse-y));
+                }
+            }
+            // 滚动条上滚轮同样生效
+            scroll-event(event) => {
+                root.scroll-delta(event.delta-y);
+                accept
+            }
+        }
+
+        // 由鼠标 y 坐标换算滚动比例（0 = 底部，1 = 顶部），滑块中心对齐光标
+        function ratio-from-y(y: length) -> float {
+            let track = parent.height;
+            let th = self.thumb-height;
+            if (track <= th) {
+                return 0;
+            }
+            let clamped = max(0px, min(y - th / 2, track - th));
+            return 1.0 - (clamped / (track - th));
         }
     }
 }

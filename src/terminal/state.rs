@@ -482,6 +482,7 @@ impl Perform for TerminalState {
                     self.screen_mut().scroll_down_region(r, bottom, n);
                 }
             }
+            // 删除行（区域内）
             'M' => {
                 let n = param!(0, 1).max(1) as usize;
                 let r = self.cursor.row;

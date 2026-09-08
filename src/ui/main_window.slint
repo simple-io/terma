@@ -39,6 +39,10 @@ export component MainWindow inherits Window {
     in-out property <int> cursor-col;
     in-out property <bool> cursor-visible;
     in-out property <bool> profile-menu-visible: false;
+    // 滚动（scrollback 历史查看）
+    in-out property <bool> has-scrollback;
+    in-out property <float> scroll-ratio;
+    in-out property <float> viewport-ratio;
 
     // ─── 回调（Rust 侧绑定处理逻辑） ───
     callback new-tab();
@@ -47,6 +51,9 @@ export component MainWindow inherits Window {
     callback select-profile(string);
     callback key-pressed(string, KeyboardModifiers) -> bool;
     callback terminal-clicked();
+    // 滚动交互：滚轮与滚动条
+    callback scroll-delta(length);
+    callback scroll-to(float);
 
     VerticalLayout {
         // Tab 栏
@@ -73,11 +80,20 @@ export component MainWindow inherits Window {
             cursor-row: root.cursor-row;
             cursor-col: root.cursor-col;
             cursor-visible: root.cursor-visible;
+            has-scrollback: root.has-scrollback;
+            scroll-ratio: root.scroll-ratio;
+            viewport-ratio: root.viewport-ratio;
             key-pressed(text, mods) => {
                 root.key-pressed(text, mods)
             }
             clicked => {
                 root.terminal-clicked();
+            }
+            scroll-delta(dy) => {
+                root.scroll-delta(dy)
+            }
+            scroll-to(ratio) => {
+                root.scroll-to(ratio)
             }
         }
     }

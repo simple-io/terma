@@ -11,6 +11,7 @@
 //!   - `build_row_runs` 仅处理单行，供控制器按行缓存、仅重建脏行
 //!   - `build_runs` 遍历所有行（全量重建，用于回退或初始化）
 
+use crate::terminal::buffer::ScreenBuffer;
 use crate::terminal::cell::Cell;
 use crate::terminal::color::{Color, DEFAULT_BG, DEFAULT_FG};
 use crate::terminal::state::{TerminalState};
@@ -84,6 +85,31 @@ pub fn build_runs(state: &TerminalState) -> Vec<RunRender> {
 
     for (r, row) in rows.iter().enumerate() {
         runs.extend(build_row_runs(row, r));
+    }
+    runs
+}
+
+/// 构建「滚动视图」的 Run 列表：根据 `offset`（从底部向上滚动的行数）
+/// 把 scrollback 历史行与 grid 当前可见行拼接，RunRender 的行号为视口行号（0..rows）。
+///
+/// 拼接规则：视口第 i 行（0-based）的内容来源
+///   - i < offset              → scrollback[scrollback.len() - offset + i]（历史行）
+///   - i >= offset             → grid[i - offset]（当前屏行）
+pub fn build_viewport_runs(screen: &ScreenBuffer, offset: usize) -> Vec<RunRender> {
+    let rows = screen.rows;
+    let scrollback = &screen.scrollback;
+    let grid = &screen.grid;
+    // 防御性 clamp：正常情况下调用方已保证 offset <= scrollback.len()
+    let offset = offset.min(scrollback.len());
+
+    let mut runs = Vec::new();
+    for viewport_row in 0..rows {
+        let source = if viewport_row < offset {
+            &scrollback[scrollback.len() - offset + viewport_row]
+        } else {
+            &grid[viewport_row - offset]
+        };
+        runs.extend(build_row_runs(source, viewport_row));
     }
     runs
 }

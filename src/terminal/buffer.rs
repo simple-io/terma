@@ -53,7 +53,7 @@ impl ScreenBuffer {
             cols,
             grid: new_grid(rows, cols),
             scrollback: Vec::new(),
-            scrollback_limit: 10_000,
+            scrollback_limit: rows * 5,
             dirty_rows: RefCell::new(Vec::new()),
         }
     }
@@ -123,7 +123,13 @@ impl ScreenBuffer {
     }
 
     /// 清除从 (start_row,start_col) 到 (end_row,end_col) 含端点的区域
-    pub fn clear_range(&mut self, start_row: usize, start_col: usize, end_row: usize, end_col: usize) {
+    pub fn clear_range(
+        &mut self,
+        start_row: usize,
+        start_col: usize,
+        end_row: usize,
+        end_col: usize,
+    ) {
         for r in start_row..=end_row.min(self.rows.saturating_sub(1)) {
             let c_start = if r == start_row { start_col } else { 0 };
             let c_end = if r == end_row {

@@ -7,4 +7,5 @@
 pub mod render_model;
 pub mod buffer;
 
-pub use render_model::{build_runs, build_row_runs, RunRender};
+pub use render_model::{build_runs, build_row_runs, build_viewport_runs, RunRender};
+pub use buffer::runs_to_cell_runs;

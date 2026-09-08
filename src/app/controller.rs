@@ -31,11 +31,12 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use crate::profile::{Profile, ProfileManager};
-use crate::renderer::{RunRender, build_row_runs};
+use crate::renderer::{RunRender, build_viewport_runs, runs_to_cell_runs};
 use crate::session::SessionManager;
 use crate::session::session::TerminalSessionLike;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::Cell as TerminalCell;
+use crate::terminal::TerminalState;
 
 mod ui_generated {
     slint::include_modules!();
@@ -115,6 +116,13 @@ pub struct App {
     wake_tx: SyncSender<()>,
     // PTY 输出唤醒通道接收端：渲染分发线程经此通道接收唤醒信号
     wake_rx: Arc<Mutex<Receiver<()>>>,
+    // 滚动偏移量：从底部向上滚动的行数（0 = 跟随最新输出）
+    scroll_offset: Cell<usize>,
+    // 上次设置 scroll_offset 时 scrollback 的长度，用于滚动状态下冻结视图：
+    // 新历史行到达时把偏移量同步下移，保持用户正在查看的内容不动。
+    anchor_len: Cell<usize>,
+    // 滚轮像素累加器：累积满一个字符行高（CHAR_H）才触发一次整行滚动
+    scroll_acc: Cell<f32>,
 }
 
 impl App {
@@ -145,6 +153,9 @@ impl App {
             render_cache: RenderCache::new(),
             wake_tx,
             wake_rx: Arc::new(Mutex::new(wake_rx)),
+            scroll_offset: Cell::new(0),
+            anchor_len: Cell::new(0),
+            scroll_acc: Cell::new(0.0),
         });
 
         // 加载配置文件
@@ -247,42 +258,164 @@ impl App {
 
     // 增量渲染：仅对脏行调用 build_row_runs，未变更行复用缓存。
     // 利用 TerminalState 的 dirty 标记 + ScreenBuffer 的 dirty_rows 追踪 +
-    // RowRenderCache 按行缓存，将 O(全屏行数) 的 build_runs 降低到 O(脏行数)。
+    // RenderCache 按行缓存，将 O(全屏行数) 的 build_runs 降低到 O(脏行数)。
     //
     // 解析已在 Output Thread 完成，这里只读状态并渲染：
     // 锁状态快照脏行与光标 → 克隆脏行释放锁 → 锁外重建 runs → 更新 Slint Model。
+    //
+    // 该入口受脏标记守护（PTY 输出 / resize / Tab 切换触发）；滚动偏移变化走 render_viewport。
     fn render(&self) {
         let state = match self.sessions.borrow().active_state() {
             Some(s) => s,
             None => {
-                // 无激活会话 → 清空
-                let mut cache = self.row_cache.borrow_mut();
-                if !cache.prev_cells.is_empty() {
-                    cache.clear();
-                    self.cells_model.set_vec(Vec::new());
-                }
-                self.main_window.set_cursor_visible(false);
+                self.clear_view();
                 return;
             }
         };
 
-        // 锁状态快照：取脏行 + 光标信息，克隆脏行后立即释放锁，
-        // 避免在持锁期间执行 build_row_runs 阻塞解析线程。
         let guard = state.lock().unwrap();
         if !guard.is_dirty() {
             // 无变更（可能是残余唤醒），直接跳过
             return;
         }
+        self.render_locked(&guard);
+    }
 
-        // 增量渲染：仅对脏行调用 build_row_runs，未变更行复用缓存
-        self.render_cache.update(guard.take_dirty_rows(), guard.screen().visible_rows());
-        let cells = self.render_cache.build_cell_runs();
+    // 滚动渲染入口：滚动偏移变化时强制重绘（此时终端状态可能不脏，不能走 is_dirty 守卫）。
+    fn render_viewport(&self) {
+        let state = match self.sessions.borrow().active_state() {
+            Some(s) => s,
+            None => {
+                self.clear_view();
+                return;
+            }
+        };
+        let guard = state.lock().unwrap();
+        self.render_locked(&guard);
+    }
+
+    // 无激活会话时清空视图与滚动状态。
+    fn clear_view(&self) {
+        self.row_cache.borrow_mut().clear();
+        self.render_cache.clear();
+        self.cells_model.set_vec(Vec::new());
+        self.main_window.set_cursor_visible(false);
+        self.scroll_offset.set(0);
+        self.anchor_len.set(0);
+    }
+
+    // 实际渲染：根据 scroll_offset 决定走「跟随模式（增量缓存）」还是「滚动模式（视口拼接）」。
+    fn render_locked(&self, guard: &std::sync::MutexGuard<'_, TerminalState>) {
+        let screen = guard.screen();
+        let sb_len = screen.scrollback.len();
+
+        // 冻结内容，滚动状态下新历史行到达时，把偏移量随底部下移，保持用户正在查看的内容不动。
+        let offset = {
+            let current_offset = self.scroll_offset.get();
+            if current_offset > 0 {
+                let grew = sb_len.saturating_sub(self.anchor_len.get());
+                (current_offset + grew).min(sb_len)
+            } else {
+                0
+            }
+        };
+        self.scroll_offset.set(offset);
+        self.anchor_len.set(sb_len);
+
+        let cells = if offset == 0 {
+            // 跟随模式：仅重建脏行，未变更行复用缓存
+            self.render_cache
+                .update(guard.take_dirty_rows(), screen.visible_rows());
+            self.render_cache.build_cell_runs()
+        } else {
+            // 滚动模式：全量重建视口（scrollback 历史 + 当前屏拼接），丢弃脏行标记
+            let _ = guard.take_dirty_rows();
+            runs_to_cell_runs(&build_viewport_runs(screen, offset))
+        };
         self.cells_model.set_vec(cells);
 
-        // 光标属性始终更新（开销极低）
-        self.main_window.set_cursor_row(guard.cursor.row as i32);
-        self.main_window.set_cursor_col(guard.cursor.col as i32);
-        self.main_window.set_cursor_visible(guard.cursor_visible);
+        // 光标：滚动状态下隐藏（实时光标位于视口之外）
+        if offset == 0 {
+            self.main_window.set_cursor_row(guard.cursor.row as i32);
+            self.main_window.set_cursor_col(guard.cursor.col as i32);
+            self.main_window.set_cursor_visible(guard.cursor_visible);
+        } else {
+            self.main_window.set_cursor_visible(false);
+        }
+
+        // 滚动条状态（无历史时隐藏滚动条）
+        self.main_window.set_has_scrollback(sb_len > 0);
+        if sb_len > 0 {
+            // 滚动条的位置 = offset / sb_len。0 = 底部（最新），1 = 顶部（最老历史）
+            self.main_window.set_scroll_ratio(offset as f32 / sb_len as f32);
+            // 滑块大小比例 = 可见行数 / 总行数（scrollback + 可见行），控制滚动条滑块的视觉长度——历史越长，滑块越短。max(1) 防止除零
+            let rows = screen.rows.max(1);
+            self.main_window.set_viewport_ratio(rows as f32 / (sb_len + rows) as f32);
+        }
+    }
+
+    // 滚轮滚动触发执行，按行数滚动：正 = 向上（进入历史），负 = 向下（回到最新）。
+    // 滚动像素级累加，累积满一个字符行高（CHAR_H）触发一次整行滚动。
+    fn scroll_offset_by(&self, dy: f32) {
+        let mut acc = self.scroll_acc.get() + dy;
+        let mut lines: i64 = 0;
+        while acc >= CHAR_H as f32 {
+            // 向上滚动
+            acc -= CHAR_H as f32;
+            lines += 1;
+        }
+        while acc <= -(CHAR_H as f32) {
+            // 向下滚动
+            acc += CHAR_H as f32;
+            lines -= 1;
+        }
+
+        self.scroll_acc.set(acc);
+        if lines != 0 {
+            // 如果滚动超过一个行高度，就重绘窗口
+            let sb_len = self.scrollback_len();
+            let cur = self.scroll_offset.get() as i64;
+            // 当前滚动位置加上要滚动的行数，得到新目标行位置，使用 clamp 确保 offset 在 [0, sb_len] 范围内，
+            let offset = (cur + lines).clamp(0, sb_len as i64) as usize;
+            self.commit_scroll(offset, sb_len);
+        }
+    }
+
+     // 滚动条跳转：ratio ∈ [0,1]（0 = 底部，1 = 顶部）。
+    fn scroll_offset_to(&self, ratio: f32) {
+        let sb_len = self.scrollback_len();
+        let offset = (ratio.clamp(0.0, 1.0) * sb_len as f32).round() as usize;
+        self.commit_scroll(offset, sb_len);
+    }
+
+    // 设置新的滚动偏移量(scroll_offset)，更新偏移与锚点，并按需重绘
+    //  scroll_offset == 0，跟随模式，查看最新数据
+    //  scroll_offset >  0，滚动模式，查看历史数据
+    fn commit_scroll(&self, offset: usize, sb_len: usize) {
+        let offset = offset.min(sb_len);
+        let prev = self.scroll_offset.get();
+        if offset == prev {
+            // 滚动位置未变，直接跳过
+            return;
+        }
+        self.scroll_offset.set(offset);
+        self.anchor_len.set(sb_len);
+        if prev > 0 && offset == 0 {
+            // 从滚动模式回到了跟随模式，全量重建。
+            self.force_full_render();
+        } else {
+            // 滚动模式，滚动位置变了，仅重建视口
+            self.render_viewport();
+        }
+    }
+
+    // 读取当前激活会话的 scrollback 长度（无会话时为 0）。
+    fn scrollback_len(&self) -> usize {
+        self.sessions
+            .borrow()
+            .active_state()
+            .map(|s| s.lock().unwrap().screen().scrollback.len())
+            .unwrap_or(0)
     }
 
     // 窗口 resize 轮询：仅检测尺寸变化并同步 PTY；变化会置脏标记，随后按需渲染。
@@ -314,6 +447,7 @@ impl App {
                 }
                 // 关闭后激活会话可能切换，清空按行缓存再强制渲染新激活会话
                 app.row_cache.borrow_mut().clear();
+                app.render_cache.clear();
                 app.sync_tabs();
                 // 关闭的是最后一个会话（管理器已无会话）→ 退出整个应用
                 if app.sessions.borrow().is_empty() {
@@ -329,6 +463,7 @@ impl App {
                     app.sessions.borrow_mut().set_active_session(id);
                     // 切换 Tab 时清空按行缓存（新会话的行内容与旧会话无关）
                     app.row_cache.borrow_mut().clear();
+                    app.render_cache.clear();
                     // sync_tabs 末尾强制全量渲染，立即显示新会话最新状态（无白屏）
                     app.sync_tabs();
                 }
@@ -358,6 +493,22 @@ impl App {
             }
             true
         });
+
+        // 滚动：鼠标滚轮
+        let weak = Rc::downgrade(self);
+        self.main_window.on_scroll_delta(move |dy| {
+            if let Some(app) = weak.upgrade() {
+                app.scroll_offset_by(dy);
+            }
+        });
+
+        // 滚动：滚动条拖动/点击
+        let weak = Rc::downgrade(self);
+        self.main_window.on_scroll_to(move |ratio| {
+            if let Some(app) = weak.upgrade() {
+                app.scroll_offset_to(ratio);
+            }
+        });
     }
 
     // 创建默认会话
@@ -385,6 +536,7 @@ impl App {
         // 新建会话后清空按行缓存（新会话的行内容与旧会话无关），
         // sync_tabs 末尾强制渲染，立即显示新会话（空屏 + prompt）。
         self.row_cache.borrow_mut().clear();
+        self.render_cache.clear();
         self.sync_tabs();
     }
 
@@ -422,6 +574,7 @@ impl App {
             self.sessions.borrow_mut().resize_all(rows, cols);
             // resize 后清空按行缓存（所有行内容因重排而变化）
             self.row_cache.borrow_mut().clear();
+            self.render_cache.clear();
             // resize 标记了 dirty，立即渲染确保窗口缩放无延迟
             self.render();
         }
