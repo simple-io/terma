@@ -381,7 +381,7 @@ impl App {
         }
     }
 
-     // 滚动条跳转：ratio ∈ [0,1]（0 = 底部，1 = 顶部）。
+    // 滚动条跳转：ratio ∈ [0,1]（0 = 底部，1 = 顶部）。
     fn scroll_offset_to(&self, ratio: f32) {
         let sb_len = self.scrollback_len();
         let offset = (ratio.clamp(0.0, 1.0) * sb_len as f32).round() as usize;
@@ -431,6 +431,7 @@ impl App {
 
     // UI 回调绑定
     fn bind_callbacks(self: &Rc<Self>) {
+        // 新建 Tab
         let weak = Rc::downgrade(self);
         self.main_window.on_new_tab(move || {
             if let Some(app) = weak.upgrade() {
@@ -439,6 +440,7 @@ impl App {
             }
         });
 
+        // 关闭 Tab
         let weak = Rc::downgrade(self);
         self.main_window.on_close_tab(move |id_str| {
             if let Some(app) = weak.upgrade() {
@@ -456,6 +458,7 @@ impl App {
             }
         });
 
+        // 切换 Tab
         let weak = Rc::downgrade(self);
         self.main_window.on_select_tab(move |id_str| {
             if let Some(app) = weak.upgrade() {
@@ -470,6 +473,7 @@ impl App {
             }
         });
 
+        // 选择 Profile 新建会话
         let weak = Rc::downgrade(self);
         self.main_window.on_select_profile(move |pid_str| {
             if let Some(app) = weak.upgrade() {
@@ -480,11 +484,11 @@ impl App {
             }
         });
 
-        // 键盘：转发到激活会话的 PTY
+        // 键盘回调，处理键盘输入转发到激活会话的 PTY
         let weak = Rc::downgrade(self);
         self.main_window.on_key_pressed(move |text, mods| {
             if let Some(app) = weak.upgrade() {
-                let data = encode_key(&text, mods.control, mods.alt, mods.shift);
+                let data = encode_key(&text, mods.meta, mods.control, mods.alt, mods.shift);
                 if !data.is_empty() {
                     if let Err(e) = app.sessions.borrow_mut().write_to_active(&data) {
                         eprintln!("[terma] pty write error: {e}");
@@ -612,14 +616,18 @@ fn parse_session_id(s: &slint::SharedString) -> Option<SessionId> {
 }
 
 /// 把键盘事件编码为写入 PTY 的字节序列
-fn encode_key(text: &slint::SharedString, control: bool, _alt: bool, _shift: bool) -> Vec<u8> {
+fn encode_key(text: &slint::SharedString, meta: bool, control: bool, alt: bool, shift: bool) -> Vec<u8> {
     let s = text.as_str();
     let c = match s.chars().next() {
         Some(c) => c,
         None => return Vec::new(),
     };
 
-    // 特殊键
+    // 特殊特殊键处理，键盘输入部分特殊字符与终端标准输入不一致，两者需要转换，例如
+    //    键盘输入：按下退格键 Backspace 输入的是 BS(0x08)，期望删除光标前面一个字符
+    //    终端期望：现代终端标准删除光标前面一个字符，期望控制符是 DEL(0x7f)
+    //    问题出现了两者对不上，需要有一个显示的转换，把 BS(0x08) 转换为 DEL(0x7f)
+    // 出现这种问题的原因有很多，历史遗留、键盘布局调整、终端控制字符约定等
     match c {
         '\u{0008}' => return vec![0x7f],           // Backspace → DEL
         '\u{0009}' => return vec![0x09],           // Tab
@@ -642,10 +650,17 @@ fn encode_key(text: &slint::SharedString, control: bool, _alt: bool, _shift: boo
         _ => {}
     }
 
-    // Ctrl + 字母 → 控制码
-    if control && c.is_ascii_alphabetic() {
-        let lc = c.to_ascii_lowercase();
-        return vec![(lc as u8) & 0x1f];
+    // 去除 MacOS NSEvent 机制导致的无意义控制字符，跳过不处理
+    if c.is_control() && !s.chars().any(|ch| ch >= '\u{20}') {
+        return Vec::new();
+    }
+
+    // 输入ASCII 控制字符（Ctrl + 字母）
+    if meta {
+        if c.is_ascii_alphabetic() {
+            return vec![(c as u8) & 0x1f];
+        }
+        return vec![];
     }
 
     // 普通可见字符 → utf8 字节
