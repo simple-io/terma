@@ -25,7 +25,12 @@ pub struct RunRender {
     pub row: i32,
     // 列用于绝对定位
     pub col: i32,
-    // 文本长度
+    // 文本长度（单元格宽度，供 Slint 侧按 len * char-w 计算 Run 渲染宽度）
+    //
+    // 【技术债 - 宽字符】当前 `len` 按 `text.chars().count()`（字符数）计算，
+    // 未按显示宽度区分：CJK 等宽字符占 2 列却计作 1，导致渲染时宽度减半、与后续列重叠。
+    // 待 TerminalState 支持宽字符（见 state.rs put_char 注释）后，此处应改为
+    // 累加每个字符的显示宽度（`unicode-width`），并跳过续列占位 Cell。
     pub len: i32,
     // 前景色
     pub fg: (u8, u8, u8),

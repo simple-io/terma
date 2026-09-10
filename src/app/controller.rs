@@ -498,6 +498,24 @@ impl App {
             true
         });
 
+        // IME 提交回调：输入法完成选词后提交的完整字符串（如中文），
+        // 直接转为 UTF-8 字节写入激活会话的 PTY。
+        //
+        // 与 on_key_pressed 的区别：IME 提交走 TextInput 的 edited 回调，
+        // 提交文本已是完整字符串，无需经过 encode_key 的特殊键映射，
+        // 直接按 UTF-8 原样写入，避免误触 Backspace/Delete 等控制符转换。
+        let weak = Rc::downgrade(self);
+        self.main_window.on_ime_commit(move |text| {
+            if let Some(app) = weak.upgrade() {
+                let data = text.as_bytes().to_vec();
+                if !data.is_empty() {
+                    if let Err(e) = app.sessions.borrow_mut().write_to_active(&data) {
+                        eprintln!("[terma] ime pty write error: {e}");
+                    }
+                }
+            }
+        });
+
         // 滚动：鼠标滚轮
         let weak = Rc::downgrade(self);
         self.main_window.on_scroll_delta(move |dy| {
@@ -630,9 +648,9 @@ fn encode_key(text: &slint::SharedString, meta: bool, control: bool, alt: bool, 
     // 出现这种问题的原因有很多，历史遗留、键盘布局调整、终端控制字符约定等
     match c {
         '\u{0008}' => return vec![0x7f],           // Backspace → DEL
-        '\u{0009}' => return vec![0x09],           // Tab
+        '\u{0009}' => return vec![0x09],           // Tab 快速返回
         '\u{000a}' => return vec![0x0d],           // Return → CR
-        '\u{001b}' => return vec![0x1b],           // Escape
+        '\u{001b}' => return vec![0x1b],           // Escape 快速返回
         '\u{007f}' => return b"\x1b[3~".to_vec(),  // Delete
         '\u{F700}' => return b"\x1b[A".to_vec(),   // Up
         '\u{F701}' => return b"\x1b[B".to_vec(),   // Down

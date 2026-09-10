@@ -158,6 +158,21 @@ impl TerminalState {
     }
 
     /// 在光标位置写入字符，处理延迟换行与行末回绕
+    ///
+    /// 【技术债 - 宽字符（Wide Character）未支持】
+    /// 当前实现把每个 `char` 都当作占据 1 列写入（`character` 存单字符、光标只前进 1 列），
+    /// 未区分 CJK 等 East Asian Wide / Fullwidth 字符（应占 2 列）与组合字符（应占 0 列）。
+    /// IME 输入链路已打通：中文等 UTF-8 字节能正确写入 PTY 并回显；但回显的宽字符在
+    /// 屏幕上会与 shell 内部的光标列模型错位（shell 按 2 列推进，本状态机按 1 列推进）。
+    ///
+    /// 后续支持思路（按改动范围递增）：
+    ///   1. 引入 `unicode-width`（`UnicodeWidthChar::width(c)` 返回 0/1/2），
+    ///      `put_char` 中宽字符写完后在下一列填一个「续列占位」Cell（如 `character: '\0'`），
+    ///      光标前进 2 列；组合字符（width 0）不前进光标。
+    ///   2. 光标移动 / 回删 / 清行等操作需感知占位列：删除宽字符时连同占位列一并清除。
+    ///   3. 渲染层 `build_row_runs` 的 `len` 由「字符数」改为「单元格宽度」，跳过占位列，
+    ///      使 `col`/`len` 与实际占用列数一致（Slint 侧 `width = len * char-w` 自然正确）。
+    ///   4. 网格 resize 裁剪列时保证不把宽字符拦腰截断。
     fn put_char(&mut self, c: char) {
         if self.cols == 0 || self.rows == 0 {
             return;

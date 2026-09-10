@@ -54,11 +54,19 @@ export component TerminalView inherits Rectangle {
     property <bool> scrollbar-visible: false;
 
     callback key-pressed(string, KeyboardModifiers) -> bool;
+    // IME 输入法提交：当用户通过输入法完成中文/复杂字符输入时，把提交的完整字符串
+    // 上抛给 Rust 层，由 Rust 层转为 UTF-8 字节写入 PTY（区别于 key-pressed 的按键路径）。
+    callback ime-commit(string);
     callback clicked();
     // 鼠标滚轮滚动：参数为竖直方向滚动量（像素，正 = 向上滚入历史）
     callback scroll-delta(length);
     // 滚动条拖动/点击：参数为目标位置比例（0 = 底部，1 = 顶部）
     callback scroll-to(float);
+
+    // 焦点转发：无论终端区域内哪个元素被聚焦，最终都把键盘焦点落到隐藏的
+    // ime-input TextInput 上，从而唤起系统输入法（IME）。Slint 中只有 TextInput
+    // 在获得焦点时会请求启用系统 IME，普通 FocusScope 不会。
+    forward-focus: ime-input;
 
     background: #0c0c0c;
 
@@ -116,15 +124,39 @@ export component TerminalView inherits Rectangle {
         }
     }
 
-    // 焦点作用域：捕获键盘事件并上抛
-    focus-scope := FocusScope {
-        width: 100%;
-        height: 100%;
+    // ─── IME 输入法捕获锚点 ───
+    // 一个 1×1 像素的透明 TextInput，跟随终端光标定位，作为键盘与 IME 事件的唯一入口：
+    //   - Slint 中只有 TextInput 获得焦点时才会向系统请求启用 IME（input_method_request::Enable），
+    //     普通 FocusScope 不会唤起输入法，因此必须用 TextInput 作为焦点承载者。
+    //   - key-pressed：处理普通按键（英文、组合快捷键、方向键等），全部 accept 并转发给
+    //     root.key-pressed → encode_key → PTY，避免 TextInput 自己把字符插入 text。
+    //   - edited：捕获输入法提交（CommitComposition）。IME 的预编辑（拼音）只更新内部
+    //     preedit 状态、不会触发 edited；只有用户选词提交时才会触发 edited，此时 self.text
+    //     即提交的完整字符串，转发给 root.ime-commit 写入 PTY，随后清空 text 以接收下一次提交。
+    //   - 位置跟随光标，使系统 IME 候选框出现在实际插入点附近；滚动历史（光标隐藏）时移到屏外。
+    ime-input := TextInput {
+        x: root.cursor-visible ? max(0px, root.cursor-col * root.char-w) : -1000px;
+        y: root.cursor-visible ? root.cursor-row * root.char-h : -1000px;
+        width: 1px;
+        height: 1px;
+        // 完全透明、隐藏光标，不产生任何视觉元素
+        opacity: 0;
+        text-cursor-width: 0px;
+        single-line: true;
+
         key-pressed(e) => {
             if root.key-pressed(e.text, e.modifiers) {
                 accept
             } else {
                 reject
+            }
+        }
+
+        edited => {
+            // 仅当不在预编辑（拼音）状态且存在已提交文本时，才把提交结果写入 PTY
+            if (self.preedit-text == "" && self.text != "") {
+                root.ime-commit(self.text);
+                self.text = "";
             }
         }
     }
@@ -134,7 +166,7 @@ export component TerminalView inherits Rectangle {
         width: 100%;
         height: 100%;
         clicked => {
-            focus-scope.focus();
+            ime-input.focus();
             root.clicked();
         }
         // 鼠标滚轮：滚入/滚出历史

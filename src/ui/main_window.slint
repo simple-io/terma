@@ -50,6 +50,7 @@ export component MainWindow inherits Window {
     callback select-tab(string);
     callback select-profile(string);
     callback key-pressed(string, KeyboardModifiers) -> bool;
+    callback ime-commit(string);
     callback terminal-clicked();
     // 滚动交互：滚轮与滚动条
     callback scroll-delta(length);
@@ -85,6 +86,9 @@ export component MainWindow inherits Window {
             viewport-ratio: root.viewport-ratio;
             key-pressed(text, mods) => {
                 root.key-pressed(text, mods)
+            }
+            ime-commit(text) => {
+                root.ime-commit(text)
             }
             clicked => {
                 root.terminal-clicked();
