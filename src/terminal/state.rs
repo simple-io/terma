@@ -184,7 +184,14 @@ impl TerminalState {
             self.pending_wrap = false;
         }
         let (row, col) = (self.cursor.row, self.cursor.col);
-        if row >= self.rows || col >= self.cols {
+        // 防御性校验：以「实际 grid 尺寸」为准，而非仅依赖 self.rows/self.cols 字段。
+        // 一旦某些操作或 resize 边界处理导致字段与 grid 尺寸不一致，此处兜底返回，
+        // 避免出现「len 是 X 却访问索引 Y」的索引越界 panic。
+        let screen = self.screen();
+        if row >= screen.grid.len() {
+            return;
+        }
+        if col >= screen.grid[row].len() {
             return;
         }
         // 覆盖写入前，先清理该位置周围可能被破坏的宽字符占位关系
@@ -568,12 +575,15 @@ impl Perform for TerminalState {
                 let n = param!(0, 1).max(1) as usize;
                 let r = self.cursor.row;
                 let c = self.cursor.col;
-                let take = n.min(self.cols.saturating_sub(c));
-                let avail = self.cols - c;
+                let cols = self.cols;
+                let take = n.min(cols.saturating_sub(c));
                 if take > 0 && r < self.rows {
                     let row = &mut self.screen_mut().grid[r];
                     row.drain(c..c + take);
-                    row.resize(avail, Cell::default());
+                    // 关键：drain 后行已变短 take 格，必须补齐回 cols。
+                    // 旧实现误用 `resize(cols - c)`，当 c > 0 时会把行收缩，
+                    // 破坏「行宽恒等于 cols」的不变量，导致后续写入右侧列越界 panic。
+                    row.resize(cols, Cell::default());
                     // 删除可能拆散宽字符与其续列，需修复占位关系
                     self.screen_mut().repair_row(r);
                 }
@@ -780,5 +790,26 @@ mod tests {
         assert!(!row[0].continuation);
         assert!(row[1].continuation);
         assert_eq!(row[2].character, 'B');
+    }
+
+    #[test]
+    fn dch_at_nonzero_col_keeps_row_width() {
+        // 回归：DCH 在非零列删除字符后，行宽必须保持为 cols。
+        // 旧实现把行 resize 成 `cols - col`，导致行宽收缩、后续写入右侧列越界 panic。
+        let mut st = TerminalState::new(2, 10);
+        feed(&mut st, "ABCDE");
+        assert_eq!(st.cursor.col, 5);
+        // 光标移到第 3 列（index 2），删除 1 个字符 → "C" 被删，"DE" 左移，右侧补空格
+        feed(&mut st, "\x1b[3G\x1b[1P");
+        let row = st.screen().visible_rows().get(0).unwrap();
+        assert_eq!(row.len(), 10);
+        assert_eq!(row[0].character, 'A');
+        assert_eq!(row[1].character, 'B');
+        assert_eq!(row[2].character, 'D');
+        assert_eq!(row[3].character, 'E');
+        assert_eq!(row[4].character, ' ');
+        // 行末列（index 9）仍可正常写入，不应越界 panic
+        feed(&mut st, "\x1b[10Gx");
+        assert_eq!(st.screen().cell(0, 9).character, 'x');
     }
 }
