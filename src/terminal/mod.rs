@@ -20,7 +20,7 @@ pub mod state;
 pub mod control;
 
 pub use buffer::{Row, ScreenBuffer};
-pub use cell::{Cell, CellStyle};
+pub use cell::{Cell, CellStyle, char_width};
 pub use color::Color;
 pub use cursor::Cursor;
 pub use state::{TerminalState};

@@ -12,7 +12,7 @@
 //!   - `build_runs` 遍历所有行（全量重建，用于回退或初始化）
 
 use crate::terminal::buffer::ScreenBuffer;
-use crate::terminal::cell::Cell;
+use crate::terminal::cell::{Cell, char_width};
 use crate::terminal::color::{Color, DEFAULT_BG, DEFAULT_FG};
 use crate::terminal::state::{TerminalState};
 
@@ -27,10 +27,8 @@ pub struct RunRender {
     pub col: i32,
     // 文本长度（单元格宽度，供 Slint 侧按 len * char-w 计算 Run 渲染宽度）
     //
-    // 【技术债 - 宽字符】当前 `len` 按 `text.chars().count()`（字符数）计算，
-    // 未按显示宽度区分：CJK 等宽字符占 2 列却计作 1，导致渲染时宽度减半、与后续列重叠。
-    // 待 TerminalState 支持宽字符（见 state.rs put_char 注释）后，此处应改为
-    // 累加每个字符的显示宽度（`unicode-width`），并跳过续列占位 Cell。
+    // 已按显示宽度累计：CJK 等宽字符（width=2）计为 2，续列占位格不计入，
+    // 使 `len` 与 Run 实际占用的列数一致，避免宽字符渲染宽度减半、与后续列重叠。
     pub len: i32,
     // 前景色
     pub fg: (u8, u8, u8),
@@ -125,6 +123,11 @@ pub fn build_row_runs(row: &Vec<Cell>, row_idx: usize) -> Vec<RunRender> {
     let mut c = 0;
     while c < row.len() {
         let cell = &row[c];
+        // 续列占位：跳过不渲染（宽字符首格已计入宽度，避免重复渲染/样式错算）
+        if cell.continuation {
+            c += 1;
+            continue;
+        }
         if is_blank(cell) {
             c += 1;
             continue;
@@ -133,13 +136,20 @@ pub fn build_row_runs(row: &Vec<Cell>, row_idx: usize) -> Vec<RunRender> {
         let has_bg = cell.background != Color::Default || cell.inverse;
         let start = c;
         let mut text = String::new();
+        let mut len: usize = 0;
         text.push(cell.character);
+        len += char_width(cell.character);
         c += 1;
         // 样式指纹
         let style_key = StyleKey::from_cell(cell);
         // 合并后续相同样式（且非完全默认空白）的 Cell
         while c < row.len() {
             let nc = &row[c];
+            // 续列占位：跳过但保持合并（其主格样式已决定 Run 样式）
+            if nc.continuation {
+                c += 1;
+                continue;
+            }
             if is_blank(nc) {
                 break;
             }
@@ -147,14 +157,14 @@ pub fn build_row_runs(row: &Vec<Cell>, row_idx: usize) -> Vec<RunRender> {
                 break;
             }
             text.push(nc.character);
+            len += char_width(nc.character);
             c += 1;
         }
-        let len = text.chars().count() as i32;
         runs.push(RunRender {
             text,
             row: row_idx as i32,
             col: start as i32,
-            len,
+            len: len as i32,
             fg,
             bg,
             has_bg,

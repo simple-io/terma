@@ -12,7 +12,7 @@
 
 use std::cell::RefCell;
 
-use crate::terminal::cell::Cell;
+use crate::terminal::cell::{Cell, char_width};
 
 pub type Row = Vec<Cell>;
 
@@ -85,8 +85,10 @@ impl ScreenBuffer {
         for row in &mut self.grid {
             if cols > row.len() {
                 row.resize(cols, Cell::default());
-            } else {
+            } else if cols < row.len() {
                 row.truncate(cols);
+                // 裁剪可能把宽字符首格与其续列截断，修复边界占位关系
+                fix_wide_invariants(row);
             }
         }
         self.cols = cols;
@@ -160,6 +162,8 @@ impl ScreenBuffer {
             for c in col..self.cols {
                 self.grid[row][c] = Cell::default();
             }
+            // 清除可能只清掉宽字符的半边，修复占位关系
+            fix_wide_invariants(&mut self.grid[row]);
             self.mark_row_dirty(row);
         }
     }
@@ -170,6 +174,8 @@ impl ScreenBuffer {
             for c in 0..=col.min(self.cols.saturating_sub(1)) {
                 self.grid[row][c] = Cell::default();
             }
+            // 清除可能只清掉宽字符的半边，修复占位关系
+            fix_wide_invariants(&mut self.grid[row]);
             self.mark_row_dirty(row);
         }
     }
@@ -184,33 +190,67 @@ impl ScreenBuffer {
         self.scroll_down_region(0, self.rows.saturating_sub(1), n);
     }
 
-    /// 在 [top, bottom] 区域内向上滚动 n 行。
+    /// 滚动屏幕，在 [top, bottom] 区域内向上滚动 n 行。
     /// 仅当 top==0 且有 scrollback 时，滚出的行存入历史；否则丢弃。
     pub fn scroll_up_region(&mut self, top: usize, bottom: usize, n: usize) {
         if bottom < top || self.rows == 0 {
             return;
         }
+        // 根据屏幕大小，计算最大的滚动范围
         let region_len = bottom - top + 1;
+        // 计算滚动行数，屏幕大小和指定行数行数取小值，防御设计避免越界，最大滚动行数不能超过屏幕行数
         let n = n.min(region_len);
         if n == 0 {
             return;
         }
-        // 取出整个区域，操作后放回，避免索引漂移
-        let mut region: Vec<Row> = self.grid.drain(top..=bottom).collect();
-        let drained: Vec<Row> = region.drain(0..n).collect();
+
+        // 从屏幕区域顶部弹出滚出的行数，此时屏幕区域的行数会缩短
+        let drained: Vec<Row> = self.grid.drain(top..top + n).collect();
+        // 屏幕向上滚动后，在末尾补充对应对应数量的空行，这模拟了终端向上滚动后底部出现新空行的行为
+        for i in 0..(bottom + 1 - n) {
+            self.grid.push(new_row(self.cols));
+        }
+        // 把从屏幕区域顶部弹出的行，放入历史记录 scrollback
+        // 注意：而所有 TUI（vim、top）、局部滚动区域（top != 0，如 CSI 设置的滚动区域）等都丢弃，不进入历史记录
         if top == 0 && self.scrollback_limit > 0 {
             for r in drained {
                 self.push_scrollback(r);
             }
         }
-        for _ in 0..n {
-            region.push(new_row(self.cols));
-        }
-        self.grid.splice(top..top, region);
-        // 滚动区域内所有行内容变化
+        // 由于滚动区域内所有行内容变化，所以把每一行都标记为脏
         for r in top..=bottom {
             self.mark_row_dirty(r);
         }
+
+        // // 只有当滚动区域从第 0 行开始（即整屏滚动，而非局部滚动区域）且 scrollback_limit > 0 时，才将滚出的行存入历史。
+        // // 而所有 TUI（vim、top）、局部滚动区域（top != 0，如 CSI 设置的滚动区域）等都丢弃，不进入历史记录
+        // if top == 0 && self.scrollback_limit > 0 {
+        //     for r in drained {
+        //         self.push_scrollback(r);
+        //     }
+        // }
+        //
+        // // 取出整个屏幕区域，操作后放回，避免索引漂移
+        // let mut region: Vec<Row> = self.grid.drain(top..=bottom).collect();
+        // // 从 region 取出需要滚出的行数，此时 region 中剩下的就是需要上移的行
+        // let drained: Vec<Row> = region.drain(0..n).collect();
+        // // 只有当滚动区域从第 0 行开始（即整屏滚动，而非局部滚动区域）且 scrollback_limit > 0 时，才将滚出的行存入历史。
+        // // 而所有 TUI（vim、top）、局部滚动区域（top != 0，如 CSI 设置的滚动区域）等都丢弃，不进入历史记录
+        // if top == 0 && self.scrollback_limit > 0 {
+        //     for r in drained {
+        //         self.push_scrollback(r);
+        //     }
+        // }
+        // // 在 region 末尾补充 n 个全新的空行，这模拟了终端向上滚动后底部出现新空行的行为
+        // for _ in 0..n {
+        //     region.push(new_row(self.cols));
+        // }
+        // // 把处理好的内容放回 grid 中
+        // self.grid.splice(top..top, region);
+        // // 由于滚动区域内所有行内容变化，所以把每一行都标记为脏
+        // for r in top..=bottom {
+        //     self.mark_row_dirty(r);
+        // }
     }
 
     /// 区域向下滚动
@@ -271,6 +311,43 @@ impl ScreenBuffer {
         if !rows.contains(&row) {
             rows.push(row);
         }
+    }
+
+    /// 修复指定行的宽字符占位关系并标记为脏。
+    /// 用于 ICH/DCH/ECH 等可能拆散宽字符与其续列占位的操作之后。
+    pub fn repair_row(&mut self, row: usize) {
+        if row < self.rows {
+            fix_wide_invariants(&mut self.grid[row]);
+            self.mark_row_dirty(row);
+        }
+    }
+}
+
+/// 修复一行内的宽字符占位关系，保证不变量：
+///   - 续列占位格（continuation）左侧必须是宽字符首格，否则清空该占位格；
+///   - 宽字符首格右侧必须有续列占位格（且未越界），否则把该首格清空为空格。
+///
+/// 该函数幂等，可在 resize 裁剪、ICH/DCH/ECH、部分清行等操作后安全调用。
+fn fix_wide_invariants(row: &mut Row) {
+    let cols = row.len();
+    let mut i = 0;
+    while i < cols {
+        if row[i].continuation {
+            // 续列占位：前一个必须是宽字符首格
+            let lead_ok = i > 0
+                && !row[i - 1].continuation
+                && char_width(row[i - 1].character) == 2;
+            if !lead_ok {
+                row[i] = Cell::default();
+            }
+        } else if char_width(row[i].character) == 2 {
+            // 宽字符首格：后一个必须是续列占位
+            let cont_ok = i + 1 < cols && row[i + 1].continuation;
+            if !cont_ok {
+                row[i] = Cell::default();
+            }
+        }
+        i += 1;
     }
 }
 

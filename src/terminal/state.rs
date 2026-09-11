@@ -14,18 +14,17 @@
 use vte::{Params, Perform};
 
 use crate::terminal::buffer::ScreenBuffer;
-use crate::terminal::cell::{CellStyle, Cell};
+use crate::terminal::cell::{Cell, CellStyle, char_width};
 use crate::terminal::color::Color;
 use crate::terminal::cursor::Cursor;
-
 
 /// 激活的屏幕类型, 终端有两个屏幕，适用于不同的模式
 /// Primary: 支持 CLI 模式，正常屏幕, 逐行输入命令，逐行输出结果，支持窗口滚动等, 例如：bash、ls、git 等
 /// Alternate: 支持 TUI 模式，全屏文本界面，可在屏幕任意位置定位光标绘制, 例如：top、htop、vim 等
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveScreen {
-    Primary,        // CLI 正常屏幕
-    Alternate,      // TUI 全屏文本界面
+    Primary,   // CLI 正常屏幕
+    Alternate, // TUI 全屏文本界面
 }
 
 /// 终端仿真状态机类型，维护终端网格、光标位置、屏幕缓冲区等状态信息
@@ -34,7 +33,7 @@ pub struct TerminalState {
     pub rows: usize,
     // 终端网格列数
     pub cols: usize,
-    // 光标对象
+    // 光标对象，维护光标状态：行、列、可见
     pub cursor: Cursor,
     // 延迟换行标志：光标停在行末，下一个 print 触发换行
     pending_wrap: bool,
@@ -44,11 +43,17 @@ pub struct TerminalState {
     alternate: ScreenBuffer,
     // 当前激活的屏幕
     active: ActiveScreen,
-    // 当前样式
+    // 当前字符样式
     pub current_style: CellStyle,
 
-    // Scroll region（0-based，含两端），默认整屏
+    /**
+    定义终端屏幕的滚动区域 Scroll Region，行号从 0 开始，包含两端。
+    当光标到达滚动区域底部时，内容不会超出该区域，而是在该区域内向上滚动；反之亦然。
+    典型应用场景是 TUI 程序（如 vim、less）在屏幕底部保留状态栏，只在上方区域滚动内容
+    */
+    // 滚动区域的顶部行号, 默认 0
     scroll_top: usize,
+    // 滚动区域的底部行号, 默认 rows - 1, 即整个屏幕都是滚动区域
     scroll_bottom: usize,
 
     // 1049 切换前的光标保存
@@ -157,24 +162,20 @@ impl TerminalState {
         }
     }
 
-    /// 在光标位置写入字符，处理延迟换行与行末回绕
+    /// 在光标位置写入字符，处理延迟换行与行末回绕。
     ///
-    /// 【技术债 - 宽字符（Wide Character）未支持】
-    /// 当前实现把每个 `char` 都当作占据 1 列写入（`character` 存单字符、光标只前进 1 列），
-    /// 未区分 CJK 等 East Asian Wide / Fullwidth 字符（应占 2 列）与组合字符（应占 0 列）。
-    /// IME 输入链路已打通：中文等 UTF-8 字节能正确写入 PTY 并回显；但回显的宽字符在
-    /// 屏幕上会与 shell 内部的光标列模型错位（shell 按 2 列推进，本状态机按 1 列推进）。
-    ///
-    /// 后续支持思路（按改动范围递增）：
-    ///   1. 引入 `unicode-width`（`UnicodeWidthChar::width(c)` 返回 0/1/2），
-    ///      `put_char` 中宽字符写完后在下一列填一个「续列占位」Cell（如 `character: '\0'`），
-    ///      光标前进 2 列；组合字符（width 0）不前进光标。
-    ///   2. 光标移动 / 回删 / 清行等操作需感知占位列：删除宽字符时连同占位列一并清除。
-    ///   3. 渲染层 `build_row_runs` 的 `len` 由「字符数」改为「单元格宽度」，跳过占位列，
-    ///      使 `col`/`len` 与实际占用列数一致（Slint 侧 `width = len * char-w` 自然正确）。
-    ///   4. 网格 resize 裁剪列时保证不把宽字符拦腰截断。
+    /// 宽字符（显示宽度=2，如 CJK）支持：
+    ///   - 宽字符写入当前列，并把下一列写为「续列占位」Cell（`continuation: true`），光标相应向右移动 2 列；
+    ///   - 组合/零宽字符（width 0）不占列、不移动光标（简化：忽略）；
+    ///   - 行末仅剩 1 列时无法容纳宽字符，写入空格占位并置延迟换行（截断）；
+    ///   - 覆盖写入会清理被破坏的宽字符占位关系（见 `prepare_cell`）。
     fn put_char(&mut self, c: char) {
         if self.cols == 0 || self.rows == 0 {
+            return;
+        }
+        let width = char_width(c);
+        if width == 0 {
+            // 组合/零宽字符：简化处理，直接忽略（不占列、不移动光标）
             return;
         }
         if self.pending_wrap {
@@ -182,15 +183,73 @@ impl TerminalState {
             self.linefeed();
             self.pending_wrap = false;
         }
-        let cell = self.current_style.apply(c);
         let (row, col) = (self.cursor.row, self.cursor.col);
-        self.screen_mut().grid[row][col] = cell;
-        self.screen_mut().mark_row_dirty(row);
-        if self.cursor.col + 1 >= self.cols {
-            // 到达行末：设置延迟换行，光标停在最后一列
-            self.pending_wrap = true;
-        } else {
-            self.cursor.col += 1;
+        if row >= self.rows || col >= self.cols {
+            return;
+        }
+        // 覆盖写入前，先清理该位置周围可能被破坏的宽字符占位关系
+        self.prepare_cell(row, col, width);
+
+        if width == 1 {
+            // width == 1：普通字符
+            let cell = self.current_style.apply(c);
+            self.screen_mut().grid[row][col] = cell;
+            self.screen_mut().mark_row_dirty(row);
+            if col + 1 >= self.cols {
+                // 到达行末：设置延迟换行，光标停在最后一列
+                self.pending_wrap = true;
+            } else {
+                self.cursor.col += 1;
+            }
+        } else if width == 2 {
+            // width == 2：宽字符
+            if col + 1 >= self.cols {
+                // 行末仅剩 1 列，放不下宽字符，填充空格占位并换行
+                self.screen_mut().grid[row][col] = Cell::default();
+                self.screen_mut().mark_row_dirty(row);
+                self.linefeed();
+                self.cursor.col = 0;
+            }
+            let cell = self.current_style.apply(c);
+            // 写入宽字符
+            self.screen_mut().grid[row][col] = cell;
+            // 续列占位：本身不渲染，仅占住第二列
+            self.screen_mut().grid[row][col + 1] = Cell::default_with_char();
+            self.screen_mut().mark_row_dirty(row);
+            if col + 2 >= self.cols {
+                self.pending_wrap = true;
+                self.cursor.col = self.cols - 1;
+            } else {
+                self.cursor.col += 2;
+            }
+        }
+    }
+
+    /// 在写入 (row, col) 前，清理可能被本次写入破坏的宽字符占位关系：
+    ///   1. 目标格是续列占位 → 其左侧宽字符首格失去续列，需一并清除；
+    ///   2. 目标格是宽字符首格 → 其右侧续列失去主格，需一并清除；
+    ///   3. 写入宽字符且右侧相邻格是宽字符首格 → 右侧首格的续列将成为孤儿，需清除。
+    fn prepare_cell(&mut self, row: usize, col: usize, width: usize) {
+        let screen = self.screen_mut();
+        let g = &mut screen.grid[row];
+        let cols = g.len();
+
+        if col < cols {
+            // 插入模式，清理目标格左侧的宽字符占位关系
+            if g[col].continuation && col > 0 {
+                g[col - 1] = Cell::default();
+            }
+            if !g[col].continuation && char_width(g[col].character) == 2 && col + 1 < cols {
+                g[col + 1] = Cell::default();
+            }
+        }
+        if width == 2
+            && col + 1 < cols
+            && !g[col + 1].continuation
+            && char_width(g[col + 1].character) == 2
+            && col + 2 < cols
+        {
+            g[col + 2] = Cell::default();
         }
     }
 
@@ -198,8 +257,10 @@ impl TerminalState {
     fn linefeed(&mut self) {
         let (top, bottom) = (self.scroll_top, self.scroll_bottom);
         if self.cursor.row == bottom {
+            // 如果屏幕已经到底部，则向上滚动一行，顶部一行进入历史记录 scrollback，底部补个空行，光标位置不变，还是在最低行
             self.screen_mut().scroll_up_region(top, bottom, 1);
         } else if self.cursor.row < self.rows.saturating_sub(1) {
+            // 否则，光标下移一行
             self.cursor.row += 1;
         }
         self.pending_wrap = false;
@@ -312,7 +373,6 @@ impl TerminalState {
             }
         }
     }
-
 }
 
 /// 伪终端状态机实现 vte::Perform Trait 接口
@@ -388,21 +448,18 @@ impl Perform for TerminalState {
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.col = (self.cursor.col + n).min(self.cols.saturating_sub(1));
                 self.pending_wrap = false;
-            // 向左移动光标
             }
             // 向左移动光标
             'D' => {
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.col = self.cursor.col.saturating_sub(n);
                 self.pending_wrap = false;
-            // 向下移动光标并置行首
             }
             // 光标下一行
             'E' => {
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.row = (self.cursor.row + n).min(self.rows.saturating_sub(1));
                 self.cursor.col = 0;
-            // 向上移动光标并置行首
                 self.pending_wrap = false;
             }
             // 光标上一行
@@ -517,7 +574,8 @@ impl Perform for TerminalState {
                     let row = &mut self.screen_mut().grid[r];
                     row.drain(c..c + take);
                     row.resize(avail, Cell::default());
-                    self.screen_mut().mark_row_dirty(r);
+                    // 删除可能拆散宽字符与其续列，需修复占位关系
+                    self.screen_mut().repair_row(r);
                 }
             }
             // 插入字符（光标处 n 个空格，右侧推出）
@@ -537,7 +595,8 @@ impl Perform for TerminalState {
                     for i in 0..n {
                         row[c + i] = Cell::default();
                     }
-                    self.screen_mut().mark_row_dirty(r);
+                    // 插入同样可能拆散宽字符，需修复占位关系
+                    self.screen_mut().repair_row(r);
                 }
             }
             // 删除字符但保留位置（用空格覆盖）
@@ -551,7 +610,8 @@ impl Perform for TerminalState {
                             self.screen_mut().grid[r][c + i] = Cell::default();
                         }
                     }
-                    self.screen_mut().mark_row_dirty(r);
+                    // 覆盖可能只清掉宽字符半边，需修复占位关系
+                    self.screen_mut().repair_row(r);
                 }
             }
 
@@ -601,5 +661,103 @@ fn parse_color(p: &[u16]) -> Option<(Color, usize)> {
             4,
         )),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::renderer::build_row_runs;
+
+    /// 把字符串按 UTF-8 字节逐字节 feed 进 vte 解析器。
+    fn feed(state: &mut TerminalState, s: &str) {
+        let mut parser = vte::Parser::new();
+        for &b in s.as_bytes() {
+            parser.advance(state, b);
+        }
+    }
+
+    #[test]
+    fn wide_char_writes_lead_and_continuation() {
+        let mut st = TerminalState::new(5, 10);
+        feed(&mut st, "你");
+        // 宽字符写入首格 + 续列占位，光标前进 2 列
+        assert_eq!(st.cursor.col, 2);
+        assert_eq!(st.cursor.row, 0);
+        let lead = st.screen().cell(0, 0);
+        assert_eq!(lead.character, '你');
+        assert!(!lead.continuation);
+        let cont = st.screen().cell(0, 1);
+        assert!(cont.continuation);
+    }
+
+    #[test]
+    fn wide_char_at_line_end_is_truncated() {
+        // 1 行 3 列：先写两个 ASCII 占满到最后一列（col=2），此时再放宽字符无处容纳
+        let mut st = TerminalState::new(2, 3);
+        feed(&mut st, "AB");
+        assert_eq!(st.cursor.col, 2);
+
+        // 光标已在最后一列，宽字符放不下 → 截断为空格，光标停在末列并置延迟换行
+        feed(&mut st, "你");
+        assert_eq!(st.screen().cell(0, 2).character, ' ');
+        assert!(!st.screen().cell(0, 2).continuation);
+        assert_eq!(st.cursor.col, 2);
+
+        // 延迟换行生效：下一个字符换到下一行行首，宽字符正常写入
+        feed(&mut st, "好");
+        assert_eq!(st.cursor.row, 1);
+        assert_eq!(st.screen().cell(1, 0).character, '好');
+        assert!(st.screen().cell(1, 1).continuation);
+    }
+
+    #[test]
+    fn run_len_counts_display_width_and_skips_continuation() {
+        let mut st = TerminalState::new(5, 10);
+        feed(&mut st, "你A好");
+        let runs = build_row_runs(st.screen().visible_rows().get(0).unwrap(), 0);
+        // 同默认样式合并为一个 Run：len = 2 + 1 + 2 = 5，续列占位不额外计列
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].text, "你A好");
+        assert_eq!(runs[0].len, 5);
+        assert_eq!(runs[0].col, 0);
+    }
+
+    #[test]
+    fn backspace_erase_clears_wide_char_and_continuation() {
+        let mut st = TerminalState::new(5, 10);
+        feed(&mut st, "你");
+        // shell 回删典型序列：\b\b 两个空格 \b\b
+        feed(&mut st, "\x08\x08  \x08\x08");
+        let c0 = st.screen().cell(0, 0);
+        let c1 = st.screen().cell(0, 1);
+        assert_eq!(c0.character, ' ');
+        assert!(!c0.continuation);
+        assert_eq!(c1.character, ' ');
+        assert!(!c1.continuation);
+    }
+
+    #[test]
+    fn resize_truncates_wide_char_at_boundary() {
+        let mut st = TerminalState::new(2, 10);
+        feed(&mut st, "你");
+        // 缩小到 1 列：宽字符首格落在最后一列、续列被裁掉 → 首格应被清空为空格
+        st.resize(2, 1);
+        let c0 = st.screen().cell(0, 0);
+        assert_eq!(c0.character, ' ');
+        assert!(!c0.continuation);
+    }
+
+    #[test]
+    fn dch_does_not_split_wide_char() {
+        let mut st = TerminalState::new(2, 10);
+        feed(&mut st, "A你B");
+        // 光标回到第 0 列，删除 1 个字符（DCH）→ "A" 被删，"你B" 左移，宽字符保持完整
+        feed(&mut st, "\r\x1b[1P");
+        let row = st.screen().visible_rows().get(0).unwrap();
+        assert_eq!(row[0].character, '你');
+        assert!(!row[0].continuation);
+        assert!(row[1].continuation);
+        assert_eq!(row[2].character, 'B');
     }
 }

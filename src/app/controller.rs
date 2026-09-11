@@ -322,17 +322,18 @@ impl App {
         self.scroll_offset.set(offset);
         self.anchor_len.set(sb_len);
 
-        let cells = if offset == 0 {
-            // 跟随模式：仅重建脏行，未变更行复用缓存
-            self.render_cache
-                .update(guard.take_dirty_rows(), screen.visible_rows());
-            self.render_cache.build_cell_runs()
+        if offset == 0 {
+            let dirty_rows = guard.take_dirty_rows();
+            if dirty_rows.len() > 0 {
+                // 跟随模式：仅重建脏行，未变更行复用缓存
+                self.render_cache.update(dirty_rows, screen.visible_rows());
+                self.cells_model.set_vec(self.render_cache.build_cell_runs());
+            }
         } else {
             // 滚动模式：全量重建视口（scrollback 历史 + 当前屏拼接），丢弃脏行标记
             let _ = guard.take_dirty_rows();
-            runs_to_cell_runs(&build_viewport_runs(screen, offset))
+            self.cells_model.set_vec(runs_to_cell_runs(&build_viewport_runs(screen, offset)));
         };
-        self.cells_model.set_vec(cells);
 
         // 光标：滚动状态下隐藏（实时光标位于视口之外）
         if offset == 0 {

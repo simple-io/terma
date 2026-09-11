@@ -20,6 +20,9 @@ pub struct Cell {
     pub underline: bool,
     // 是否颜色取反
     pub inverse: bool,
+    // 是否为宽字符（显示宽度=2）的续列占位：本身不渲染可见字符，
+    // 仅用于占住宽字符的第二列，渲染层据此跳过该格并把宽字符计为 2 列宽。
+    pub continuation: bool,
 }
 
 impl Default for Cell {
@@ -32,11 +35,19 @@ impl Default for Cell {
             italic: false,
             underline: false,
             inverse: false,
+            continuation: false,
         }
     }
 }
 
 impl Cell {
+    /// 默认的续列占位单元格
+    pub fn default_with_char() -> Self {
+        Self {
+            continuation: true,
+            ..Default::default()
+        }
+    }
     /// 应用 inverse 后用于渲染的实际颜色对
     pub fn resolved_colors(&self) -> ((u8, u8, u8), (u8, u8, u8)) {
         if self.inverse {
@@ -46,6 +57,23 @@ impl Cell {
             (color::fg_rgb(self.foreground), color::bg_rgb(self.background))
         }
     }
+
+    /// 该格在屏幕上占用的显示宽度（0/1/2）。续列占位视为 0。
+    pub fn display_width(&self) -> usize {
+        if self.continuation {
+            0
+        } else {
+            char_width(self.character)
+        }
+    }
+}
+
+/// 返回单个字符的显示宽度（0/1/2）。
+///   - 0：组合字符、零宽字符（不占列）
+///   - 1：普通半角字符
+///   - 2：CJK 等 East Asian Wide / Fullwidth 字符
+pub fn char_width(c: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
 }
 
 /// 当前写入样式（SGR 状态）
@@ -76,6 +104,7 @@ impl CellStyle {
             italic: self.italic,
             underline: self.underline,
             inverse: self.inverse,
+            continuation: false,
         }
     }
 }
