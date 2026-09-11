@@ -42,7 +42,7 @@ impl Default for Cell {
 
 impl Cell {
     /// 默认的续列占位单元格
-    pub fn default_with_char() -> Self {
+    pub fn continuation_cell() -> Self {
         Self {
             continuation: true,
             ..Default::default()

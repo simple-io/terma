@@ -1,11 +1,13 @@
-//! render_model — 把 TerminalState 的 ScreenBuffer 转为渲染用的 Run 列表
+//! render_model — 把 TerminalState 的 ScreenBuffer 转为渲染用的 Cell 渲染项列表
 //!
-//! 策略：把同行连续相同样式（前景/背景/粗体/斜体/下划线/反相）的 Cell 合并为一个 Run。
-//!   - 完全默认的空白 Cell 不生成 Run（让终端背景透出）
-//!   - 带非默认背景的空格仍生成 Run（绘制背景色块）
-//!   - 每个 Run 记录起始行列、文本、解析后的 fg/bg RGB、样式标志
+//! 策略：**逐格（逐字符）绝对定位**，每个非空白、非续列占位的 Cell 生成一个渲染项。
+//!   - 完全默认的空白 Cell 不生成渲染项（让终端背景透出）
+//!   - 带非默认背景的空格仍生成渲染项（绘制背景色块）
+//!   - 宽字符（width=2）的续列占位格被跳过，不单独渲染
+//!   - 每个渲染项记录行列（网格绝对定位）、单字符文本、显示宽度（1/2）、fg/bg RGB、样式标志
 //!
-//! 渲染层用 Run 的 col/row 做绝对定位（等宽字体），保证列对齐。
+//! 逐格定位保证每个字符的中心/左缘都精确落在 char-w 的整数倍网格上，不依赖字体
+//! advance 宽度是否恰好等于 char-w，从而消除「单行越长、误差累积越大」的对齐漂移。
 //!
 //! 增量渲染支持：
 //!   - `build_row_runs` 仅处理单行，供控制器按行缓存、仅重建脏行
@@ -13,22 +15,19 @@
 
 use crate::terminal::buffer::ScreenBuffer;
 use crate::terminal::cell::{Cell, char_width};
-use crate::terminal::color::{Color, DEFAULT_BG, DEFAULT_FG};
+use crate::terminal::color::Color;
 use crate::terminal::state::{TerminalState};
 
-/// 一个渲染运行：同行连续相同样式的字符段
+/// 一个渲染项：单个字符单元格（非空白、非续列占位）
 #[derive(Debug, Clone)]
 pub struct RunRender {
-    // 文本内容
+    // 文本内容（单个字符）
     pub text: String,
     // 行列用于绝对定位
     pub row: i32,
     // 列用于绝对定位
     pub col: i32,
-    // 文本长度（单元格宽度，供 Slint 侧按 len * char-w 计算 Run 渲染宽度）
-    //
-    // 已按显示宽度累计：CJK 等宽字符（width=2）计为 2，续列占位格不计入，
-    // 使 `len` 与 Run 实际占用的列数一致，避免宽字符渲染宽度减半、与后续列重叠。
+    // 该字符占用的显示宽度（1 或 2，CJK 等宽字符为 2），供 Slint 侧按 len * char-w 计算格子宽度
     pub len: i32,
     // 前景色
     pub fg: (u8, u8, u8),
@@ -45,31 +44,7 @@ pub struct RunRender {
     pub underline: bool,
 }
 
-/// 样式指纹：用于判定相邻 Cell 能否合并为同一 Run
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StyleKey {
-    fg: Color,
-    bg: Color,
-    bold: bool,
-    italic: bool,
-    underline: bool,
-    inverse: bool,
-}
-
-impl StyleKey {
-    fn from_cell(c: &Cell) -> Self {
-        Self {
-            fg: c.foreground,
-            bg: c.background,
-            bold: c.bold,
-            italic: c.italic,
-            underline: c.underline,
-            inverse: c.inverse,
-        }
-    }
-}
-
-/// 一个 Cell 是否完全默认（空格 + 默认前景背景 + 无样式）：不生成 Run
+/// 一个 Cell 是否完全默认（空格 + 默认前景背景 + 无样式）：不生成渲染项
 fn is_blank(c: &Cell) -> bool {
     c.character == ' '
         && c.foreground == Color::Default
@@ -117,60 +92,39 @@ pub fn build_viewport_runs(screen: &ScreenBuffer, offset: usize) -> Vec<RunRende
     runs
 }
 
-/// 由单行构建 Run 列表（增量渲染用，仅处理指定行）
+/// 由单行构建渲染项列表（增量渲染用，仅处理指定行）。
+///
+/// 逐格绝对定位：每个非空白、非续列占位的 Cell 生成一个渲染项，
+/// `col` 为该格的网格列号，`len` 为该字符显示宽度（1/2）。
 pub fn build_row_runs(row: &Vec<Cell>, row_idx: usize) -> Vec<RunRender> {
     let mut runs = Vec::new();
-    let mut c = 0;
-    while c < row.len() {
-        let cell = &row[c];
-        // 续列占位：跳过不渲染（宽字符首格已计入宽度，避免重复渲染/样式错算）
+    for (col, cell) in row.iter().enumerate() {
+        // 续列占位：本身不渲染，宽字符首格已占用 2 列
         if cell.continuation {
-            c += 1;
             continue;
         }
+        // 完全默认空白：透出终端背景，不生成渲染项
         if is_blank(cell) {
-            c += 1;
+            continue;
+        }
+        let width = char_width(cell.character);
+        // 零宽/组合字符不占列，跳过
+        if width == 0 {
             continue;
         }
         let (fg, bg) = cell.resolved_colors();
         let has_bg = cell.background != Color::Default || cell.inverse;
-        let start = c;
-        let mut text = String::new();
-        let mut len: usize = 0;
-        text.push(cell.character);
-        len += char_width(cell.character);
-        c += 1;
-        // 样式指纹
-        let style_key = StyleKey::from_cell(cell);
-        // 合并后续相同样式（且非完全默认空白）的 Cell
-        while c < row.len() {
-            let nc = &row[c];
-            // 续列占位：跳过但保持合并（其主格样式已决定 Run 样式）
-            if nc.continuation {
-                c += 1;
-                continue;
-            }
-            if is_blank(nc) {
-                break;
-            }
-            if StyleKey::from_cell(nc) != style_key {
-                break;
-            }
-            text.push(nc.character);
-            len += char_width(nc.character);
-            c += 1;
-        }
         runs.push(RunRender {
-            text,
+            text: cell.character.to_string(),
             row: row_idx as i32,
-            col: start as i32,
-            len: len as i32,
+            col: col as i32,
+            len: width as i32,
             fg,
             bg,
             has_bg,
-            bold: style_key.bold,
-            italic: style_key.italic,
-            underline: style_key.underline,
+            bold: cell.bold,
+            italic: cell.italic,
+            underline: cell.underline,
         });
     }
     runs

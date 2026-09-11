@@ -16,7 +16,7 @@ export struct CellRun {
     row: int,
     // 列号
     col: int,
-    // 文本长度
+    // 该字符的显示宽度（1 或 2，CJK 等宽字符为 2），用于计算格子宽度 = len * char-w
     len: int,
     // 前景色
     fg: brush,
@@ -97,7 +97,8 @@ export component TerminalView inherits Rectangle {
         background: #ffffff44;
     }
 
-    // 字符 Run 列表
+    // 字符渲染项列表：逐格（逐字符）绝对定位，每个字符独立落在 char-w 的整数倍网格上，
+    // 因此不依赖字体 advance 宽度是否恰好等于 char-w，从根上消除单行内的累积对齐漂移。
     for cell in root.cells: Rectangle {
         x: cell.col * root.char-w;
         y: cell.row * root.char-h;
@@ -113,6 +114,8 @@ export component TerminalView inherits Rectangle {
             font-weight: cell.bold ? 700 : 400;
             horizontal-alignment: left;
             vertical-alignment: center;
+            // 裁剪超出格子的部分，防止宽字符在字体度量略大于 char-w 时溢出到相邻格
+            overflow: clip;
         }
 
         // 下划线

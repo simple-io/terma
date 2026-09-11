@@ -25,7 +25,6 @@
 
 use slint::{ComponentHandle, VecModel};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -71,30 +70,6 @@ thread_local! {
     static APP_WEAK: RefCell<Option<Weak<App>>> = const { RefCell::new(None) };
 }
 
-/// 按行渲染缓存：每行维护独立的 RunRender 列表，
-/// 仅脏行触发 build_row_runs 重建，未变更行直接复用缓存。
-struct RowRenderCache {
-    /// 每行的 RunRender 缓存（key = 行号）
-    rows: HashMap<usize, Vec<RunRender>>,
-    /// 上一次同步给 Slint 的 CellRun 列表（用于比较是否需要 set_vec）
-    prev_cells: Vec<CellRun>,
-}
-
-impl RowRenderCache {
-    fn new() -> Self {
-        Self {
-            rows: HashMap::new(),
-            prev_cells: Vec::new(),
-        }
-    }
-
-    /// 清除所有缓存（Tab 切换 / 新建会话时调用）
-    fn clear(&mut self) {
-        self.rows.clear();
-        self.prev_cells.clear();
-    }
-}
-
 /// 应用控制器：持有窗口、会话管理器、Profile 管理器与 UI Model。
 pub struct App {
     main_window: MainWindow,
@@ -108,9 +83,7 @@ pub struct App {
     last_size: Cell<(u16, u16)>,
     // 窗口 resize 轮询定时器（仅检测尺寸变化，与渲染解耦）
     resize_timer: slint::Timer,
-    // 按行渲染缓存（增量渲染核心）
-    row_cache: RefCell<RowRenderCache>,
-    // 渲染缓存：用于存储上一帧的渲染结果，避免重复渲染
+    // 渲染缓存：按行缓存渲染项，脏行重建、未变更行复用
     render_cache: RenderCache,
     // PTY 输出唤醒通道发送端：新建会话时 clone 给对应 Output Thread
     wake_tx: SyncSender<()>,
@@ -149,7 +122,6 @@ impl App {
             cells_model,
             last_size: Cell::new((0, 0)),
             resize_timer: slint::Timer::default(),
-            row_cache: RefCell::new(RowRenderCache::new()),
             render_cache: RenderCache::new(),
             wake_tx,
             wake_rx: Arc::new(Mutex::new(wake_rx)),
@@ -273,12 +245,14 @@ impl App {
             }
         };
 
-        let guard = state.lock().unwrap();
+        let mut guard = state.lock().unwrap();
         if !guard.is_dirty() {
             // 无变更（可能是残余唤醒），直接跳过
             return;
         }
         self.render_locked(&guard);
+        // 渲染完成后清除脏标记：否则 dirty 永远为 true，is_dirty 守卫形同虚设
+        guard.clear_dirty();
     }
 
     // 滚动渲染入口：滚动偏移变化时强制重绘（此时终端状态可能不脏，不能走 is_dirty 守卫）。
@@ -290,13 +264,13 @@ impl App {
                 return;
             }
         };
-        let guard = state.lock().unwrap();
+        let mut guard = state.lock().unwrap();
         self.render_locked(&guard);
+        guard.clear_dirty();
     }
 
     // 无激活会话时清空视图与滚动状态。
     fn clear_view(&self) {
-        self.row_cache.borrow_mut().clear();
         self.render_cache.clear();
         self.cells_model.set_vec(Vec::new());
         self.main_window.set_cursor_visible(false);
@@ -448,8 +422,7 @@ impl App {
                 if let Some(id) = parse_session_id(&id_str) {
                     app.close_session(id);
                 }
-                // 关闭后激活会话可能切换，清空按行缓存再强制渲染新激活会话
-                app.row_cache.borrow_mut().clear();
+                // 关闭后激活会话可能切换，清空渲染缓存再强制渲染新激活会话
                 app.render_cache.clear();
                 app.sync_tabs();
                 // 关闭的是最后一个会话（管理器已无会话）→ 退出整个应用
@@ -465,8 +438,7 @@ impl App {
             if let Some(app) = weak.upgrade() {
                 if let Some(id) = parse_session_id(&id_str) {
                     app.sessions.borrow_mut().set_active_session(id);
-                    // 切换 Tab 时清空按行缓存（新会话的行内容与旧会话无关）
-                    app.row_cache.borrow_mut().clear();
+                    // 切换 Tab 时清空渲染缓存（新会话的行内容与旧会话无关）
                     app.render_cache.clear();
                     // sync_tabs 末尾强制全量渲染，立即显示新会话最新状态（无白屏）
                     app.sync_tabs();
@@ -556,9 +528,8 @@ impl App {
         ) {
             eprintln!("[terma] create session failed: {e:#}");
         }
-        // 新建会话后清空按行缓存（新会话的行内容与旧会话无关），
+        // 新建会话后清空渲染缓存（新会话的行内容与旧会话无关），
         // sync_tabs 末尾强制渲染，立即显示新会话（空屏 + prompt）。
-        self.row_cache.borrow_mut().clear();
         self.render_cache.clear();
         self.sync_tabs();
     }
@@ -595,8 +566,7 @@ impl App {
         if last != (rows, cols) {
             self.last_size.set((rows, cols));
             self.sessions.borrow_mut().resize_all(rows, cols);
-            // resize 后清空按行缓存（所有行内容因重排而变化）
-            self.row_cache.borrow_mut().clear();
+            // resize 后清空渲染缓存（所有行内容因重排而变化）
             self.render_cache.clear();
             // resize 标记了 dirty，立即渲染确保窗口缩放无延迟
             self.render();

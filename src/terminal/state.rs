@@ -204,17 +204,17 @@ impl TerminalState {
         } else if width == 2 {
             // width == 2：宽字符
             if col + 1 >= self.cols {
-                // 行末仅剩 1 列，放不下宽字符，填充空格占位并换行
+                // 行末仅剩 1 列，放不下宽字符：填充空格占位并置延迟换行（宽字符被截断，不写入）
                 self.screen_mut().grid[row][col] = Cell::default();
                 self.screen_mut().mark_row_dirty(row);
-                self.linefeed();
-                self.cursor.col = 0;
+                self.pending_wrap = true;
+                return;
             }
             let cell = self.current_style.apply(c);
             // 写入宽字符
             self.screen_mut().grid[row][col] = cell;
             // 续列占位：本身不渲染，仅占住第二列
-            self.screen_mut().grid[row][col + 1] = Cell::default_with_char();
+            self.screen_mut().grid[row][col + 1] = Cell::continuation_cell();
             self.screen_mut().mark_row_dirty(row);
             if col + 2 >= self.cols {
                 self.pending_wrap = true;
@@ -712,15 +712,36 @@ mod tests {
     }
 
     #[test]
-    fn run_len_counts_display_width_and_skips_continuation() {
+    fn build_row_runs_emits_per_cell_glyphs() {
         let mut st = TerminalState::new(5, 10);
         feed(&mut st, "你A好");
         let runs = build_row_runs(st.screen().visible_rows().get(0).unwrap(), 0);
-        // 同默认样式合并为一个 Run：len = 2 + 1 + 2 = 5，续列占位不额外计列
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].text, "你A好");
-        assert_eq!(runs[0].len, 5);
+        // 逐格绝对定位：每个字符一个渲染项，宽字符 width=2，续列占位不渲染
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].text, "你");
         assert_eq!(runs[0].col, 0);
+        assert_eq!(runs[0].len, 2);
+        assert_eq!(runs[1].text, "A");
+        assert_eq!(runs[1].col, 2);
+        assert_eq!(runs[1].len, 1);
+        assert_eq!(runs[2].text, "好");
+        assert_eq!(runs[2].col, 3);
+        assert_eq!(runs[2].len, 2);
+    }
+
+    #[test]
+    fn scroll_up_keeps_grid_size_and_shifts_content() {
+        let mut st = TerminalState::new(3, 4);
+        // 填满 3 行后继续输出触发整屏上滚
+        feed(&mut st, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD");
+        let screen = st.screen();
+        // grid 必须始终维持 rows 行（滚动不改变行数）
+        assert_eq!(screen.visible_rows().len(), 3);
+        // 最早的一行进入 scrollback
+        assert_eq!(screen.scrollback.len(), 1);
+        assert_eq!(screen.cell(0, 0).character, 'B');
+        assert_eq!(screen.cell(1, 0).character, 'C');
+        assert_eq!(screen.cell(2, 0).character, 'D');
     }
 
     #[test]

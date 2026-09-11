@@ -192,65 +192,42 @@ impl ScreenBuffer {
 
     /// 滚动屏幕，在 [top, bottom] 区域内向上滚动 n 行。
     /// 仅当 top==0 且有 scrollback 时，滚出的行存入历史；否则丢弃。
+    ///
+    /// 实现：取出滚动区域 → 丢弃顶部 n 行（滚出）→ 末尾补 n 空行 → 放回原位。
+    /// 关键：必须保持 `self.grid.len() == self.rows` 不变，否则网格行数会随滚动无限增长。
     pub fn scroll_up_region(&mut self, top: usize, bottom: usize, n: usize) {
         if bottom < top || self.rows == 0 {
             return;
         }
         // 根据屏幕大小，计算最大的滚动范围
         let region_len = bottom - top + 1;
-        // 计算滚动行数，屏幕大小和指定行数行数取小值，防御设计避免越界，最大滚动行数不能超过屏幕行数
+        // 计算滚动行数，屏幕大小和指定行数取小值，防御设计避免越界，最大滚动行数不能超过屏幕行数
         let n = n.min(region_len);
         if n == 0 {
             return;
         }
 
-        // 从屏幕区域顶部弹出滚出的行数，此时屏幕区域的行数会缩短
-        let drained: Vec<Row> = self.grid.drain(top..top + n).collect();
-        // 屏幕向上滚动后，在末尾补充对应对应数量的空行，这模拟了终端向上滚动后底部出现新空行的行为
-        for i in 0..(bottom + 1 - n) {
-            self.grid.push(new_row(self.cols));
-        }
-        // 把从屏幕区域顶部弹出的行，放入历史记录 scrollback
-        // 注意：而所有 TUI（vim、top）、局部滚动区域（top != 0，如 CSI 设置的滚动区域）等都丢弃，不进入历史记录
+        // 取出整个滚动区域，操作后放回，避免索引漂移
+        let mut region: Vec<Row> = self.grid.drain(top..=bottom).collect();
+        // 从区域顶部滚出 n 行
+        let drained: Vec<Row> = region.drain(0..n).collect();
+        // 仅整屏滚动（top==0）且有 scrollback 时，滚出的行进入历史记录；
+        // TUI（vim/top）、局部滚动区域（top != 0）滚出的行直接丢弃。
         if top == 0 && self.scrollback_limit > 0 {
             for r in drained {
                 self.push_scrollback(r);
             }
         }
-        // 由于滚动区域内所有行内容变化，所以把每一行都标记为脏
+        // 区域末尾补 n 空行，模拟终端向上滚动后底部出现新空行
+        for _ in 0..n {
+            region.push(new_row(self.cols));
+        }
+        // 放回原位，保持 grid 总行数不变
+        self.grid.splice(top..top, region);
+        // 滚动区域内所有行内容变化，全部标脏
         for r in top..=bottom {
             self.mark_row_dirty(r);
         }
-
-        // // 只有当滚动区域从第 0 行开始（即整屏滚动，而非局部滚动区域）且 scrollback_limit > 0 时，才将滚出的行存入历史。
-        // // 而所有 TUI（vim、top）、局部滚动区域（top != 0，如 CSI 设置的滚动区域）等都丢弃，不进入历史记录
-        // if top == 0 && self.scrollback_limit > 0 {
-        //     for r in drained {
-        //         self.push_scrollback(r);
-        //     }
-        // }
-        //
-        // // 取出整个屏幕区域，操作后放回，避免索引漂移
-        // let mut region: Vec<Row> = self.grid.drain(top..=bottom).collect();
-        // // 从 region 取出需要滚出的行数，此时 region 中剩下的就是需要上移的行
-        // let drained: Vec<Row> = region.drain(0..n).collect();
-        // // 只有当滚动区域从第 0 行开始（即整屏滚动，而非局部滚动区域）且 scrollback_limit > 0 时，才将滚出的行存入历史。
-        // // 而所有 TUI（vim、top）、局部滚动区域（top != 0，如 CSI 设置的滚动区域）等都丢弃，不进入历史记录
-        // if top == 0 && self.scrollback_limit > 0 {
-        //     for r in drained {
-        //         self.push_scrollback(r);
-        //     }
-        // }
-        // // 在 region 末尾补充 n 个全新的空行，这模拟了终端向上滚动后底部出现新空行的行为
-        // for _ in 0..n {
-        //     region.push(new_row(self.cols));
-        // }
-        // // 把处理好的内容放回 grid 中
-        // self.grid.splice(top..top, region);
-        // // 由于滚动区域内所有行内容变化，所以把每一行都标记为脏
-        // for r in top..=bottom {
-        //     self.mark_row_dirty(r);
-        // }
     }
 
     /// 区域向下滚动
