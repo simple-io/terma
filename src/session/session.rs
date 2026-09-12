@@ -110,6 +110,16 @@ impl TerminalSession {
             cmd.cwd(cwd);
         }
 
+        // 确保子 shell 使用 UTF-8 locale，否则中文（及多字节字符）会乱码。
+        if let Some(locale) = detect_utf8_locale() {
+            if std::env::var_os("LANG").filter(|v| !v.is_empty()).is_none() {
+                cmd.env("LANG", &locale);
+            }
+            if std::env::var_os("LC_CTYPE").filter(|v| !v.is_empty()).is_none() {
+                cmd.env("LC_CTYPE", &locale);
+            }
+        }
+
         // 启动 pty 的 shell
         let child = pair.slave.spawn_command(cmd).context("spawn_command failed")?;
 
@@ -237,4 +247,34 @@ impl TerminalSessionLike for TerminalSession {
     fn profile_name(&self) -> &str {
         &self.profile_name
     }
+}
+
+/// 检测系统可用的 UTF-8 locale 字符串（如 "zh_CN.UTF-8"）。
+///
+/// 优先级：
+/// 1. macOS：读取 `defaults read .GlobalPreferences AppleLocale`，拼接 `.UTF-8`
+/// 2. 兜底：`en_US.UTF-8`（几乎所有 Unix 系统都安装了该 locale）
+///
+/// 在 IDE（如 RustRover）中启动时，父进程往往没有 `LANG`/`LC_CTYPE`，
+/// Terminal.app 会自动注入 locale 而 IDE 不会，导致子 shell 回退到 C locale。
+fn detect_utf8_locale() -> Option<String> {
+    // macOS：从系统偏好读取 AppleLocale
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("defaults")
+            .args(["read", ".GlobalPreferences", "AppleLocale"])
+            .output()
+        {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout);
+                let locale = s.trim();
+                if !locale.is_empty() {
+                    return Some(format!("{}.UTF-8", locale));
+                }
+            }
+        }
+    }
+
+    // 兜底：en_US.UTF-8 几乎在所有系统上可用
+    Some("en_US.UTF-8".to_string())
 }
