@@ -23,3 +23,6 @@ target
 # tools
 .workbuddy
 overview.md
+
+# other
+.DS_Store
