@@ -423,6 +423,7 @@ impl Perform for TerminalState {
     /// CSI 序列：光标移动 / 清屏 / 清行 / 滚动 / SGR / 私有模式
     ///     params: 参数组，每个参数组内参数用 ; 或 : 分隔
     ///     intermediates: 中介符，目前只处理 ? 表示私有模式
+    ///     _ignore: 是否忽略该 CSI 序列
     ///     c: 终端命令
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
         // 把参数扁平化为 u16 序列（同时兼容 ; 与 : 分隔，用于 SGR/定位）
@@ -437,9 +438,9 @@ impl Perform for TerminalState {
         }
 
         match c {
+            // 光标控制
             // 向上移动光标
             'A' => {
-                // 向上移动光标
                 let n = param!(0, 1).max(1) as usize;
                 self.cursor.row = self.cursor.row.saturating_sub(n);
                 self.pending_wrap = false;
@@ -493,6 +494,7 @@ impl Perform for TerminalState {
                 self.set_cursor_pos(row1, col1);
             }
 
+            // 内容擦除
             // 清屏
             'J' => {
                 let mode = param!(0, 0);
@@ -523,6 +525,7 @@ impl Perform for TerminalState {
                 }
             }
 
+            // 屏幕滚动
             // 向上滚动
             'S' => {
                 let n = param!(0, 1).max(1) as usize;
@@ -535,7 +538,6 @@ impl Perform for TerminalState {
                 let (top, bottom) = (self.scroll_top, self.scroll_bottom);
                 self.screen_mut().scroll_down_region(top, bottom, n);
             }
-
             // 设置滚动区域，Scroll region（DECSTBM）
             'r' => {
                 let top1 = param!(0, 1).max(1) as usize;
@@ -549,9 +551,7 @@ impl Perform for TerminalState {
                 }
             }
 
-            // SGR
-            'm' => self.handle_sgr(&p),
-
+            // 文本编辑
             // 插入/删除行（区域内）
             'L' => {
                 let n = param!(0, 1).max(1) as usize;
@@ -625,7 +625,11 @@ impl Perform for TerminalState {
                 }
             }
 
-            // 私有模式
+            // 文本样式
+            // SGR
+            'm' => self.handle_sgr(&p),
+
+            // 私有模式（vt100私有序列）
             'h' if private => self.set_private_mode(&p, true),
             'l' if private => self.set_private_mode(&p, false),
 

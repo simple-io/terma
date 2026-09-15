@@ -16,7 +16,17 @@ use crate::terminal::cell::{Cell, char_width};
 
 pub type Row = Vec<Cell>;
 
-/// 一块屏幕缓冲：rows × cols 的 Cell 网格
+/// 终端本质就是个 行(rows) × 列(cols) 的二维 Cell 网格，每个字符占用其中一个格子
+/// 底层的程序 CLI(bash、zsh) 和 TUL(vim、top) 和 终端屏幕，都会维护这个网格，所有的操作都是按照行和列的寻址，双方网格尺寸和寻址逻辑保持一致
+/// 大致的数据链路：
+///     1，键盘输入
+///     2，前置处理，特殊键处理，ANSI转义等
+///     3，写入 PTY writer-> CLI|TUL -> PTY reader  （PTY 类似一个管道）
+///     4，读取 PTY 输出，支持 ANSI 解析，识别并执行：co、osc、csi 等控制字符
+///     5，更新终端屏幕，渲染 UI 界面
+/// 注意，宽字符的处理比较特殊，它会占用两个网格，所有对宽字符的操作都按照双格寻址和操作，比如：
+///     1，删除宽字符，bash 发送 osc 序列删除两个网格，终端屏幕也要删除两个网格
+///     2，渲染宽字符，UI会占用两个网格，但实际只占一个存储位置，所以渲染时需要特殊处理，业界主流主发是增加占位符
 #[derive(Debug)]
 pub struct ScreenBuffer {
     // 行
@@ -156,7 +166,7 @@ impl ScreenBuffer {
         }
     }
 
-    /// 清除行内从 col 到行尾
+    /// 擦除行，删除从 col（光标）到 row（本行）末尾字符
     pub fn clear_line_right(&mut self, row: usize, col: usize) {
         if row < self.rows {
             for c in col..self.cols {
@@ -311,9 +321,7 @@ fn fix_wide_invariants(row: &mut Row) {
     while i < cols {
         if row[i].continuation {
             // 续列占位：前一个必须是宽字符首格
-            let lead_ok = i > 0
-                && !row[i - 1].continuation
-                && char_width(row[i - 1].character) == 2;
+            let lead_ok = i > 0 && !row[i - 1].continuation && char_width(row[i - 1].character) == 2;
             if !lead_ok {
                 row[i] = Cell::default();
             }

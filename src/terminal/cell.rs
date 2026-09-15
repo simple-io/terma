@@ -20,8 +20,7 @@ pub struct Cell {
     pub underline: bool,
     // 是否颜色取反
     pub inverse: bool,
-    // 是否为宽字符（显示宽度=2）的续列占位：本身不渲染可见字符，
-    // 仅用于占住宽字符的第二列，渲染层据此跳过该格并把宽字符计为 2 列宽。
+    // 宽字符（显示宽度=2）的续列占位：本身不渲染可见字符，
     pub continuation: bool,
 }
 
@@ -55,15 +54,6 @@ impl Cell {
             (color::bg_rgb(self.background), color::fg_rgb(self.foreground))
         } else {
             (color::fg_rgb(self.foreground), color::bg_rgb(self.background))
-        }
-    }
-
-    /// 该格在屏幕上占用的显示宽度（0/1/2）。续列占位视为 0。
-    pub fn display_width(&self) -> usize {
-        if self.continuation {
-            0
-        } else {
-            char_width(self.character)
         }
     }
 }
