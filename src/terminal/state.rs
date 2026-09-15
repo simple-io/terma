@@ -128,8 +128,6 @@ impl TerminalState {
     }
 
     /// 获取并清除激活屏的脏行索引（供渲染层增量重建使用）
-    /// 使用 `&self`（通过 ScreenBuffer 的 RefCell 内部可变性），
-    /// 使渲染层可在持有不可变 state 引用时调用。
     pub fn take_dirty_rows(&self) -> Vec<usize> {
         self.screen().take_dirty_rows()
     }
@@ -794,6 +792,32 @@ mod tests {
         assert!(!row[0].continuation);
         assert!(row[1].continuation);
         assert_eq!(row[2].character, 'B');
+    }
+
+    #[test]
+    fn resize_marks_all_rows_dirty_and_reflows_content() {
+        use crate::renderer::build_row_runs;
+
+        let mut st = TerminalState::new(3, 10);
+        feed(&mut st, "hello");
+
+        // 放大到 5 行 15 列
+        st.resize(5, 15);
+        assert_eq!(st.rows, 5);
+        assert_eq!(st.cols, 15);
+        assert_eq!(st.screen().visible_rows().len(), 5);
+        for row in st.screen().visible_rows() {
+            assert_eq!(row.len(), 15);
+        }
+        // 全部行都应标记为脏
+        let dirty = st.take_dirty_rows();
+        assert_eq!(dirty, vec![0, 1, 2, 3, 4]);
+        // 内容保留在左上角
+        assert_eq!(st.screen().cell(0, 0).character, 'h');
+        assert_eq!(st.screen().cell(0, 4).character, 'o');
+        // 渲染单行使用正确行号
+        let runs = build_row_runs(&st.screen().visible_rows()[0], 0);
+        assert!(runs.iter().any(|r| r.row == 0 && r.col == 0 && r.text == "h"));
     }
 
     #[test]

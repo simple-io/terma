@@ -5,7 +5,6 @@
 //! 设计要点：
 //!   - `App` 用 `Rc` 包装，`SessionManager` / `last_size` 用 `RefCell` 提供内部可变性，
 //!     Slint 的 `'static` 回调闭包通过 `Weak<App>` 回访业务状态。
-//!   - PTY 输出在独立 Output Thread 中读取并完成 vte use slint :: private_unstable_api :: re_exports as sp;     `invoke_from_event_loop` 调度 UI 线程渲染，实现低延迟事件触发式渲染，
 //!     彻底移除渲染轮询定时器。Slint 对象绝不跨线程，PTY 线程不接触 Slint。
 //!   - 非激活会话的输出在后台静默解析、不唤醒 UI 线程，避免浪费 UI 线程资源。
 //!   - 渲染采用脏标记（Dirty）+ 脏行标记（Dirty Rows）+ 按行缓存（Per-Row Cache）：
@@ -504,6 +503,8 @@ impl App {
     fn create_session_for_profile(self: &Rc<Self>, profile: &Profile) {
         // 用当前主窗口实际尺寸计算初始终端网格，避免新建会话回到固定 24×80。
         let (rows, cols) = self.current_grid();
+        // 同步 last_size 到当前网格
+        self.last_size.set((rows, cols));
         let next_index = self.sessions.borrow().len() + 1;
         let title = format!("{} {}", profile.name, next_index);
 
@@ -555,10 +556,10 @@ impl App {
         if last != (rows, cols) {
             self.last_size.set((rows, cols));
             self.sessions.borrow_mut().resize_all(rows, cols);
-            // resize 后清空渲染缓存（所有行内容因重排而变化）
+            // resize 后清空渲染缓存（所有行内容因重排而变化），避免复用旧尺寸的缓存数据。
             self.render_cache.clear();
-            // resize 标记了 dirty，立即渲染确保窗口缩放无延迟
-            self.render();
+            // 用 force_full_render 显式强制全量重绘，而不是走 render() 的
+            self.force_full_render();
         }
     }
 }

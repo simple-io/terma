@@ -275,10 +275,7 @@ impl ScreenBuffer {
         &self.grid
     }
 
-    // ─── 脏行追踪（通过 &self 操作 RefCell，支持在不可变借用上下文中调用） ───
-
     /// 获取并清除脏行索引列表（返回自上次取出后被修改的行号）。
-    /// 使用 `&self`（而非 `&mut self`），使渲染层可在持有不可变 state 引用时调用。
     pub fn take_dirty_rows(&self) -> Vec<usize> {
         std::mem::take(&mut *self.dirty_rows.borrow_mut())
     }
