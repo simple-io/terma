@@ -13,7 +13,7 @@
 //!   - `build_row_runs` 仅处理单行，供控制器按行缓存、仅重建脏行
 //!   - `build_runs` 遍历所有行（全量重建，用于回退或初始化）
 
-use crate::terminal::buffer::ScreenBuffer;
+use crate::terminal::screen::ScreenBuffer;
 use crate::terminal::cell::{Cell, char_width};
 use crate::terminal::color::Color;
 use crate::terminal::state::{TerminalState};
