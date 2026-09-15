@@ -55,6 +55,17 @@ export component MainWindow inherits Window {
     // 滚动交互：滚轮与滚动条
     callback scroll-delta(length);
     callback scroll-to(float);
+    // 窗口尺寸变化（由 width/height 属性变更即时触发，替代轮询检测）
+    callback resized();
+
+    // 窗口尺寸变化即时回调：width/height 任一变更即通知 Rust 侧同步网格 + PTY 并重绘。
+    // Slint 后端在收到系统 resize 事件后更新 WindowItem 的 width/height，进而触发下述 changed 回调。
+    changed width => {
+        root.resized();
+    }
+    changed height => {
+        root.resized();
+    }
 
     VerticalLayout {
         // Tab 栏

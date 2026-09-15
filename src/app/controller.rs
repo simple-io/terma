@@ -14,7 +14,7 @@
 //!   - Tab 切换、窗口 resize、新建/关闭会话等交互事件立即强制全量渲染。
 //!   - Tab 切换、窗口 resize、新建/关闭会话等交互事件立即触发渲染。
 //!   - 键盘：TerminalView 的 FocusScope 接 key-pressed → encode_key（完整键盘映射）→ PTY。
-//!   - 尺寸：独立的低频率定时器轮询 window().size()，变化时同步 PTY + ScreenBuffer。
+//!   - 尺寸：窗口 width/height 属性变更（changed 回调）即时触发，同步 PTY + ScreenBuffer。
 //!
 //! 回调（全部在 Slint UI 线程执行）：
 //!   on_new_tab        → 用默认 Profile 创建 Session
@@ -22,6 +22,7 @@
 //!   on_select_tab(id) → 切换激活 Session（立即强制全量渲染）
 //!   on_select_profile(pid) → 用指定 Profile 创建 Session
 //!   on_key_pressed(text, mods) → 转发到激活 Session 的 PTY
+//!   on_resized()          → 窗口尺寸变化即时同步网格 + PTY + 重绘
 
 use slint::{ComponentHandle, VecModel};
 use std::cell::{Cell, RefCell};
@@ -44,8 +45,6 @@ mod ui_generated {
 use crate::renderer::buffer::RenderCache;
 pub use ui_generated::{CellRun, MainWindow, ProfileInfo, TabInfo};
 
-/// 窗口 resize 轮询间隔（仅检测尺寸变化，与渲染解耦；PTY 输出采用事件驱动，不再定时驱动渲染）
-const RESIZE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 /// 等宽字体度量（与 terminal_view.slint 中 char-w/char-h 保持一致）
 const CHAR_W: i32 = 8;
 const CHAR_H: i32 = 16;
@@ -81,8 +80,6 @@ pub struct App {
     cells_model: Rc<VecModel<CellRun>>,
     // 上次同步给 PTY 的 (rows, cols)，用于检测窗口尺寸变化
     last_size: Cell<(u16, u16)>,
-    // 窗口 resize 轮询定时器（仅检测尺寸变化，与渲染解耦）
-    resize_timer: slint::Timer,
     // 渲染缓存：按行缓存渲染项，脏行重建、未变更行复用
     render_cache: RenderCache,
     // PTY 输出唤醒通道发送端：新建会话时 clone 给对应 Output Thread
@@ -121,7 +118,6 @@ impl App {
             profiles_model,
             cells_model,
             last_size: Cell::new((0, 0)),
-            resize_timer: slint::Timer::default(),
             render_cache: RenderCache::new(),
             wake_tx,
             wake_rx: Arc::new(Mutex::new(wake_rx)),
@@ -140,8 +136,6 @@ impl App {
         app.create_default_session();
         // 设置 UI 回调函数
         app.bind_callbacks();
-        // 启动窗口 resize 定时器
-        app.start_resize_timer();
 
         let weak = Rc::downgrade(&app);
         app.main_window.window().on_close_requested(move || {
@@ -228,14 +222,7 @@ impl App {
         self.render();
     }
 
-    // 增量渲染：仅对脏行调用 build_row_runs，未变更行复用缓存。
-    // 利用 TerminalState 的 dirty 标记 + ScreenBuffer 的 dirty_rows 追踪 +
-    // RenderCache 按行缓存，将 O(全屏行数) 的 build_runs 降低到 O(脏行数)。
-    //
-    // 解析已在 Output Thread 完成，这里只读状态并渲染：
-    // 锁状态快照脏行与光标 → 克隆脏行释放锁 → 锁外重建 runs → 更新 Slint Model。
-    //
-    // 该入口受脏标记守护（PTY 输出 / resize / Tab 切换触发）；滚动偏移变化走 render_viewport。
+    // 脏行渲染，利用 TerminalState 的 dirty 标记有脏行时才触发渲染
     fn render(&self) {
         let state = match self.sessions.borrow().active_state() {
             Some(s) => s,
@@ -255,7 +242,7 @@ impl App {
         guard.clear_dirty();
     }
 
-    // 滚动渲染入口：滚动偏移变化时强制重绘（此时终端状态可能不脏，不能走 is_dirty 守卫）。
+    // 滚动渲染入口，滚动偏移变化时强制重绘（此时终端状态可能不脏，不能走 is_dirty 守卫）。
     fn render_viewport(&self) {
         let state = match self.sessions.borrow().active_state() {
             Some(s) => s,
@@ -278,7 +265,10 @@ impl App {
         self.anchor_len.set(0);
     }
 
-    // 实际渲染：根据 scroll_offset 决定走「跟随模式（增量缓存）」还是「滚动模式（视口拼接）」。
+    // 实际执行渲染
+    // 1，scroll_offset 决定走「跟随模式（增量缓存）」还是「滚动模式（视口拼接）」。
+    // 2，增量渲染，只渲染新增的内容
+    // 3，全量渲染，全量渲染屏幕的所有内容
     fn render_locked(&self, guard: &std::sync::MutexGuard<'_, TerminalState>) {
         let screen = guard.screen();
         let sb_len = screen.scrollback.len();
@@ -393,17 +383,6 @@ impl App {
             .unwrap_or(0)
     }
 
-    // 窗口 resize 轮询：仅检测尺寸变化并同步 PTY；变化会置脏标记，随后按需渲染。
-    fn start_resize_timer(self: &Rc<Self>) {
-        let weak = Rc::downgrade(self);
-        self.resize_timer
-            .start(slint::TimerMode::Repeated, RESIZE_INTERVAL, move || {
-                if let Some(app) = weak.upgrade() {
-                    app.maybe_resize();
-                }
-            });
-    }
-
     // UI 回调绑定
     fn bind_callbacks(self: &Rc<Self>) {
         // 新建 Tab
@@ -504,6 +483,15 @@ impl App {
                 app.scroll_offset_to(ratio);
             }
         });
+
+        // 窗口尺寸变化：由 MainWindow 的 changed width/height 回调即时触发，
+        // 替代原先的低频率轮询定时器，实现零延迟同步网格 + PTY + 重绘。
+        let weak = Rc::downgrade(self);
+        self.main_window.on_resized(move || {
+            if let Some(app) = weak.upgrade() {
+                app.handle_resize();
+            }
+        });
     }
 
     // 创建默认会话
@@ -555,9 +543,10 @@ impl App {
         compute_grid(self.main_window.window()).unwrap_or((DEFAULT_ROWS, DEFAULT_COLS))
     }
 
-    // 根据窗口尺寸计算 cols/rows，变化时同步所有会话的 PTY + ScreenBuffer。
-    // resize 会标记 dirty_rows，此处立即按需渲染，确保窗口缩放无延迟。
-    fn maybe_resize(&self) {
+    // 窗口尺寸变化回调处理：由 `changed width/height` 即时触发。
+    // 根据窗口尺寸重新计算 cols/rows，变化时同步所有会话的 PTY + ScreenBuffer。
+    // resize 会置脏标记，此处立即清空渲染缓存并渲染，确保窗口缩放无延迟。
+    fn handle_resize(&self) {
         let Some((rows, cols)) = compute_grid(self.main_window.window()) else {
             return;
         };
