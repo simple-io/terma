@@ -132,20 +132,27 @@ impl TerminalState {
         self.screen().take_dirty_rows()
     }
 
-    /// 调整终端尺寸：同步两块屏 + 光标 clamp
+    /// 调整终端尺寸：同步两块屏（含内容 Reflow）+ 光标追踪
     pub fn resize(&mut self, rows: usize, cols: usize) {
-        self.primary.resize(rows, cols);
-        self.alternate.resize(rows, cols);
+        let (cr, cc) = (self.cursor.row, self.cursor.col);
+        let (p_cr, p_cc) = self.primary.resize(rows, cols, cr, cc);
+        let (a_cr, a_cc) = self.alternate.resize(rows, cols, cr, cc);
         self.rows = rows;
         self.cols = cols;
         self.scroll_top = 0;
         self.scroll_bottom = rows.saturating_sub(1);
-        if self.cursor.row >= rows {
-            self.cursor.row = rows.saturating_sub(1);
+        // 使用活跃屏幕 reflow 返回的光标位置
+        match self.active {
+            ActiveScreen::Primary => {
+                self.cursor.row = p_cr;
+                self.cursor.col = p_cc;
+            }
+            ActiveScreen::Alternate => {
+                self.cursor.row = a_cr;
+                self.cursor.col = a_cc;
+            }
         }
-        if self.cursor.col >= cols {
-            self.cursor.col = cols.saturating_sub(1);
-        }
+        self.clamp_cursor();
         self.pending_wrap = false;
         self.dirty = true;
     }
@@ -177,9 +184,15 @@ impl TerminalState {
             return;
         }
         if self.pending_wrap {
-            self.cursor.col = 0;
+            // 解析延迟换行：当前行确实发生了软换行（内容溢出到下一行）
+            let wrap_row = self.cursor.row;
             self.linefeed();
+            self.cursor.col = 0;
             self.pending_wrap = false;
+            // 标记上一行为软换行（仅当该行未被硬换行覆盖时）
+            if wrap_row < self.screen().grid.len() {
+                self.screen_mut().grid[wrap_row].wrapped = true;
+            }
         }
         let (row, col) = (self.cursor.row, self.cursor.col);
         // 防御性校验：以「实际 grid 尺寸」为准，而非仅依赖 self.rows/self.cols 字段。
@@ -839,5 +852,99 @@ mod tests {
         // 行末列（index 9）仍可正常写入，不应越界 panic
         feed(&mut st, "\x1b[10Gx");
         assert_eq!(st.screen().cell(0, 9).character, 'x');
+    }
+
+    // ─── Reflow 测试 ───
+
+    #[test]
+    fn resize_shrinks_wraps_content() {
+        // 写入 10 字符到 10 列宽的行，缩小到 5 列应拆成 2 行
+        let mut st = TerminalState::new(2, 10);
+        feed(&mut st, "abcdefghij");
+        st.resize(3, 5);
+        // 第一行: "abcde"
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(0, 4).character, 'e');
+        // 第二行: "fghij"
+        assert_eq!(st.screen().cell(1, 0).character, 'f');
+        assert_eq!(st.screen().cell(1, 4).character, 'j');
+        // 第一行应标记为 wrapped（软换行）
+        assert!(st.screen().grid[0].wrapped);
+    }
+
+    #[test]
+    fn resize_grows_merges_wrapped_lines() {
+        // 先写入 10 字符到 5 列宽的行（产生软换行），再放大到 10 列应合并
+        let mut st = TerminalState::new(3, 5);
+        feed(&mut st, "abcdefghij");
+        // 此时 row 0 = "abcde" (wrapped), row 1 = "fghij"
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(1, 0).character, 'f');
+
+        // 放大到 10 列
+        st.resize(3, 10);
+        // 内容应合并回一行
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(0, 9).character, 'j');
+    }
+
+    #[test]
+    fn resize_preserves_hard_line_breaks() {
+        // 用 \r\n 分隔的两行在放大后不应被合并
+        let mut st = TerminalState::new(3, 5);
+        feed(&mut st, "abcde\r\nfghij");
+        // row 0 = "abcde", row 1 = "fghij"（硬换行分隔）
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(1, 0).character, 'f');
+
+        // 放大到 10 列
+        st.resize(3, 10);
+        // 两行应保持独立（硬换行不合并）
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(1, 0).character, 'f');
+        // 第一行不是 wrapped（硬换行）
+        assert!(!st.screen().grid[0].wrapped);
+    }
+
+    #[test]
+    fn resize_reflow_wide_chars_not_split() {
+        // 宽字符在缩小不应被截断："AB你CD" (6 列) 缩小到 3 列
+        let mut st = TerminalState::new(2, 6);
+        feed(&mut st, "AB你CD");
+        // row 0: A(0) B(1) 你(2,3) C(4) D(5)
+        assert_eq!(st.screen().cell(0, 2).character, '你');
+        assert!(st.screen().cell(0, 3).continuation);
+
+        // 缩小到 3 列："你" 占 2 列，行末只有 1 列放不下，应换到下一行
+        st.resize(3, 3);
+        // 第一行: "AB " 或 "AB" + 换行
+        assert_eq!(st.screen().cell(0, 0).character, 'A');
+        assert_eq!(st.screen().cell(0, 1).character, 'B');
+        // "你" 应完整出现在第二行开头
+        assert_eq!(st.screen().cell(1, 0).character, '你');
+        assert!(st.screen().cell(1, 1).continuation);
+        // "你" 后面跟 "C"（同一行，共 3 列），"D" 单独在第三行
+        assert_eq!(st.screen().cell(1, 2).character, 'C');
+        assert_eq!(st.screen().cell(2, 0).character, 'D');
+    }
+
+    #[test]
+    fn resize_reflow_scrollback() {
+        // scrollback 历史行也应参与 reflow
+        let mut st = TerminalState::new(2, 5);
+        // 写入 3 行触发滚动，scrollback 有 1 行
+        feed(&mut st, "AAAAA\r\nBBBBB\r\nCCCCC");
+        assert_eq!(st.screen().scrollback.len(), 1);
+        assert_eq!(st.screen().cell(0, 0).character, 'B');
+        assert_eq!(st.screen().cell(1, 0).character, 'C');
+
+        // 放大到 10 列：scrollback + grid 统一重排
+        st.resize(2, 10);
+        // scrollback 的 "AAAAA" 和 grid 的 "BBBBB" 不应合并（硬换行）
+        // 但内容应在 scrollback 和 grid 中正确分布
+        assert_eq!(st.screen().scrollback.len(), 1);
+        assert_eq!(st.screen().scrollback[0].cells[0].character, 'A');
+        assert_eq!(st.screen().cell(0, 0).character, 'B');
+        assert_eq!(st.screen().cell(1, 0).character, 'C');
     }
 }

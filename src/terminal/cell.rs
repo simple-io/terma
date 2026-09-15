@@ -27,7 +27,7 @@ pub struct Cell {
 impl Default for Cell {
     fn default() -> Self {
         Self {
-            character: ' ',
+            character: '\x00',
             foreground: Color::Default,
             background: Color::Default,
             bold: false,
