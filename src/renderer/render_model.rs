@@ -45,14 +45,9 @@ pub struct RunRender {
 }
 
 /// 一个 Cell 是否完全默认（空格 + 默认前景背景 + 无样式）：不生成渲染项
+#[inline]
 fn is_blank(c: &Cell) -> bool {
-    c.character == ' '
-        && c.foreground == Color::Default
-        && c.background == Color::Default
-        && !c.bold
-        && !c.italic
-        && !c.underline
-        && !c.inverse
+    c.is_blank()
 }
 
 /// 由 TerminalState 构建当前可见屏的 Run 列表（全量遍历所有行）

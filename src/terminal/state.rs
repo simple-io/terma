@@ -947,4 +947,131 @@ mod tests {
         assert_eq!(st.screen().cell(0, 0).character, 'B');
         assert_eq!(st.screen().cell(1, 0).character, 'C');
     }
+
+    #[test]
+    fn resize_narrowing_no_panic_at_exact_boundary() {
+        // 回归：内容恰好填满一行后再缩小列宽，尾部零宽空 cell 不得在 col_pos==new_cols
+        // 处被写出，否则触发列索引越界 panic。
+        let mut st = TerminalState::new(2, 10);
+        feed(&mut st, "abc"); // row 0 = "abc"，尾部为默认空 cell（\0）
+        st.resize(3, 3);      // 3 列恰好整除，旧实现会越界 panic
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(0, 2).character, 'c');
+        // 内容只有一行，第二行应为空（默认 cell）
+        assert_eq!(st.screen().cell(1, 0).character, '\0');
+    }
+
+    #[test]
+    fn resize_narrowing_wide_char_at_1col_truncates() {
+        // 回归：new_cols==1 时宽字符无法容纳，应截断为空格占位，后续字符换到下一行；
+        // 且不得残留「无续列的宽字符首格」，也不得产生多余空行。
+        let mut st = TerminalState::new(2, 4);
+        feed(&mut st, "你A");
+        st.resize(3, 1);
+        // 你 → 空格占位（非宽字符首格）
+        assert_eq!(st.screen().cell(0, 0).character, ' ');
+        assert!(!st.screen().cell(0, 0).continuation);
+        // A 换到下一行行首，中间无多余空行
+        assert_eq!(st.screen().cell(1, 0).character, 'A');
+        assert_eq!(st.screen().cell(2, 0).character, '\0');
+    }
+
+    #[test]
+    fn resize_narrowing_cursor_tracks_wide_chars() {
+        // 回归：光标追踪应按「内容 cell → 重排后行列」精确定位，
+        // 旧实现用 col/new_cols 近似，宽字符在奇数/较小列宽下会算错行。
+        let mut st = TerminalState::new(2, 6);
+        feed(&mut st, "AB你CD"); // A(0) B(1) 你(2,3) C(4) D(5)，光标停在 D 后
+        assert_eq!(st.cursor.col, 5);
+        st.resize(3, 3);
+        // 重排后 "D" 位于第 2 行第 0 列，光标应跟随到 (2, 0)
+        assert_eq!(st.screen().cell(2, 0).character, 'D');
+        assert_eq!(st.cursor.row, 2);
+        assert_eq!(st.cursor.col, 0);
+    }
+
+    #[test]
+    fn resize_narrowing_blank_line_stays_single_row() {
+        // 回归：内容中的空行在缩小后应保持为一个空行，不产生额外空白行。
+        let mut st = TerminalState::new(3, 10);
+        feed(&mut st, "abc\r\n\r\ndef"); // 两行内容中间夹一个空行
+        st.resize(4, 3);
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(1, 0).character, '\0'); // 空行保持为空
+        assert_eq!(st.screen().cell(2, 0).character, 'd');
+    }
+
+    // ─── Reflow 回归（Bug 修复） ───
+
+    #[test]
+    fn resize_widening_preserves_interword_spaces() {
+        // 回归：放大列宽时，软换行行组中的空格是「内容」（如单词分隔符），
+        // 旧实现误把中间行的尾部空格当填充裁剪，导致 "abc  def" 被挤成 "abcdef"。
+        let mut st = TerminalState::new(2, 5);
+        feed(&mut st, "abc  def"); // row0="abc  " wrapped, row1="def.."
+        st.resize(2, 10);
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(0, 2).character, 'c');
+        assert_eq!(st.screen().cell(0, 3).character, ' ');
+        assert_eq!(st.screen().cell(0, 4).character, ' ');
+        assert_eq!(st.screen().cell(0, 5).character, 'd');
+        assert_eq!(st.screen().cell(0, 7).character, 'f');
+    }
+
+    #[test]
+    fn resize_widening_no_spurious_empty_row() {
+        // 回归：放大列宽时，尾部 `\0` 空 cell 不应被当作内容参与拆分，
+        // 否则会额外挤出一条空行，且末行 wrapped 标志错误。
+        let mut st = TerminalState::new(2, 5);
+        feed(&mut st, "abcdef"); // row0="abcde" wrapped, row1="f...."
+        st.resize(2, 6);
+        // 6 列恰好装下 "abcdef"，应合并为单行且非软换行
+        assert_eq!(st.screen().cell(0, 5).character, 'f');
+        assert!(!st.screen().grid[0].wrapped);
+        // 第二行是网格填充的空行
+        assert_eq!(st.screen().cell(1, 0).character, '\0');
+    }
+
+    #[test]
+    fn resize_narrowing_trims_trailing_spaces() {
+        // 回归：硬换行行末尾的空白空格是填充，缩小列宽时裁剪，
+        // 旧实现会把尾部空格拆成一行只有空格的「多余行」。
+        let mut st = TerminalState::new(2, 8);
+        feed(&mut st, "abc  "); // row0 = "abc  ..."（尾部 2 个显式空格）
+        st.resize(3, 3);
+        // 应只有 "abc" 一行内容，不产生只有空格的行
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(0, 2).character, 'c');
+        assert!(!st.screen().grid[0].wrapped);
+        assert_eq!(st.screen().cell(1, 0).character, '\0');
+        assert_eq!(st.screen().cell(2, 0).character, '\0');
+    }
+
+    #[test]
+    fn resize_widening_wide_char_not_truncated() {
+        // 回归：放大列宽按「列宽」而非「cell 数量」拆分，宽字符跨片段边界时不越界/不截断。
+        // 2 列写 "你A"（你占满一行，A 软换行到下一行），放大到 4 列应正确合并。
+        let mut st = TerminalState::new(2, 2);
+        feed(&mut st, "你A");
+        // row0 = [你, cont] wrapped, row1 = [A, \0]
+        st.resize(2, 4);
+        assert_eq!(st.screen().cell(0, 0).character, '你');
+        assert!(st.screen().cell(0, 1).continuation);
+        assert_eq!(st.screen().cell(0, 2).character, 'A');
+        assert!(!st.screen().grid[0].wrapped);
+    }
+
+    #[test]
+    fn resize_reflow_roundtrip_preserves_content() {
+        // 回归：先缩小再放大，内容与空格应完整往返，不丢失、不合并。
+        let mut st = TerminalState::new(3, 10);
+        feed(&mut st, "hello world");
+        st.resize(4, 5);   // 缩小 → 软换行
+        st.resize(3, 12);  // 放大 → 合并
+        // 第 0 行应还原为 "hello world"
+        assert_eq!(st.screen().cell(0, 0).character, 'h');
+        assert_eq!(st.screen().cell(0, 5).character, ' ');
+        assert_eq!(st.screen().cell(0, 6).character, 'w');
+        assert_eq!(st.screen().cell(0, 10).character, 'd');
+    }
 }

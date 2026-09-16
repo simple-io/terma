@@ -22,11 +22,20 @@ use crate::terminal::cell::{Cell, char_width};
 ///
 /// 通过 `Deref<Target=Vec<Cell>>` / `DerefMut` 保持与现有代码的兼容：
 /// `row[col]`、`row.len()`、`row.drain()` 等操作透明委托到内部 `cells`。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Row {
     pub cells: Vec<Cell>,
     /// 软换行标志：true 表示该行是因列宽不足而自动折行的延续行
     pub wrapped: bool,
+}
+
+impl Row {
+    pub fn new_row(cols: usize) -> Self {
+        Self {
+            cells: vec![Cell::default(); cols],
+            wrapped: false,
+        }
+    }
 }
 
 impl Deref for Row {
@@ -229,26 +238,45 @@ impl ScreenBuffer {
     }
 
     /// 缩小列宽 reflow：逐行按新列宽拆分，宽字符不截断。
-    /// 提取内容 cell 时跳过 continuation 续列占位格（重排时宽字符自动重新生成续列）。
+    ///
+    /// 提取内容 cell 时跳过两类格子，避免重排出现越界或多余空行：
+    ///   - 续列占位格（`continuation`）：宽字符重新排布时自动重建续列；
+    ///   - 零宽/默认空 cell（`\0`，宽度为 0）：不参与排布。
+    /// 硬换行行（wrapped=false）末尾的空白空格属于填充，裁剪掉，避免拆出只有空格的
+    /// 多余行；软换行行（wrapped=true）已写满，其末尾空格是内容，必须保留。
+    /// 宽字符在整行都放不下时（`new_cols == 1`）按终端惯例截断为空格占位，
+    /// 绝不留下「无续列的宽字符首格」。
+    ///
     /// 参数
     ///     - lines: 逻辑行序列
     ///     - new_cols: 新列数
     ///     - cursor_log_row: 光标行
     ///     - cursor_col: 光标列
-    fn reflow_narrowing(&mut self, lines: &[Row], new_cols: usize, cursor_log_row: usize, cursor_col: usize, ) -> (Vec<Row>, (usize, usize)) {
+    fn reflow_narrowing(
+        &mut self,
+        lines: &[Row],
+        new_cols: usize,
+        cursor_log_row: usize,
+        cursor_col: usize,
+    ) -> (Vec<Row>, (usize, usize)) {
         let mut new_lines: Vec<Row> = Vec::new();
         let mut new_cursor = (0usize, 0usize);
-        let mut out_row: usize = 0;
+        let mut out_row = 0usize;
 
         for (log_idx, line) in lines.iter().enumerate() {
-            let cells: Vec<Cell> = line
-                .iter()
-                .filter(|c| !c.continuation)
-                .copied()
-                .collect();
+            // 内容 cell：跳过续列占位与零宽空 cell（`\0`）。
+            let mut cells = content_cells(line);
+            // 硬换行行（wrapped=false）末尾的空白空格是填充，裁剪掉，避免产生
+            // 只有空格的多余行；软换行行（wrapped=true）已写满，末尾空格是内容，必须保留。
+            if !line.wrapped {
+                while cells.last().map_or(false, |c| c.is_blank()) {
+                    cells.pop();
+                }
+            }
 
             let line_start_row = out_row;
 
+            // 空行（无任何可见内容）：保留一个空行，光标归第 0 列。
             if cells.is_empty() {
                 let mut row = new_row(new_cols);
                 row.wrapped = line.wrapped;
@@ -260,64 +288,51 @@ impl ScreenBuffer {
                 continue;
             }
 
-            // 按 new_cols 分行放置内容 cell（
-            let mut chunks: Vec<Vec<Cell>> = Vec::new();
-            let mut current: Vec<Cell> = Vec::new();
-            let mut current_cols: usize = 0;
-
-            // 按照新列宽，对内容 cell 重新拆分行数，宽字符不截断）
-            for cell in &cells {
-                let w = char_width(cell.character);
-                if current_cols + w > new_cols && !current.is_empty() {
-                    chunks.push(current);
-                    current = Vec::new();
-                    current_cols = 0;
-                }
-                current.push(*cell);
-                current_cols += w;
-            }
-            if !current.is_empty() {
-                chunks.push(current);
-            }
+            // 按新列宽拆分内容 cell，宽字符不截断。
+            let chunks = split_content_cells(&cells, new_cols);
 
             for (ci, chunk) in chunks.iter().enumerate() {
-                let mut row = new_row(new_cols);
-                let mut col_pos: usize = 0;
-                for cell in chunk.iter() {
-                    row.cells[col_pos] = *cell;
-                    let w = char_width(cell.character);
-                    if w == 2 && col_pos + 1 < new_cols {
-                        row.cells[col_pos + 1] = Cell::continuation_cell();
-                    }
-                    col_pos += w;
-                }
-                // 非末片标记为软换行（后续还有内容），末片继承原行 wrapped 状态
-                row.wrapped = if ci + 1 < chunks.len() { true } else { line.wrapped };
+                let mut row = write_chunk_into_row(chunk, new_cols);
+                // 非末片：本行软换行到下一片；末片：继承原逻辑行的软换行状态。
+                row.wrapped = if ci + 1 < chunks.len() {
+                    true
+                } else {
+                    line.wrapped
+                };
                 new_lines.push(row);
                 out_row += 1;
             }
 
-            // 光标追踪：在 chunk 循环结束后统一计算
+            // 光标追踪：旧列坐标 → 内容 cell 索引 → (chunk 行, chunk 内列)。
             if log_idx == cursor_log_row {
-                let total_cells: usize = cells.iter()
-                    .map(|c| char_width(c.character).max(1))
-                    .sum();
-                let col = cursor_col.min(total_cells.saturating_sub(1));
-                if new_cols > 0 {
-                    new_cursor = (
-                        line_start_row + col / new_cols,
-                        col % new_cols,
-                    );
+                let content_idx = cursor_content_index(line, cursor_col).min(cells.len() - 1);
+                let mut remaining = content_idx;
+                for (ci, chunk) in chunks.iter().enumerate() {
+                    if remaining < chunk.len() {
+                        let mut col = 0usize;
+                        for (j, &cell) in chunk.iter().enumerate() {
+                            if j == remaining {
+                                new_cursor = (line_start_row + ci, col);
+                                break;
+                            }
+                            col += char_width(cell.character);
+                        }
+                        break;
+                    }
+                    remaining -= chunk.len();
                 }
             }
         }
 
-        let cursor = (new_cursor.0.min(new_lines.len().saturating_sub(1)), new_cursor.1);
+        let cursor = (
+            new_cursor.0.min(new_lines.len().saturating_sub(1)),
+            new_cursor.1,
+        );
         (new_lines, cursor)
     }
 
-    /// 放大列宽 reflow：合并软换行行组，剥离旧列宽填充的尾部空格。
-    /// 硬换行（wrapped=false）分隔的行组不被合并。
+    /// 放大列宽 reflow：合并软换行行组，剥离旧列宽填充的尾部空 cell（`\0`）。
+    /// 硬换行（wrapped=false）分隔的行组不被合并；空格是内容、予以保留。
     /// 参数
     ///     - lines: 逻辑行序列
     ///     - new_cols: 新列数
@@ -338,103 +353,84 @@ impl ScreenBuffer {
             }
             let group_end = i; // exclusive
 
-            // 合并组内所有行的内容 cell，剥离每行尾部填充空格
+            // 合并组内所有行的内容 cell：跳过续列占位与零宽空 cell（`\0`），保留空格。
+            // 关键：尾部填充是 `\0`（默认空 cell）而非空格，空格（如单词分隔符）是有意义内容，
+            // 若像旧实现那样裁剪空格，会把原本独立的内容错误地挤在一起。
             let mut merged: Vec<Cell> = Vec::new();
-            let mut cursor_set = false;
-            let mut row_offset: usize = 0; // 组内行在 merged 中的起始偏移
+            let mut cursor_abs: Option<usize> = None;
 
             for j in group_start..group_end {
                 let row = &lines[j];
-                let cells: Vec<Cell> = row
-                    .iter()
-                    .filter(|c| !c.continuation)
-                    .copied()
-                    .collect();
-                let content_len = cells
-                    .iter()
-                    .rposition(|c| c.character != ' ' || c.continuation)
-                    .map(|p| p + 1)
-                    .unwrap_or(0);
-
-                // 光标追踪：光标在此行上且尚未定位
-                if j == cursor_log_row && !cursor_set {
-                    let col = if row.wrapped {
-                        cursor_col.min(content_len)
-                    } else {
-                        cursor_col.min(content_len)
-                    };
-                    new_cursor = (out_row, row_offset + col);
-                    cursor_set = true;
+                let cells = content_cells(row);
+                if j == cursor_log_row {
+                    let col_idx = cursor_content_index(row, cursor_col).min(cells.len());
+                    cursor_abs = Some(merged.len() + col_idx);
                 }
-
-                if j < group_end - 1 {
-                    // 非末行：剥离尾部空格
-                    merged.extend_from_slice(&cells[..content_len]);
-                    row_offset += content_len;
-                } else {
-                    // 末行：保留完整内容（含尾部空格）
-                    merged.extend_from_slice(&cells);
-                }
+                merged.extend_from_slice(&cells);
             }
+
+            // 组的软换行状态由「组内最后一行」决定（它决定是否延续到下一组），
+            // 而非首行（首行的 wrapped 仅表示它软换行到组内下一行）。
+            let group_wrapped = lines[group_end - 1].wrapped;
 
             // 按 new_cols 分行放置合并后的内容
             if merged.is_empty() {
                 let mut row = new_row(new_cols);
-                row.wrapped = lines[group_start].wrapped;
-                if !cursor_set && cursor_log_row >= group_start && cursor_log_row < group_end {
+                row.wrapped = group_wrapped;
+                if cursor_abs.is_some() {
                     new_cursor = (out_row, 0);
                 }
                 new_lines.push(row);
                 out_row += 1;
             } else {
-                let mut pos: usize = 0;
-                let total_chunks = (merged.len() + new_cols - 1) / new_cols.max(1);
-                let mut chunk_idx: usize = 0;
-                while pos < merged.len() {
-                    let end = (pos + new_cols).min(merged.len());
-                    let mut row = new_row(new_cols);
-                    let mut col_pos: usize = 0;
-                    for cell in merged[pos..end].iter() {
-                        if col_pos >= new_cols { break; }
-                        row.cells[col_pos] = *cell;
-                        let w = char_width(cell.character).max(1);
-                        if w == 2 && col_pos + 1 < new_cols {
-                            row.cells[col_pos + 1] = Cell::continuation_cell();
-                        }
-                        col_pos += w;
-                    }
-                    // 非末片标记为软换行，末片继承组首行 wrapped 状态
-                    row.wrapped = if chunk_idx + 1 < total_chunks {
+                // 与 narrowing 一致按列宽拆分（而非按 cell 数量），宽字符不截断、不越界。
+                let chunks = split_content_cells(&merged, new_cols);
+                let total = chunks.len();
+                let mut offset = 0usize;
+                let mut cursor_set = false;
+
+                for (ci, chunk) in chunks.iter().enumerate() {
+                    let mut row = write_chunk_into_row(chunk, new_cols);
+                    // 非末片标记为软换行，末片继承组的软换行状态。
+                    row.wrapped = if ci + 1 < total {
                         true
                     } else {
-                        lines[group_start].wrapped
+                        group_wrapped
                     };
-                    chunk_idx += 1;
 
-                    // 光标追踪：光标在 merged 中的绝对偏移落在当前片内
-                    if !cursor_set
-                        && cursor_log_row >= group_start
-                        && cursor_log_row < group_end
-                    {
-                        let abs_col = new_cursor.1; // widening 中暂存为绝对偏移
-                        if abs_col >= pos && abs_col < end {
-                            new_cursor = (out_row, abs_col - pos);
-                            cursor_set = true;
-                        } else if pos >= end.saturating_sub(1) {
-                            // 已到最后一片，光标定位到末尾
-                            new_cursor = (out_row, (end - pos).saturating_sub(1));
-                            cursor_set = true;
+                    // 光标追踪：绝对 cell 偏移落在当前片内 → 映射为片内列。
+                    if !cursor_set {
+                        if let Some(abs) = cursor_abs {
+                            if abs >= offset && abs < offset + chunk.len() {
+                                let mut col = 0usize;
+                                for (k, &cell) in chunk.iter().enumerate() {
+                                    if k == abs - offset {
+                                        break;
+                                    }
+                                    col += char_width(cell.character);
+                                }
+                                new_cursor = (out_row, col);
+                                cursor_set = true;
+                            } else if ci + 1 == total {
+                                // 光标在内容末尾之后：定位到末片内容末尾。
+                                let mut col = 0usize;
+                                for &cell in chunk.iter() {
+                                    col += char_width(cell.character);
+                                }
+                                new_cursor = (out_row, col.min(new_cols.saturating_sub(1)));
+                                cursor_set = true;
+                            }
                         }
                     }
 
                     new_lines.push(row);
                     out_row += 1;
-                    pos = end;
+                    offset += chunk.len();
                 }
             }
         }
 
-        // 后处理：如果光标落在 continuation 格上，回退到同字符的首格
+        // 后处理：如果光标落在 continuation 格上，回退到同字符的首格。
         let (cr, mut cc) = new_cursor;
         if cr < new_lines.len() {
             let row = &new_lines[cr];
@@ -656,6 +652,36 @@ fn fix_wide_invariants(row: &mut Row) {
     }
 }
 
+/// 返回旧行 `line` 中第 `cursor_col` 个格子对应的「内容 cell 索引」。
+///
+/// 「内容 cell」指非续列、非零宽（非默认 `\0`）的格子，与 reflow 提取的
+/// 内容序列一一对应。规则：
+///   - 光标落在宽字符续列占位格上 → 归到其首格（宽字符不可「从中拆开」）；
+///   - 光标落在尾部零宽空 cell 上 → 归到内容末尾。
+fn cursor_content_index(line: &Row, cursor_col: usize) -> usize {
+    let idx = cursor_col.min(line.cells.len().saturating_sub(1));
+    let mut ci = 0usize;
+    for (i, cell) in line.cells.iter().enumerate() {
+        if cell.continuation {
+            if i == idx {
+                return ci.saturating_sub(1);
+            }
+            continue;
+        }
+        if char_width(cell.character) == 0 {
+            if i == idx {
+                return ci;
+            }
+            continue;
+        }
+        if i == idx {
+            return ci;
+        }
+        ci += 1;
+    }
+    ci
+}
+
 fn new_grid(rows: usize, cols: usize) -> Vec<Row> {
     (0..rows).map(|_| new_row(cols)).collect()
 }
@@ -665,5 +691,68 @@ fn new_row(cols: usize) -> Row {
         cells: vec![Cell::default(); cols],
         wrapped: false,
     }
+}
+
+/// 提取一行中的「内容 cell」：跳过续列占位格与零宽空 cell（`\0`），保留空格。
+///
+/// 空格（宽度 1）是有意义的内容（如单词间的分隔），必须保留；
+/// `\0`（默认空 cell，宽度 0）与 `continuation` 是填充/占位，reflow 时丢弃。
+fn content_cells(row: &Row) -> Vec<Cell> {
+    row.iter()
+        .filter(|c| !c.continuation && char_width(c.character) > 0)
+        .copied()
+        .collect()
+}
+
+/// 把内容 cell 按 `max_cols` 列宽拆分成若干片段（chunk）。
+///   - 宽字符（宽度 2）不截断：放不下时整体换到下一片；
+///   - `max_cols == 1` 时单个宽字符也放不下，按终端惯例截断为空格占位（保留原样式）。
+fn split_content_cells(cells: &[Cell], max_cols: usize) -> Vec<Vec<Cell>> {
+    let row_cap = max_cols.max(1);
+    let mut chunks: Vec<Vec<Cell>> = Vec::new();
+    let mut current: Vec<Cell> = Vec::new();
+    let mut current_cols = 0usize;
+
+    for &cell in cells {
+        let w = char_width(cell.character);
+        if w > row_cap {
+            if !current.is_empty() {
+                chunks.push(std::mem::take(&mut current));
+                current_cols = 0;
+            }
+            let mut space = cell;
+            space.character = ' ';
+            chunks.push(vec![space]);
+            continue;
+        }
+        if current_cols + w > row_cap {
+            chunks.push(std::mem::take(&mut current));
+            current_cols = 0;
+        }
+        current.push(cell);
+        current_cols += w;
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+/// 把一片内容 cell 写入一个新建的空行，重建宽字符的续列占位关系。
+fn write_chunk_into_row(chunk: &[Cell], new_cols: usize) -> Row {
+    let mut row = new_row(new_cols);
+    let mut col_pos = 0usize;
+    for &cell in chunk.iter() {
+        if col_pos >= new_cols {
+            break;
+        }
+        row.cells[col_pos] = cell;
+        let w = char_width(cell.character);
+        if w == 2 && col_pos + 1 < new_cols {
+            row.cells[col_pos + 1] = Cell::continuation_cell();
+        }
+        col_pos += w;
+    }
+    row
 }
 

@@ -56,6 +56,24 @@ impl Cell {
             (color::fg_rgb(self.foreground), color::bg_rgb(self.background))
         }
     }
+
+    /// 字符的显示宽度 0/1/2
+    pub fn char_width(&self) -> usize {
+        char_width(self.character)
+    }
+
+    /// 是否为「空白填充格」：默认样式的空格，渲染时不产生可见内容。
+    /// 与续列占位、零宽空 cell（`\0`）一样，reflow 时可作为尾部填充裁剪，
+    /// 但「有样式（如背景色）的空格」不属于填充，必须保留。
+    pub fn is_blank(&self) -> bool {
+        self.character == ' '
+            && self.foreground == Color::Default
+            && self.background == Color::Default
+            && !self.bold
+            && !self.italic
+            && !self.underline
+            && !self.inverse
+    }
 }
 
 /// 返回单个字符的显示宽度（0/1/2）。
