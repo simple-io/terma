@@ -74,6 +74,8 @@ pub struct ScreenBuffer {
     pub scrollback: Vec<Row>,
     /// scrollback 最大行数
     pub scrollback_limit: usize,
+    /// DECSC（ESC 7）保存的光标位置，DECRC（ESC 8）恢复到 prompt 起点再整行重绘
+    pub saved_cursor: Option<(usize, usize)>,
     /// 脏行索引：记录自上次 take 后被修改的行号（RefCell 支持通过 &self 取出行）
     dirty_rows: RefCell<Vec<usize>>,
 }
@@ -86,6 +88,7 @@ impl Clone for ScreenBuffer {
             grid: self.grid.clone(),
             scrollback: self.scrollback.clone(),
             scrollback_limit: self.scrollback_limit,
+            saved_cursor: self.saved_cursor,
             dirty_rows: RefCell::new(self.dirty_rows.borrow().clone()),
         }
     }
@@ -99,6 +102,7 @@ impl ScreenBuffer {
             grid: new_grid(rows, cols),
             scrollback: Vec::new(),
             scrollback_limit: rows * 5,
+            saved_cursor: None,
             dirty_rows: RefCell::new(Vec::new()),
         }
     }
@@ -111,6 +115,7 @@ impl ScreenBuffer {
             grid: new_grid(rows, cols),
             scrollback: Vec::new(),
             scrollback_limit: 0,
+            saved_cursor: None,
             dirty_rows: RefCell::new(Vec::new()),
         }
     }
@@ -167,11 +172,21 @@ impl ScreenBuffer {
             }
         }
 
-        // 光标在逻辑行序列中的位置（scrollback 行在前，grid 行在后）
+        // ── 锚点：活动光标 + DECSC 保存的光标，二者都必须跟随内容重排 ──
+        // zsh 等 line editor 打印 prompt 前发 ESC 7 保存光标，SIGWINCH 后发
+        // ESC 8 恢复到 prompt 起点再整行重绘；若保存位置不跟随 reflow，
+        // 恢复会落到错误行 → 重复 prompt 行 / 内容错乱。
+        let mut anchors: Vec<(usize, usize)> = Vec::with_capacity(2);
         let cursor_log_row = (sb_count + cursor_row).min(lines.len().saturating_sub(1));
+        anchors.push((cursor_log_row, cursor_col));
+        if let Some((sr, sc)) = self.saved_cursor {
+            let sr = sr.min(self.rows.saturating_sub(1));
+            anchors.push(((sb_count + sr).min(lines.len().saturating_sub(1)), sc));
+        }
 
         // ── 内容重排（缩小/放大共用：按软换行链合并逻辑行后重新拆分） ──
-        let (mut new_lines, new_cursor) = self.reflow(&lines, new_cols, cursor_log_row, cursor_col);
+        let (mut new_lines, new_anchors) = self.reflow(&lines, new_cols, &anchors);
+        let mut new_cursor = new_anchors[0];
 
         // ── 拆分回 scrollback + grid ──
         // 保留总量上限 = scrollback_limit + new_rows
@@ -192,6 +207,19 @@ impl ScreenBuffer {
         }
         self.grid = new_lines;
         self.grid.resize(new_rows, new_row(new_cols));
+
+        // 光标（含保存光标）从「逻辑行坐标」换算到 grid 坐标：
+        // 逻辑行号 − 转入 scrollback 的行数，并夹紧到新网格范围。
+        let clamp_row =
+            |r: usize| r.saturating_sub(target_sb).min(new_rows.saturating_sub(1));
+        new_cursor = (
+            clamp_row(new_cursor.0),
+            new_cursor.1.min(new_cols.saturating_sub(1)),
+        );
+        if new_anchors.len() > 1 {
+            let (ar, ac) = new_anchors[1];
+            self.saved_cursor = Some((clamp_row(ar), ac.min(new_cols.saturating_sub(1))));
+        }
 
         self.rows = new_rows;
         self.cols = new_cols;
@@ -240,17 +268,17 @@ impl ScreenBuffer {
     /// 参数
     ///     - lines: 逻辑行序列
     ///     - new_cols: 新列数
-    ///     - cursor_log_row: 光标所在的逻辑行号
-    ///     - cursor_col: 光标列
+    ///     - anchors: 需要跟随内容重排的光标锚点列表 `[(逻辑行号, 列)]`，
+    ///       含活动光标与 DECSC 保存的光标；返回值与其一一对应。
     fn reflow(
         &mut self,
         lines: &[Row],
         new_cols: usize,
-        cursor_log_row: usize,
-        cursor_col: usize,
-    ) -> (Vec<Row>, (usize, usize)) {
+        anchors: &[(usize, usize)],
+    ) -> (Vec<Row>, Vec<(usize, usize)>) {
         let mut new_lines: Vec<Row> = Vec::new();
-        let mut new_cursor = (0usize, 0usize);
+        let mut new_anchors = vec![(0usize, 0usize); anchors.len()];
+        let mut anchor_set = vec![false; anchors.len()];
         let mut out_row: usize = 0;
         let mut i: usize = 0;
 
@@ -270,14 +298,16 @@ impl ScreenBuffer {
 
             // 合并组内所有行的内容 cell：跳过续列占位与 `\0`，保留空格。
             let mut merged: Vec<Cell> = Vec::new();
-            let mut cursor_abs: Option<usize> = None;
+            let mut anchor_abs: Vec<Option<usize>> = vec![None; anchors.len()];
 
             for j in group_start..group_end {
                 let row = &lines[j];
                 let cells = content_cells(row);
-                if j == cursor_log_row {
-                    let col_idx = cursor_content_index(row, cursor_col).min(cells.len());
-                    cursor_abs = Some(merged.len() + col_idx);
+                for (k, &(arow, acol)) in anchors.iter().enumerate() {
+                    if j == arow && !anchor_set[k] {
+                        let idx = cursor_content_index(row, acol).min(cells.len());
+                        anchor_abs[k] = Some(merged.len() + idx);
+                    }
                 }
                 merged.extend_from_slice(&cells);
             }
@@ -291,18 +321,19 @@ impl ScreenBuffer {
 
             // 按 new_cols 分行放置合并后的内容
             if merged.is_empty() {
-                let row = new_row(new_cols);
-                if cursor_abs.is_some() {
-                    new_cursor = (out_row, 0);
+                for (k, abs) in anchor_abs.iter().enumerate() {
+                    if abs.is_some() && !anchor_set[k] {
+                        new_anchors[k] = (out_row, 0);
+                        anchor_set[k] = true;
+                    }
                 }
-                new_lines.push(row);
+                new_lines.push(new_row(new_cols));
                 out_row += 1;
             } else {
                 // 按列宽拆分（而非按 cell 数量），宽字符不截断、不越界。
                 let chunks = split_content_cells(&merged, new_cols);
                 let total = chunks.len();
                 let mut offset = 0usize;
-                let mut cursor_set = false;
 
                 for (ci, chunk) in chunks.iter().enumerate() {
                     let mut row = write_chunk_into_row(chunk, new_cols);
@@ -313,27 +344,31 @@ impl ScreenBuffer {
                         group_wrapped
                     };
 
-                    // 光标追踪：绝对 cell 偏移落在当前片内 → 映射为片内列。
-                    if !cursor_set {
-                        if let Some(abs) = cursor_abs {
+                    // 锚点追踪：绝对 cell 偏移落在当前片内 → 映射为片内列；
+                    // 锚点在内容末尾之后 → 定位到末片内容末尾。
+                    for (k, abs) in anchor_abs.iter().enumerate() {
+                        if anchor_set[k] {
+                            continue;
+                        }
+                        if let Some(abs) = *abs {
                             if abs >= offset && abs < offset + chunk.len() {
                                 let mut col = 0usize;
-                                for (k, &cell) in chunk.iter().enumerate() {
-                                    if k == abs - offset {
+                                for (m, &cell) in chunk.iter().enumerate() {
+                                    if m == abs - offset {
                                         break;
                                     }
                                     col += char_width(cell.character);
                                 }
-                                new_cursor = (out_row, col);
-                                cursor_set = true;
+                                new_anchors[k] = (out_row, col);
+                                anchor_set[k] = true;
                             } else if ci + 1 == total {
-                                // 光标在内容末尾之后：定位到末片内容末尾。
                                 let mut col = 0usize;
                                 for &cell in chunk.iter() {
                                     col += char_width(cell.character);
                                 }
-                                new_cursor = (out_row, col.min(new_cols.saturating_sub(1)));
-                                cursor_set = true;
+                                new_anchors[k] =
+                                    (out_row, col.min(new_cols.saturating_sub(1)));
+                                anchor_set[k] = true;
                             }
                         }
                     }
@@ -345,16 +380,19 @@ impl ScreenBuffer {
             }
         }
 
-        // 后处理：如果光标落在 continuation 格上，回退到同字符的首格。
-        let (cr, mut cc) = new_cursor;
-        if cr < new_lines.len() {
-            let row = &new_lines[cr];
-            if cc < row.cells.len() && row.cells[cc].continuation && cc > 0 {
-                cc -= 1;
+        // 后处理：如果锚点落在 continuation 格上，回退到同字符的首格。
+        for a in new_anchors.iter_mut() {
+            let (cr, mut cc) = *a;
+            if cr < new_lines.len() {
+                let row = &new_lines[cr];
+                if cc < row.cells.len() && row.cells[cc].continuation && cc > 0 {
+                    cc -= 1;
+                }
             }
+            *a = (cr, cc);
         }
 
-        (new_lines, (cr, cc))
+        (new_lines, new_anchors)
     }
 
     /// 整屏清空为默认 Cell

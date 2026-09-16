@@ -56,8 +56,7 @@ pub struct TerminalState {
     // 滚动区域的底部行号, 默认 rows - 1, 即整个屏幕都是滚动区域
     scroll_bottom: usize,
 
-    // 1049 切换前的光标保存
-    saved_cursor: Option<Cursor>,
+    // 1049 切换前的光标保存（保存在 Primary 屏的 saved_cursor 槽位）
     // 终端状态
     pub cursor_visible: bool,
     // Bracketed Paste 模式标志
@@ -80,7 +79,6 @@ impl TerminalState {
             current_style: CellStyle::default(),
             scroll_top: 0,
             scroll_bottom: rows.saturating_sub(1),
-            saved_cursor: None,
             cursor_visible: true,
             bracketed_paste: false,
             dirty: false,
@@ -368,7 +366,10 @@ impl TerminalState {
                     // Alternate Screen
                     if set {
                         if self.active == ActiveScreen::Primary {
-                            self.saved_cursor = Some(self.cursor);
+                            // 保存光标到 Primary 屏的 DECSC 槽位（xterm 语义：
+                            // 1049 复用 DECSC/DECRC 的每屏保存槽）
+                            let (r, c) = (self.cursor.row, self.cursor.col);
+                            self.primary.saved_cursor = Some((r, c));
                             self.active = ActiveScreen::Alternate;
                             self.alternate.clear();
                             self.alternate.mark_all_rows_dirty();
@@ -378,8 +379,8 @@ impl TerminalState {
                     } else if self.active == ActiveScreen::Alternate {
                         self.active = ActiveScreen::Primary;
                         self.primary.mark_all_rows_dirty();
-                        if let Some(c) = self.saved_cursor.take() {
-                            self.cursor = c;
+                        if let Some((r, c)) = self.primary.saved_cursor.take() {
+                            self.cursor = Cursor::new(r, c);
                             self.clamp_cursor();
                         }
                         self.pending_wrap = false;
@@ -660,15 +661,17 @@ impl Perform for TerminalState {
             b'c' => {
                 *self = TerminalState::new(self.rows, self.cols);
             }
-            // DECSC：Save Cursor，保存光标
+            // DECSC：Save Cursor，保存光标（每屏独立槽位，resize 时跟随 reflow）
             b'7' => {
-                self.saved_cursor = Some(self.cursor);
+                let (r, c) = (self.cursor.row, self.cursor.col);
+                self.screen_mut().saved_cursor = Some((r, c));
             }
             // DECRC：Restore Cursor，恢复光标
             b'8' => {
-                if let Some(c) = self.saved_cursor {
-                    self.cursor = c;
+                if let Some((r, c)) = self.screen().saved_cursor {
+                    self.cursor = Cursor::new(r, c);
                     self.clamp_cursor();
+                    self.pending_wrap = false;
                 }
             }
             _ => {}
@@ -1170,5 +1173,57 @@ mod tests {
                 consecutive = 0;
             }
         }
+    }
+
+    #[test]
+    fn decsc_decrc_roundtrip() {
+        // ESC 7 保存 / ESC 8 恢复光标
+        let mut st = TerminalState::new(3, 20);
+        feed(&mut st, "hello");
+        feed(&mut st, "\x1b7"); // 保存 (0,5)
+        feed(&mut st, "\x1b[2;3H");
+        assert_eq!((st.cursor.row, st.cursor.col), (1, 2));
+        feed(&mut st, "\x1b8");
+        assert_eq!((st.cursor.row, st.cursor.col), (0, 5));
+    }
+
+    #[test]
+    fn resize_saved_cursor_follows_reflow() {
+        // 回归：zsh 打印 prompt 前用 ESC 7（DECSC）保存光标，SIGWINCH 后用
+        // ESC 8（DECRC）恢复到 prompt 起点再整行重绘。保存的光标位置必须
+        // 跟随内容 reflow 锚定到同一字符，否则恢复落到错误行，
+        // shell 从错误位置重绘 → 重复 prompt 行 / 内容错乱。
+        let mut st = TerminalState::new(4, 40);
+        feed(&mut st, "\x1b[1;1H");
+        feed(&mut st, "user@bogon ~ $ "); // 15 字符，光标 (0,15)
+        feed(&mut st, "\x1b7"); // shell 在输入行起点保存光标
+        feed(&mut st, "0123456789ABCDEF"); // 光标 (0,31)
+        // 缩小到 10 列：31 字符重排为 4 片，保存点（内容索引 15）
+        // 随内容落到第 1 行第 5 列（字符 '0'）
+        st.resize(4, 10);
+        feed(&mut st, "\x1b8");
+        assert_eq!((st.cursor.row, st.cursor.col), (1, 5));
+        assert_eq!(st.screen().cell(1, 5).character, '0');
+    }
+
+    #[test]
+    fn resize_zle_redraw_flow_no_duplicate() {
+        // 端到端模拟 zsh SIGWINCH 重绘流程：DECSC 保存 → 输出 prompt+输入 →
+        // resize → DECRC 恢复 + \r + 清行 → 重新打印 prompt+输入。
+        // 保存光标正确跟随 reflow 时，重绘恰好覆盖重排后的行，
+        // 屏幕上 prompt 只出现一次、无重复行。
+        let prompt_input = "user@bogon ~ $ 0123456789ABCDEFGHIJ";
+        let mut st = TerminalState::new(4, 30);
+        feed(&mut st, "\x1b[1;1H\x1b7"); // 保存 prompt 起点 (0,0)
+        feed(&mut st, prompt_input); // 35 字符，30 列下软换行为两行
+
+        st.resize(4, 10);
+        // ZLE 重绘：恢复保存光标 + 回车 + 清屏以下 + 重打印
+        feed(&mut st, "\x1b8\r\x1b[0J");
+        feed(&mut st, prompt_input);
+
+        let text = visible_text(&st).concat();
+        assert_eq!(text.matches("user@bogon").count(), 1, "prompt 重复: {text:?}");
+        assert_eq!(text.matches("0123456789").count(), 1, "输入内容重复: {text:?}");
     }
 }
