@@ -1074,4 +1074,101 @@ mod tests {
         assert_eq!(st.screen().cell(0, 6).character, 'w');
         assert_eq!(st.screen().cell(0, 10).character, 'd');
     }
+
+    #[test]
+    fn resize_preserves_content_below_cursor() {
+        // 回归：光标不在最后一行时 resize，光标下方的行内容必须保留（不得因只重排
+        // `..=cursor_row` 而被静默丢弃）。
+        let mut st = TerminalState::new(3, 10);
+        feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
+        // 光标回到第 0 行，此时下方两行仍有内容 BBBB/CCCC
+        feed(&mut st, "\x1b[1;1H");
+        assert_eq!(st.cursor.row, 0);
+
+        // 缩小列宽到 5（每行 4 字符均放得下，不应触发换行）
+        st.resize(3, 5);
+
+        assert_eq!(st.screen().cell(0, 0).character, 'A');
+        assert_eq!(st.screen().cell(0, 3).character, 'A');
+        assert_eq!(st.screen().cell(1, 0).character, 'B');
+        assert_eq!(st.screen().cell(1, 3).character, 'B');
+        assert_eq!(st.screen().cell(2, 0).character, 'C');
+        assert_eq!(st.screen().cell(2, 3).character, 'C');
+    }
+
+    /// 把可见屏每行的非空白内容拼成字符串列表（调试 + 断言用）。
+    /// 不做 trim_end：软换行边界可能落在空格串中间，行尾空格是合法内容。
+    fn visible_text(st: &TerminalState) -> Vec<String> {
+        (0..st.rows)
+            .map(|r| {
+                st.screen().visible_rows()[r]
+                    .cells
+                    .iter()
+                    .filter(|c| !c.continuation && c.character != '\0')
+                    .map(|c| c.character)
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resize_stepwise_narrowing_matches_single_step() {
+        // 回归：拖拽窗口会触发一串列宽逐 1 递减的 resize。旧实现逐行独立重排，
+        // 每缩 1 列就把行尾剥出一个「硬换行」单字符行，逐步缩小会把一行内容
+        // 撕成若干单字符竖排行（多余空行 + 内容错位）。修复后 reflow 先按
+        // wrapped 链合并逻辑行、再按新列宽拆分，逐步缩小与单步缩小结果一致。
+        let long_line = "vm            database        logs            project-build";
+        let mut stepwise = TerminalState::new(3, 60);
+        feed(&mut stepwise, long_line);
+        for c in (26..60).rev() {
+            stepwise.resize(3, c);
+        }
+
+        let mut single = TerminalState::new(3, 60);
+        feed(&mut single, long_line);
+        single.resize(3, 26);
+
+        assert_eq!(visible_text(&stepwise), visible_text(&single));
+        // 单步缩小的正确结果：第 0 行是前 26 个字符的软换行头
+        assert!(single.screen().grid[0].wrapped);
+    }
+
+    #[test]
+    fn resize_stepwise_narrowing_no_single_char_rows() {
+        // 回归：逐步缩小后内容必须按原始顺序完整保留，不得出现撕裂
+        //（多余空行、单字符独占一行、宽字符丢失）。宽字符行同样覆盖。
+        let mut st = TerminalState::new(5, 40);
+        feed(&mut st, "WorkBuddy      Desktop        Movies\r\n中企开发            soft");
+        for c in (12..40).rev() {
+            st.resize(5, c);
+        }
+        // 所有非空白字符按原始顺序完整保留（无丢失、无重复；软换行边界
+        // 落在空格串中间时行尾空格是内容，不得被吞掉）
+        let orig = "WorkBuddy      Desktop        Movies中企开发            soft";
+        assert_eq!(visible_text(&st).concat(), orig);
+        // 不得残留「连续多行单字符硬换行」的撕裂特征（软换行组末尾单个
+        // chunk 是合法的短硬行，但不会连续出现）
+        let lens: Vec<(usize, bool)> = st
+            .screen()
+            .visible_rows()
+            .iter()
+            .map(|row| {
+                let n = row
+                    .cells
+                    .iter()
+                    .filter(|c| !c.continuation && c.character != '\0')
+                    .count();
+                (n, row.wrapped)
+            })
+            .collect();
+        let mut consecutive = 0;
+        for &(n, wrapped) in &lens {
+            if n == 1 && !wrapped {
+                consecutive += 1;
+                assert!(consecutive <= 1, "出现连续单字符撕裂行: {:?}", lens);
+            } else {
+                consecutive = 0;
+            }
+        }
+    }
 }

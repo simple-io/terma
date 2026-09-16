@@ -144,47 +144,34 @@ impl ScreenBuffer {
             return self.resize_rows_only(new_rows, old_rows, cursor_row);
         }
 
-        // 合并 scrollback + grid 为统一逻辑行序列
+        // 合并 scrollback + grid 为统一逻辑行序列（必须抽取整屏所有行参与重排，
+        // 否则光标下方的行会被静默丢弃，导致 resize 时「丢失字符」）。
         let sb_count = self.scrollback.len();
         let mut lines: Vec<Row> = Vec::with_capacity(sb_count + self.grid.len());
         for row in self.scrollback.drain(..) {
             lines.push(row);
         }
-        for row in self.grid.drain(..=cursor_row) {
+        for row in self.grid.drain(..) {
             lines.push(row);
         }
 
-        // 裁剪尾部空行：避免空白行参与 reflow 产生多余的输出行
-        // while lines.len() > 1 {
-        //     let last = lines.last().unwrap();
-        //     let has_content = last.iter().any(|c| {
-        //         !c.continuation
-        //             && (c.character != ' '
-        //                 || c.foreground != crate::terminal::color::Color::Default
-        //                 || c.background != crate::terminal::color::Color::Default
-        //                 || c.bold
-        //                 || c.italic
-        //                 || c.underline
-        //                 || c.inverse)
-        //     });
-        //     if !has_content && !last.wrapped {
-        //         lines.pop();
-        //     } else {
-        //         break;
-        //     }
-        // }
+        // 裁剪尾部空填充行：grid 底部总有 rows 高的空填充，且纯空/纯空格行参与
+        // reflow 只会产生多余的空白输出行、把真实内容误推入 scrollback。软换行行
+        // （wrapped=true）是上一行的延续，不属于「尾部空行」，不裁剪。
+        while lines.len() > 1 {
+            let last = lines.last().unwrap();
+            if row_is_effectively_empty(last) && !last.wrapped {
+                lines.pop();
+            } else {
+                break;
+            }
+        }
 
         // 光标在逻辑行序列中的位置（scrollback 行在前，grid 行在后）
         let cursor_log_row = (sb_count + cursor_row).min(lines.len().saturating_sub(1));
 
-        // ── 按列宽变化方向执行 reflow ──
-        let (mut new_lines, new_cursor) = if new_cols < old_cols {
-            // 列宽变窄：逐行按新列宽拆分，宽字符不截断
-            self.reflow_narrowing(&lines, new_cols, cursor_log_row, cursor_col)
-        } else {
-            // 列宽变宽：合并软换行行，保留硬换行
-            self.reflow_widening(&lines, new_cols, cursor_log_row, cursor_col)
-        };
+        // ── 内容重排（缩小/放大共用：按软换行链合并逻辑行后重新拆分） ──
+        let (mut new_lines, new_cursor) = self.reflow(&lines, new_cols, cursor_log_row, cursor_col);
 
         // ── 拆分回 scrollback + grid ──
         // 保留总量上限 = scrollback_limit + new_rows
@@ -237,22 +224,25 @@ impl ScreenBuffer {
         (cr, 0)
     }
 
-    /// 缩小列宽 reflow：逐行按新列宽拆分，宽字符不截断。
+    /// 内容重排（缩小与放大列宽共用）：按软换行链分组 → 合并逻辑行 → 按新列宽重新拆分。
     ///
-    /// 提取内容 cell 时跳过两类格子，避免重排出现越界或多余空行：
-    ///   - 续列占位格（`continuation`）：宽字符重新排布时自动重建续列；
-    ///   - 零宽/默认空 cell（`\0`，宽度为 0）：不参与排布。
-    /// 硬换行行（wrapped=false）末尾的空白空格属于填充，裁剪掉，避免拆出只有空格的
-    /// 多余行；软换行行（wrapped=true）已写满，其末尾空格是内容，必须保留。
-    /// 宽字符在整行都放不下时（`new_cols == 1`）按终端惯例截断为空格占位，
-    /// 绝不留下「无续列的宽字符首格」。
+    /// 关键不变量：`wrapped=true` 的行是上一行的软换行延续，必须先合并回逻辑行
+    /// 再重新拆分。若像旧实现那样逐行独立重排，拖拽缩放（列宽逐 1 递减的一串
+    /// resize）会把行尾逐步「剥」出硬换行单字符行，最终把一行内容撕成
+    /// 若干单字符竖排行（多余空行 + 内容错位/丢失）。
+    ///
+    /// 提取内容 cell 时跳过两类格子：续列占位（`continuation`，重排时自动重建）、
+    /// 零宽空 cell（`\0`，填充）。显式空格是内容：
+    ///   - 软换行组：尾部空格保留（如单词分隔符，放大后不得被挤压合并）；
+    ///   - 硬换行组：尾部空白空格视为填充，裁剪（避免拆出只有空格的多余行）。
+    /// 宽字符不截断；仅在整行都放不下（`new_cols == 1`）时按终端惯例截断为空白占位。
     ///
     /// 参数
     ///     - lines: 逻辑行序列
     ///     - new_cols: 新列数
-    ///     - cursor_log_row: 光标行
+    ///     - cursor_log_row: 光标所在的逻辑行号
     ///     - cursor_col: 光标列
-    fn reflow_narrowing(
+    fn reflow(
         &mut self,
         lines: &[Row],
         new_cols: usize,
@@ -261,91 +251,12 @@ impl ScreenBuffer {
     ) -> (Vec<Row>, (usize, usize)) {
         let mut new_lines: Vec<Row> = Vec::new();
         let mut new_cursor = (0usize, 0usize);
-        let mut out_row = 0usize;
-
-        for (log_idx, line) in lines.iter().enumerate() {
-            // 内容 cell：跳过续列占位与零宽空 cell（`\0`）。
-            let mut cells = content_cells(line);
-            // 硬换行行（wrapped=false）末尾的空白空格是填充，裁剪掉，避免产生
-            // 只有空格的多余行；软换行行（wrapped=true）已写满，末尾空格是内容，必须保留。
-            if !line.wrapped {
-                while cells.last().map_or(false, |c| c.is_blank()) {
-                    cells.pop();
-                }
-            }
-
-            let line_start_row = out_row;
-
-            // 空行（无任何可见内容）：保留一个空行，光标归第 0 列。
-            if cells.is_empty() {
-                let mut row = new_row(new_cols);
-                row.wrapped = line.wrapped;
-                if log_idx == cursor_log_row {
-                    new_cursor = (out_row, 0);
-                }
-                new_lines.push(row);
-                out_row += 1;
-                continue;
-            }
-
-            // 按新列宽拆分内容 cell，宽字符不截断。
-            let chunks = split_content_cells(&cells, new_cols);
-
-            for (ci, chunk) in chunks.iter().enumerate() {
-                let mut row = write_chunk_into_row(chunk, new_cols);
-                // 非末片：本行软换行到下一片；末片：继承原逻辑行的软换行状态。
-                row.wrapped = if ci + 1 < chunks.len() {
-                    true
-                } else {
-                    line.wrapped
-                };
-                new_lines.push(row);
-                out_row += 1;
-            }
-
-            // 光标追踪：旧列坐标 → 内容 cell 索引 → (chunk 行, chunk 内列)。
-            if log_idx == cursor_log_row {
-                let content_idx = cursor_content_index(line, cursor_col).min(cells.len() - 1);
-                let mut remaining = content_idx;
-                for (ci, chunk) in chunks.iter().enumerate() {
-                    if remaining < chunk.len() {
-                        let mut col = 0usize;
-                        for (j, &cell) in chunk.iter().enumerate() {
-                            if j == remaining {
-                                new_cursor = (line_start_row + ci, col);
-                                break;
-                            }
-                            col += char_width(cell.character);
-                        }
-                        break;
-                    }
-                    remaining -= chunk.len();
-                }
-            }
-        }
-
-        let cursor = (
-            new_cursor.0.min(new_lines.len().saturating_sub(1)),
-            new_cursor.1,
-        );
-        (new_lines, cursor)
-    }
-
-    /// 放大列宽 reflow：合并软换行行组，剥离旧列宽填充的尾部空 cell（`\0`）。
-    /// 硬换行（wrapped=false）分隔的行组不被合并；空格是内容、予以保留。
-    /// 参数
-    ///     - lines: 逻辑行序列
-    ///     - new_cols: 新列数
-    ///     - cursor_log_row: 光标行
-    ///     - cursor_col: 光标列
-    fn reflow_widening(&mut self, lines: &[Row], new_cols: usize, cursor_log_row: usize, cursor_col: usize, ) -> (Vec<Row>, (usize, usize)) {
-        let mut new_lines: Vec<Row> = Vec::new();
-        let mut new_cursor = (0usize, 0usize);
         let mut out_row: usize = 0;
         let mut i: usize = 0;
 
         while i < lines.len() {
-            // 收集连续 wrapped 行组（第一行自身可以是 hard break，后续行 wrapped=true 表示它是上一行的延续）
+            // 收集连续 wrapped 行组：首行可以是硬换行，后续行 wrapped=true 表示
+            // 它是上一行的延续。
             let group_start = i;
             i += 1;
             while i < lines.len() && lines[i - 1].wrapped {
@@ -353,9 +264,11 @@ impl ScreenBuffer {
             }
             let group_end = i; // exclusive
 
-            // 合并组内所有行的内容 cell：跳过续列占位与零宽空 cell（`\0`），保留空格。
-            // 关键：尾部填充是 `\0`（默认空 cell）而非空格，空格（如单词分隔符）是有意义内容，
-            // 若像旧实现那样裁剪空格，会把原本独立的内容错误地挤在一起。
+            // 组的软换行状态由「组内最后一行」决定（它决定是否延续到下一组），
+            // 而非首行（首行的 wrapped 仅表示它软换行到组内下一行）。
+            let group_wrapped = lines[group_end - 1].wrapped;
+
+            // 合并组内所有行的内容 cell：跳过续列占位与 `\0`，保留空格。
             let mut merged: Vec<Cell> = Vec::new();
             let mut cursor_abs: Option<usize> = None;
 
@@ -369,21 +282,23 @@ impl ScreenBuffer {
                 merged.extend_from_slice(&cells);
             }
 
-            // 组的软换行状态由「组内最后一行」决定（它决定是否延续到下一组），
-            // 而非首行（首行的 wrapped 仅表示它软换行到组内下一行）。
-            let group_wrapped = lines[group_end - 1].wrapped;
+            // 硬换行组末尾的空白空格是填充，裁剪掉；软换行组的空格是内容，保留。
+            if !group_wrapped {
+                while merged.last().map_or(false, |c| c.is_blank()) {
+                    merged.pop();
+                }
+            }
 
             // 按 new_cols 分行放置合并后的内容
             if merged.is_empty() {
-                let mut row = new_row(new_cols);
-                row.wrapped = group_wrapped;
+                let row = new_row(new_cols);
                 if cursor_abs.is_some() {
                     new_cursor = (out_row, 0);
                 }
                 new_lines.push(row);
                 out_row += 1;
             } else {
-                // 与 narrowing 一致按列宽拆分（而非按 cell 数量），宽字符不截断、不越界。
+                // 按列宽拆分（而非按 cell 数量），宽字符不截断、不越界。
                 let chunks = split_content_cells(&merged, new_cols);
                 let total = chunks.len();
                 let mut offset = 0usize;
@@ -702,6 +617,15 @@ fn content_cells(row: &Row) -> Vec<Cell> {
         .filter(|c| !c.continuation && char_width(c.character) > 0)
         .copied()
         .collect()
+}
+
+/// 一行是否「无可见内容」：所有内容 cell 都是默认样式空格（`is_blank`）。
+///
+/// grid 底部总有 `rows` 高的空填充行（全 `\0`），且用户也可能输出只有空格的行；
+/// 这类行参与 reflow 只会产生多余的空白输出行、把真实内容误推入 scrollback，
+/// 因此 resize 时作为「尾部空填充行」统一裁剪。有样式（如背景色）的空格不算空。
+fn row_is_effectively_empty(row: &Row) -> bool {
+    content_cells(row).iter().all(|c| c.is_blank())
 }
 
 /// 把内容 cell 按 `max_cols` 列宽拆分成若干片段（chunk）。
