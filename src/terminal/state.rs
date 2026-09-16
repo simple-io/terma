@@ -222,7 +222,7 @@ impl TerminalState {
         } else if width == 2 {
             // width == 2：宽字符
             if col + 1 >= self.cols {
-                // 行末仅剩 1 列，放不下宽字符：填充空格占位并置延迟换行（宽字符被截断，不写入）
+                // 行末仅剩 1 列，放不下宽字符：填充空白占位（`\0`）并置延迟换行（宽字符被截断，不写入）
                 self.screen_mut().grid[row][col] = Cell::default();
                 self.screen_mut().mark_row_dirty(row);
                 self.pending_wrap = true;
@@ -599,7 +599,7 @@ impl Perform for TerminalState {
                     self.screen_mut().repair_row(r);
                 }
             }
-            // 插入字符（光标处 n 个空格，右侧推出）
+            // 插入字符（光标处 n 个空白，右侧推出）
             '@' => {
                 let n = param!(0, 1).max(1) as usize;
                 let r = self.cursor.row;
@@ -620,7 +620,7 @@ impl Perform for TerminalState {
                     self.screen_mut().repair_row(r);
                 }
             }
-            // 删除字符但保留位置（用空格覆盖）
+            // 删除字符但保留位置（用空白覆盖）
             'X' => {
                 let n = param!(0, 1).max(1) as usize;
                 let r = self.cursor.row;
@@ -723,9 +723,9 @@ mod tests {
         feed(&mut st, "AB");
         assert_eq!(st.cursor.col, 2);
 
-        // 光标已在最后一列，宽字符放不下 → 截断为空格，光标停在末列并置延迟换行
+        // 光标已在最后一列，宽字符放不下 → 截断为空白占位（`\0` 未占用格），光标停在末列并置延迟换行
         feed(&mut st, "你");
-        assert_eq!(st.screen().cell(0, 2).character, ' ');
+        assert_eq!(st.screen().cell(0, 2).character, '\0');
         assert!(!st.screen().cell(0, 2).continuation);
         assert_eq!(st.cursor.col, 2);
 
@@ -840,7 +840,7 @@ mod tests {
         let mut st = TerminalState::new(2, 10);
         feed(&mut st, "ABCDE");
         assert_eq!(st.cursor.col, 5);
-        // 光标移到第 3 列（index 2），删除 1 个字符 → "C" 被删，"DE" 左移，右侧补空格
+        // 光标移到第 3 列（index 2），删除 1 个字符 → "C" 被删，"DE" 左移，右侧补空白（`\0`）
         feed(&mut st, "\x1b[3G\x1b[1P");
         let row = st.screen().visible_rows().get(0).unwrap();
         assert_eq!(row.len(), 10);
@@ -848,7 +848,7 @@ mod tests {
         assert_eq!(row[1].character, 'B');
         assert_eq!(row[2].character, 'D');
         assert_eq!(row[3].character, 'E');
-        assert_eq!(row[4].character, ' ');
+        assert_eq!(row[4].character, '\0');
         // 行末列（index 9）仍可正常写入，不应越界 panic
         feed(&mut st, "\x1b[10Gx");
         assert_eq!(st.screen().cell(0, 9).character, 'x');
