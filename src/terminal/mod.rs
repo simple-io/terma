@@ -18,8 +18,10 @@ pub mod cursor;
 pub mod parser;
 pub mod state;
 pub mod control;
+pub mod row;
 
-pub use screen::{Row, ScreenBuffer};
+pub use row::Row;
+pub use screen::{ScreenBuffer};
 pub use cell::{Cell, CellStyle, char_width};
 pub use color::Color;
 pub use cursor::Cursor;

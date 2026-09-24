@@ -22,6 +22,8 @@ pub struct Cell {
     pub inverse: bool,
     // 宽字符（显示宽度=2）的续列占位：本身不渲染可见字符，
     pub continuation: bool,
+    // 显示宽度：0/1/2
+    width: usize,
 }
 
 impl Default for Cell {
@@ -35,11 +37,21 @@ impl Default for Cell {
             underline: false,
             inverse: false,
             continuation: false,
+            width: 0,
         }
     }
 }
 
 impl Cell {
+    /// 创建一个默认样式的字符单元
+    pub fn new(character: char) -> Self {
+        Self {
+            character,
+            width: char_width(character),
+            ..Default::default()
+        }
+    }
+
     /// 默认的续列占位单元格
     pub fn continuation_cell() -> Self {
         Self {
@@ -50,23 +62,43 @@ impl Cell {
     /// 应用 inverse 后用于渲染的实际颜色对
     pub fn resolved_colors(&self) -> ((u8, u8, u8), (u8, u8, u8)) {
         if self.inverse {
-            // 取反：前景取背景色，背景取前景色
+            // 颜色取反：前景取背景色，背景取前景色
             (color::bg_rgb(self.background), color::fg_rgb(self.foreground))
         } else {
+            // 正常：前景取前景色，背景取背景色
             (color::fg_rgb(self.foreground), color::bg_rgb(self.background))
         }
     }
 
     /// 字符的显示宽度 0/1/2
     pub fn char_width(&self) -> usize {
-        char_width(self.character)
+        self.width
+    }
+
+    /// 是否为零宽字符（显示宽度=0）
+    pub fn is_zero_width(&self) -> bool {
+        self.width == 0
+    }
+
+    /// 是否为普通字符（显示宽度=1）
+    pub fn is_normal_char(&self) -> bool {
+        self.width == 1
+    }
+    /// 是否为宽字符（显示宽度=2）
+    pub fn is_wide_char(&self) -> bool {
+        self.width == 2
+    }
+
+    /// 是否为续列占位格
+    pub fn is_continuation(&self) -> bool {
+        self.continuation
     }
 
     /// 是否为「空白填充格」：默认样式的空格，渲染时不产生可见内容。
     /// 与续列占位、零宽空 cell（`\0`）一样，reflow 时可作为尾部填充裁剪，
     /// 但「有样式（如背景色）的空格」不属于填充，必须保留。
     pub fn is_blank(&self) -> bool {
-        self.character == ' '
+        self.character == '\x00'
             && self.foreground == Color::Default
             && self.background == Color::Default
             && !self.bold
@@ -74,6 +106,24 @@ impl Cell {
             && !self.underline
             && !self.inverse
     }
+}
+
+/// 计算多个字符单元的显示宽度总和。
+pub fn cells_width(cells: &Vec<Cell>) -> usize {
+    cells
+        .iter()
+        .filter(|c| !c.continuation && !c.is_zero_width() && !c.is_blank())
+        .map(|c| c.char_width())
+        .sum()
+}
+
+/// 过滤掉续列占位、零宽空 cell（`\0`），提取有内容的 cell 集合
+pub fn cells_content(cells: &Vec<Cell>) -> Vec<Cell> {
+    cells
+        .iter()
+        .filter(|c| !c.continuation && !c.is_zero_width() && !c.is_blank())
+        .copied()
+        .collect()
 }
 
 /// 返回单个字符的显示宽度（0/1/2）。
@@ -113,6 +163,7 @@ impl CellStyle {
             underline: self.underline,
             inverse: self.inverse,
             continuation: false,
+            width: char_width(c),
         }
     }
 }

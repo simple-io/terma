@@ -302,7 +302,7 @@ impl App {
         if offset == 0 {
             self.main_window.set_cursor_row(guard.cursor.row as i32);
             self.main_window.set_cursor_col(guard.cursor.col as i32);
-            self.main_window.set_cursor_visible(guard.cursor_visible);
+            self.main_window.set_cursor_visible(guard.cursor.visible);
         } else {
             self.main_window.set_cursor_visible(false);
         }
@@ -595,7 +595,7 @@ fn parse_session_id(s: &slint::SharedString) -> Option<SessionId> {
 }
 
 /// 把键盘事件编码为写入 PTY 的字节序列
-fn encode_key(text: &slint::SharedString, meta: bool, control: bool, alt: bool, shift: bool) -> Vec<u8> {
+fn encode_key(text: &slint::SharedString, meta: bool, _cort: bool, _alt: bool, _shift: bool) -> Vec<u8> {
     let s = text.as_str();
     let c = match s.chars().next() {
         Some(c) => c,
