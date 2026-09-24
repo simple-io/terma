@@ -13,10 +13,10 @@
 //!   - `build_row_runs` 仅处理单行，供控制器按行缓存、仅重建脏行
 //!   - `build_runs` 遍历所有行（全量重建，用于回退或初始化）
 
-use crate::terminal::screen::ScreenBuffer;
-use crate::terminal::cell::{Cell, char_width};
+use crate::terminal::cell::Cell;
 use crate::terminal::color::Color;
-use crate::terminal::state::{TerminalState};
+use crate::terminal::screen::ScreenBuffer;
+use crate::terminal::state::TerminalState;
 
 /// 一个渲染项：单个字符单元格（非空白、非续列占位）
 #[derive(Debug, Clone)]
@@ -102,7 +102,7 @@ pub fn build_row_runs(row: &Vec<Cell>, row_idx: usize) -> Vec<RunRender> {
         if is_blank(cell) {
             continue;
         }
-        let width = char_width(cell.character);
+        let width = cell.char_width();
         // 零宽/组合字符不占列，跳过
         if width == 0 {
             continue;

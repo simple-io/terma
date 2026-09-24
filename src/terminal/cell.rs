@@ -94,6 +94,11 @@ impl Cell {
         self.continuation
     }
 
+    /// 是否为「内容格」：非续列占位、非零宽空、非空白填充。
+    pub fn is_content(&self) -> bool {
+        !self.continuation && !self.is_zero_width() && !self.is_blank()
+    }
+
     /// 是否为「空白填充格」：默认样式的空格，渲染时不产生可见内容。
     /// 与续列占位、零宽空 cell（`\0`）一样，reflow 时可作为尾部填充裁剪，
     /// 但「有样式（如背景色）的空格」不属于填充，必须保留。

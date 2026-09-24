@@ -11,7 +11,7 @@
 //!   - 渲染层据此仅重建脏行的 Run 列表，未变更行复用缓存
 
 use crate::terminal::Cursor;
-use crate::terminal::cell::{Cell, char_width};
+use crate::terminal::cell::{Cell};
 use crate::terminal::row::Row;
 use std::cell::RefCell;
 
@@ -197,6 +197,7 @@ impl ScreenBuffer {
                 }
             }
 
+            // 重排内容，根据新列宽重新折行
             let (rows, pos) = Row::reflow_content(&content, new_cols);
             let base = out.len();
             if let Some(ci) = active_idx {
@@ -435,11 +436,11 @@ fn fix_wide_invariants(row: &mut Row) {
         if row[i].continuation {
             // 续列占位：前一个必须是宽字符首格
             let lead_ok =
-                i > 0 && !row[i - 1].continuation && char_width(row[i - 1].character) == 2;
+                i > 0 && !row[i - 1].continuation && row[i - 1].is_wide_char();
             if !lead_ok {
                 row[i] = Cell::default();
             }
-        } else if char_width(row[i].character) == 2 {
+        } else if row[i].is_wide_char() {
             // 宽字符首格：后一个必须是续列占位
             let cont_ok = i + 1 < cols && row[i + 1].continuation;
             if !cont_ok {
@@ -458,12 +459,12 @@ fn cursor_content_index(line: &Row, col: usize) -> usize {
     let idx = col.min(cells.len().saturating_sub(1));
     let mut ci = 0usize;
     for (i, cell) in cells.iter().enumerate() {
-        let is_content = !cell.continuation && !cell.is_zero_width() && !cell.is_blank();
         if i == idx {
             // 光标在续列占位格 → 归到左侧首格
             return if cell.continuation { ci.saturating_sub(1) } else { ci };
         }
-        if is_content {
+        if cell.is_content() {
+            // 可显示内容格
             ci += 1;
         }
     }

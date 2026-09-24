@@ -22,7 +22,7 @@ pub mod row;
 
 pub use row::Row;
 pub use screen::{ScreenBuffer};
-pub use cell::{Cell, CellStyle, char_width};
+pub use cell::{Cell, CellStyle};
 pub use color::Color;
 pub use cursor::Cursor;
 pub use state::{TerminalState};

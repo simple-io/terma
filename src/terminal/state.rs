@@ -14,7 +14,7 @@
 use vte::{Params, Perform};
 
 use crate::terminal::screen::ScreenBuffer;
-use crate::terminal::cell::{Cell, CellStyle, char_width};
+use crate::terminal::cell::{Cell, CellStyle};
 use crate::terminal::color::Color;
 use crate::terminal::cursor::Cursor;
 
