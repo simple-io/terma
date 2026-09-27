@@ -348,7 +348,23 @@ impl Perform for TerminalState {
             b'\t' => {
                 // tab 到下一个 8 的倍数
                 let next = (self.cursor.col / 8 + 1) * 8;
-                self.cursor.col = next.min(self.cols.saturating_sub(1));
+                let next = next.min(self.cols.saturating_sub(1));
+                // 把跳过的「空白格」填充成真实空格 cell（不动已有内容，保持 tab 不擦除语义）。
+                if next > self.cursor.col {
+                    let (row, col) = (self.cursor.row, self.cursor.col);
+                    let space = Cell::new(' ');
+                    for c in col..next {
+                        let is_blank = self
+                            .screen()
+                            .get_cell(row, c)
+                            .map(|cell| cell.is_blank() && !cell.continuation)
+                            .unwrap_or(false);
+                        if is_blank {
+                            self.screen_mut().put_cell(row, c, space);
+                        }
+                    }
+                }
+                self.cursor.col = next;
                 self.pending_wrap = false;
             }
             b'\x07' => { /* BEL 忽略 */ }
@@ -715,6 +731,133 @@ mod tests {
         assert!(!c0.continuation);
         assert_eq!(c1.character, ' ');
         assert!(!c1.continuation);
+    }
+
+    /// 行文本快照（把 grid 某行转为可读字符串，`\0` 显示为 `·`）
+    fn row_text(st: &TerminalState, row: usize) -> String {
+        st.screen()
+            .row(row)
+            .unwrap()
+            .get_cells()
+            .iter()
+            .map(|c| if c.character == '\0' { '·' } else { c.character })
+            .collect()
+    }
+
+    #[test]
+    fn repro_ls_reflow_loses_spaces() {
+        let mut st = TerminalState::new(6, 80);
+        // 模拟 zsh 下彩色 ls 多列输出（行宽 80 内不换行）
+        let line1 = "\x1b[36mApplications\x1b[0m  \x1b[36mDesktop\x1b[0m  \x1b[36mdevelop\x1b[0m  \x1b[36mDocuments\x1b[0m  \x1b[36mDownloads\x1b[0m";
+        feed(&mut st, "xk@xk-mac ~ % ls\r\n");
+        feed(&mut st, line1);
+        feed(&mut st, "\r\n");
+        feed(&mut st, "xk@xk-mac ~ % ");
+
+        // 拖拽式缩小（多次 1 列步进）再放大
+        for c in (30..80).rev() {
+            st.resize(6, c);
+        }
+        for c in 30..=80 {
+            st.resize(6, c);
+        }
+        let text = row_text(&st, 1);
+        println!("row1: {}", text);
+        assert!(
+            text.starts_with("Applications  Desktop"),
+            "ls 多列空格丢失: {text}"
+        );
+    }
+
+    #[test]
+    fn repro_ls_reflow_loses_spaces_scrollback() {
+        // ls 输出超过屏幕高度，前几行滚入 scrollback，再拖拽 resize
+        let mut st = TerminalState::new(5, 80);
+        let mut out = String::from("xk@xk-mac ~ % ls\r\n");
+        for i in 0..12 {
+            out.push_str(&format!(
+                "\x1b[36mfile_{:02}_aaaaaaaa\x1b[0m  \x1b[36mfile_{:02}_bbbbbbbb\x1b[0m  \x1b[36mfile_{:02}_cccccccc\x1b[0m",
+                i, i, i
+            ));
+            out.push_str("\r\n");
+        }
+        out.push_str("xk@xk-mac ~ % ");
+        feed(&mut st, &out);
+
+        for c in (30..80).rev() {
+            st.resize(5, c);
+        }
+        for c in 30..=80 {
+            st.resize(5, c);
+        }
+        // 检查 scrollback 中第一行 ls 输出（file_00）的列间隙在 reflow 后保留
+        let sb_text: String = st
+            .screen()
+            .scrollback
+            .iter()
+            .find(|r| {
+                let t: String = r
+                    .get_cells()
+                    .iter()
+                    .map(|c| c.character)
+                    .collect();
+                t.contains("file_00")
+            })
+            .map(|r| {
+                r.get_cells()
+                    .iter()
+                    .map(|c| if c.character == '\0' { '·' } else { c.character })
+                    .collect()
+            })
+            .unwrap_or_default();
+        println!("sb: {}", sb_text);
+        assert!(
+            sb_text.starts_with("file_00_aaaaaaaa  file_00_bbbbbbbb"),
+            "scrollback 中 ls 列间隙在 reflow 后丢失: {sb_text}"
+        );
+    }
+
+    /// 真实 zsh（macOS BSD ls 多列输出使用 \t 分隔）抓包重放：
+    /// resize 前后 ls 的 Tab 列间隙必须保留，不得粘连。
+    const ZSH_PHASE1: &str = "l\x08ls\x1b[?2004l\r\r\nApplications\tMovies\t\tdata\t\tproject-base\t中企\r\nDesktop\t\tMusic\t\tdevelop\t\tsoft\r\n\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m                                                                               \r \r\r\x1b[0m\x1b[27m\x1b[24m\x1b[Jxk@xk-mac ~ % \x1b[K\x1b[?2004h";
+
+    #[test]
+    fn replay_zsh_ls_tabs_survive_resize() {
+        let mut st = TerminalState::new(24, 80);
+        feed(&mut st, ZSH_PHASE1);
+
+        // 拖拽式缩小再放大
+        for c in (20..80).rev() {
+            st.resize(24, c);
+        }
+        for c in 20..=80 {
+            st.resize(24, c);
+        }
+
+        let text = row_text(&st, 1);
+        println!("row1: {}", text);
+        // Tab 间隙（补写后的真实空格）必须在 reflow 后保留
+        assert!(
+            text.starts_with("Applications    Movies          data"),
+            "ls Tab 列间隙在 reflow 后丢失: {text}"
+        );
+    }
+
+    #[test]
+    fn tab_does_not_overwrite_existing_content() {
+        // tab 不擦除已有内容：先在间隙位置写内容，再 tab 跳过，内容保持
+        let mut st = TerminalState::new(5, 40);
+        feed(&mut st, "abc");
+        feed(&mut st, "\x1b[1;9H"); // 移到 (0,8)
+        feed(&mut st, "X");
+        feed(&mut st, "\x1b[1;1H"); // 回到行首
+        feed(&mut st, "\t"); // 跳到 col 8，途经 col 3..8 原本空白，col 8 的 X 不得被覆盖
+        let mut text = String::new();
+        for c in 0..9 {
+            text.push(st.screen().cell(0, c).character);
+        }
+        // col 3..8 补写空格，col 8 的 X 不受影响
+        assert_eq!(text, "abc     X");
     }
 
     #[test]
