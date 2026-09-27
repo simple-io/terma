@@ -25,6 +25,7 @@
 
 use slint::{ComponentHandle, VecModel};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -68,6 +69,20 @@ thread_local! {
     static APP_WEAK: RefCell<Option<Weak<App>>> = const { RefCell::new(None) };
 }
 
+/// 单个会话（Tab）独立的滚动视图状态。
+///
+/// 滚动状态必须按 Tab 各自维护：滚动偏移量、滚轮累加器、冻结锚点等互不影响，
+/// 切换 Tab 时各自恢复、各自冻结，避免 A 标签页的滚动位置串扰到 B 标签页。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScrollState {
+    /// 滚动偏移量：从底部向上滚动的行数（0 = 跟随最新输出）
+    pub offset: usize,
+    /// 上次设置 offset 时 scrollback 的长度，用于滚动状态下冻结视图
+    pub anchor_len: usize,
+    /// 滚轮像素累加器：累积满一个字符行高（CHAR_H）才触发一次整行滚动
+    pub acc: f32,
+}
+
 /// 应用控制器：持有窗口、会话管理器、Profile 管理器与 UI Model。
 pub struct App {
     main_window: MainWindow,
@@ -85,13 +100,8 @@ pub struct App {
     wake_tx: SyncSender<()>,
     // PTY 输出唤醒通道接收端：渲染分发线程经此通道接收唤醒信号
     wake_rx: Arc<Mutex<Receiver<()>>>,
-    // 滚动偏移量：从底部向上滚动的行数（0 = 跟随最新输出）
-    scroll_offset: Cell<usize>,
-    // 上次设置 scroll_offset 时 scrollback 的长度，用于滚动状态下冻结视图：
-    // 新历史行到达时把偏移量同步下移，保持用户正在查看的内容不动。
-    anchor_len: Cell<usize>,
-    // 滚轮像素累加器：累积满一个字符行高（CHAR_H）才触发一次整行滚动
-    scroll_acc: Cell<f32>,
+    // 每个会话（Tab）独立的滚动视图状态，以 SessionId 索引，互不影响
+    scroll_states: RefCell<HashMap<SessionId, ScrollState>>,
 }
 
 impl App {
@@ -120,9 +130,7 @@ impl App {
             render_cache: RenderCache::new(),
             wake_tx,
             wake_rx: Arc::new(Mutex::new(wake_rx)),
-            scroll_offset: Cell::new(0),
-            anchor_len: Cell::new(0),
-            scroll_acc: Cell::new(0.0),
+            scroll_states: RefCell::new(HashMap::new()),
         });
 
         // 加载配置文件
@@ -255,13 +263,11 @@ impl App {
         guard.clear_dirty();
     }
 
-    // 无激活会话时清空视图与滚动状态。
+    // 无激活会话时清空视图。
     fn clear_view(&self) {
         self.render_cache.clear();
         self.cells_model.set_vec(Vec::new());
         self.main_window.set_cursor_visible(false);
-        self.scroll_offset.set(0);
-        self.anchor_len.set(0);
     }
 
     // 实际执行渲染
@@ -273,22 +279,13 @@ impl App {
         let sb_len = screen.scrollback.len();
 
         // 冻结内容，滚动状态下新历史行到达时，把偏移量随底部下移，保持用户正在查看的内容不动。
-        let offset = {
-            let current_offset = self.scroll_offset.get();
-            if current_offset > 0 {
-                let grew = sb_len.saturating_sub(self.anchor_len.get());
-                (current_offset + grew).min(sb_len)
-            } else {
-                0
-            }
-        };
-        self.scroll_offset.set(offset);
-        self.anchor_len.set(sb_len);
+        // 偏移量与锚点按激活会话独立维护，切换 Tab 各自恢复、互不串扰。
+        let offset = self.settle_scroll(sb_len);
 
         if offset == 0 {
+            // 跟随模式：仅重建脏行，未变更行复用缓存
             let dirty_rows = guard.take_dirty_rows();
             if dirty_rows.len() > 0 {
-                // 跟随模式：仅重建脏行，未变更行复用缓存
                 self.render_cache.update(dirty_rows, screen.visible_rows());
                 self.cells_model.set_vec(self.render_cache.build_cell_runs());
             }
@@ -318,29 +315,66 @@ impl App {
         }
     }
 
+    // 冻结滚动视图并返回激活会话最终生效的滚动偏移量。
+    // 滚动状态下（offset > 0）scrollback 增长时，把偏移量随底部同步下移，
+    // 保持用户正在查看的历史内容在视口中不动；跟随模式（offset == 0）直接返回 0。
+    // 同时刷新锚点长度为当前 scrollback 长度，供下一次增长量计算。
+    fn settle_scroll(&self, sb_len: usize) -> usize {
+        let id = match self.sessions.borrow().active_id() {
+            Some(id) => id,
+            None => return 0,
+        };
+        let mut states = self.scroll_states.borrow_mut();
+        let st = states.entry(id).or_default();
+        let current = st.offset;
+        let offset = if current > 0 {
+            let grew = sb_len.saturating_sub(st.anchor_len);
+            (current + grew).min(sb_len)
+        } else {
+            0
+        };
+        st.offset = offset;
+        st.anchor_len = sb_len;
+        offset
+    }
+
     // 滚轮滚动触发执行，按行数滚动：正 = 向上（进入历史），负 = 向下（回到最新）。
     // 滚动像素级累加，累积满一个字符行高（CHAR_H）触发一次整行滚动。
     fn scroll_offset_by(&self, dy: f32) {
-        let mut acc = self.scroll_acc.get() + dy;
-        let mut lines: i64 = 0;
-        while acc >= CHAR_H as f32 {
-            // 向上滚动
-            acc -= CHAR_H as f32;
-            lines += 1;
-        }
-        while acc <= -(CHAR_H as f32) {
-            // 向下滚动
-            acc += CHAR_H as f32;
-            lines -= 1;
-        }
+        let sb_len = self.scrollback_len();
+        let id = match self.sessions.borrow().active_id() {
+            Some(id) => id,
+            None => return,
+        };
 
-        self.scroll_acc.set(acc);
-        if lines != 0 {
-            // 如果滚动超过一个行高度，就重绘窗口
-            let sb_len = self.scrollback_len();
-            let cur = self.scroll_offset.get() as i64;
-            // 当前滚动位置加上要滚动的行数，得到新目标行位置，使用 clamp 确保 offset 在 [0, sb_len] 范围内，
-            let offset = (cur + lines).clamp(0, sb_len as i64) as usize;
+        // 滚轮像素累加器按会话独立维护：累积满一个字符行高才换算为整行滚动，
+        // 未满一行的余量留在本会话的累加器中，切换 Tab 后互不影响。
+        let target = {
+            let mut states = self.scroll_states.borrow_mut();
+            let st = states.entry(id).or_default();
+            let mut acc = st.acc + dy;
+            let mut lines: i64 = 0;
+            while acc >= CHAR_H as f32 {
+                // 向上滚动
+                acc -= CHAR_H as f32;
+                lines += 1;
+            }
+            while acc <= -(CHAR_H as f32) {
+                // 向下滚动
+                acc += CHAR_H as f32;
+                lines -= 1;
+            }
+            st.acc = acc;
+            if lines == 0 {
+                None
+            } else {
+                // 当前滚动位置加上要滚动的行数，得到新目标行位置，使用 clamp 确保 offset 在 [0, sb_len] 范围内
+                Some((st.offset as i64 + lines).clamp(0, sb_len as i64) as usize)
+            }
+        };
+
+        // 如果滚动超过一个行高度，就重绘窗口
+        if let Some(offset) = target {
             self.commit_scroll(offset, sb_len);
         }
     }
@@ -356,14 +390,27 @@ impl App {
     //  scroll_offset == 0，跟随模式，查看最新数据
     //  scroll_offset >  0，滚动模式，查看历史数据
     fn commit_scroll(&self, offset: usize, sb_len: usize) {
+        let id = match self.sessions.borrow().active_id() {
+            Some(id) => id,
+            None => return,
+        };
         let offset = offset.min(sb_len);
-        let prev = self.scroll_offset.get();
-        if offset == prev {
-            // 滚动位置未变，直接跳过
+        // 更新激活会话的滚动状态；滚动位置未变则直接跳过，避免无谓重绘。
+        let (prev, changed) = {
+            let mut states = self.scroll_states.borrow_mut();
+            let st = states.entry(id).or_default();
+            let prev = st.offset;
+            if offset == prev {
+                (prev, false)
+            } else {
+                st.offset = offset;
+                st.anchor_len = sb_len;
+                (prev, true)
+            }
+        };
+        if !changed {
             return;
         }
-        self.scroll_offset.set(offset);
-        self.anchor_len.set(sb_len);
         if prev > 0 && offset == 0 {
             // 从滚动模式回到了跟随模式，全量重建。
             self.force_full_render();
@@ -508,14 +555,18 @@ impl App {
         let next_index = self.sessions.borrow().len() + 1;
         let title = format!("{} {}", profile.name, next_index);
 
-        if let Err(e) = self.sessions.borrow_mut().create_session(
+        match self.sessions.borrow_mut().create_session(
             profile,
             title,
             rows,
             cols,
             self.wake_tx.clone(),
         ) {
-            eprintln!("[terma] create session failed: {e:#}");
+            Ok(id) => {
+                // 为新建会话登记独立的滚动状态（每 Tab 互不影响）
+                self.scroll_states.borrow_mut().insert(id, ScrollState::default());
+            }
+            Err(e) => eprintln!("[terma] create session failed: {e:#}"),
         }
         // 新建会话后清空渲染缓存（新会话的行内容与旧会话无关），
         // sync_tabs 末尾强制渲染，立即显示新会话（空屏 + prompt）。
@@ -526,6 +577,8 @@ impl App {
     // 根据 id 关闭会话
     fn close_session(&self, id: SessionId) {
         self.sessions.borrow_mut().close_session(id);
+        // 会话关闭后清理其独立的滚动状态，避免残留
+        self.scroll_states.borrow_mut().remove(&id);
     }
 
     /// 按目标终端网格设置主窗口初始尺寸（物理像素），供启动时创建首个会话使用。
