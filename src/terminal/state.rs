@@ -910,6 +910,110 @@ mod tests {
         assert!(runs.iter().any(|r| r.row == 0 && r.col == 0 && r.text == "h"));
     }
 
+    // ─── 高度变化（仅行数）Resize 测试 ───
+
+    /// 把 scrollback 中第 `i` 行转为可读字符串（`\0` 显示为 `·`）。
+    fn scrollback_text(st: &TerminalState, i: usize) -> String {
+        st.screen().scrollback[i]
+            .get_cells()
+            .iter()
+            .map(|c| if c.character == '\0' { '·' } else { c.character })
+            .collect()
+    }
+
+    #[test]
+    fn resize_grow_height_appends_blank_rows() {
+        // 仅增大高度：内容原样保留在顶部，尾部追加空白行，不触发 reflow
+        let mut st = TerminalState::new(2, 10);
+        feed(&mut st, "hello");
+        assert_eq!((st.cursor.row, st.cursor.col), (0, 5));
+
+        st.resize(5, 10);
+
+        assert_eq!(st.rows, 5);
+        assert_eq!(st.cols, 10);
+        assert_eq!(st.screen().visible_rows().len(), 5);
+        // 内容保留在左上角，未重排
+        assert_eq!(st.screen().cell(0, 0).character, 'h');
+        assert_eq!(st.screen().cell(0, 4).character, 'o');
+        // 新增行为空白
+        assert_eq!(st.screen().cell(1, 0).character, '\0');
+        assert_eq!(st.screen().cell(4, 0).character, '\0');
+        // 光标不因增高而移动
+        assert_eq!((st.cursor.row, st.cursor.col), (0, 5));
+    }
+
+    #[test]
+    fn resize_shrink_height_drops_trailing_blank_rows() {
+        // 仅缩小高度、尾部是空白行：直接裁剪，不产生 scrollback、不丢内容
+        let mut st = TerminalState::new(5, 10);
+        feed(&mut st, "AAAA\r\nBBBB");
+
+        st.resize(3, 10);
+
+        assert_eq!(st.rows, 3);
+        assert_eq!(st.screen().visible_rows().len(), 3);
+        // 内容保留
+        assert_eq!(st.screen().cell(0, 0).character, 'A');
+        assert_eq!(st.screen().cell(1, 0).character, 'B');
+        assert_eq!(st.screen().cell(2, 0).character, '\0');
+        // 被裁剪的是尾部空白行，无内容进入 scrollback
+        assert_eq!(st.screen().scrollback.len(), 0);
+    }
+
+    #[test]
+    fn resize_shrink_height_pushes_content_to_scrollback() {
+        // 仅缩小高度、且尾部有内容：被裁剪的内容行按「自顶向下」顺序写入 scrollback
+        let mut st = TerminalState::new(3, 10);
+        feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
+
+        st.resize(1, 10);
+
+        assert_eq!(st.rows, 1);
+        assert_eq!(st.screen().visible_rows().len(), 1);
+        // 顶部一行保留
+        assert_eq!(st.screen().cell(0, 0).character, 'A');
+        // 被裁剪的 BBBB、CCCC 按序进入 scrollback
+        assert_eq!(st.screen().scrollback.len(), 2);
+        assert!(scrollback_text(&st, 0).starts_with("BBBB"));
+        assert!(scrollback_text(&st, 1).starts_with("CCCC"));
+        // 光标从底部被钳制到第 0 行
+        assert_eq!(st.cursor.row, 0);
+    }
+
+    #[test]
+    fn resize_shrink_height_clamps_cursor_and_saved_cursor() {
+        // 缩小高度后，光标与保存光标若落在被裁剪行，应钳制到新底部
+        let mut st = TerminalState::new(3, 10);
+        feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
+        assert_eq!(st.cursor.row, 2);
+        feed(&mut st, "\x1b7"); // 保存光标 (2,4)
+
+        st.resize(2, 10);
+
+        assert_eq!(st.cursor.row, 1);
+        assert_eq!(st.cursor.col, 4);
+        assert_eq!(st.screen().saved_cursor.map(|c| c.row), Some(1));
+    }
+
+    #[test]
+    fn resize_height_only_roundtrip_preserves_content() {
+        // 增高再缩回原高度，内容完整往返、不丢失、不重排
+        let mut st = TerminalState::new(3, 10);
+        feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
+
+        st.resize(8, 10);
+        assert_eq!(st.rows, 8);
+        st.resize(3, 10);
+        assert_eq!(st.rows, 3);
+
+        assert_eq!(st.screen().cell(0, 0).character, 'A');
+        assert_eq!(st.screen().cell(1, 0).character, 'B');
+        assert_eq!(st.screen().cell(2, 0).character, 'C');
+        // 增高期间追加的是空白行，缩回后无多余内容进入 scrollback
+        assert_eq!(st.screen().scrollback.len(), 0);
+    }
+
     #[test]
     fn dch_at_nonzero_col_keeps_row_width() {
         // 回归：DCH 在非零列删除字符后，行宽必须保持为 cols。

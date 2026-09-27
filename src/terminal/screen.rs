@@ -11,7 +11,7 @@
 //!   - 渲染层据此仅重建脏行的 Run 列表，未变更行复用缓存
 
 use crate::terminal::Cursor;
-use crate::terminal::cell::{Cell};
+use crate::terminal::cell::Cell;
 use crate::terminal::color::Color;
 use crate::terminal::row::Row;
 use std::cell::RefCell;
@@ -138,12 +138,63 @@ impl ScreenBuffer {
     }
 
     /// 调整屏幕尺寸，重排内容并计算光标新位置。
-    /// 任一维度变化都走 reflow：按软换行链合并逻辑行 → 按新列宽重新折行。
+    ///   - 仅列宽变化 → 全量 reflow（按软换行链合并逻辑行 → 按新列宽重新折行）；
+    ///   - 仅行数变化 → 走 `resize_row`，不做内容 reflow，只调整网格行数；
+    ///   - 行、列都变化 → 全量 reflow。
     pub fn resize(&mut self, new_rows: usize, new_cols: usize, cursor: &Cursor) -> Cursor {
         if self.rows == new_rows && self.cols == new_cols {
             return *cursor;
         }
+        if self.rows != new_rows && self.cols == new_cols {
+            return self.resize_row(new_rows, cursor);
+        }
         self.resize_reflow(new_rows, new_cols, cursor)
+    }
+
+    /// 仅行数（高度）变化、列宽不变时调整网格，不做内容 reflow：
+    ///   - 增大高度：尾部追加空白行，已有内容原样保留、不重排；
+    ///   - 缩小高度：从尾部裁剪行，空白填充行直接丢弃（减少尾部空白），
+    ///     有内容的行按「自顶向下」顺序写入 scrollback 保留，避免丢内容。
+    pub fn resize_row(&mut self, new_rows: usize, cursor: &Cursor) -> Cursor {
+        if new_rows == self.rows {
+            return *cursor;
+        }
+
+        if new_rows > self.rows {
+            // 增大高度：尾部填充空白行，已有内容不动
+            let old_rows = self.rows;
+            let cols = self.cols;
+            self.grid.resize_with(new_rows, || Row::new_row(cols));
+            // 仅新增的空白行为脏，已有内容未变无需重建
+            for r in old_rows..new_rows {
+                self.mark_row_dirty(r);
+            }
+            self.rows = new_rows;
+            return *cursor;
+        }
+
+        // 缩小高度：从尾部移除多余行
+        // split_off 返回的 tail 保持「自顶向下」顺序，内容行按序写入 scrollback 保序
+        let tail: Vec<Row> = self.grid.split_off(new_rows);
+        for row in tail {
+            if row.iter().any(|c| c.is_content()) {
+                self.push_scrollback(row);
+            }
+            // 空白填充行（无可见内容）直接丢弃
+        }
+        self.rows = new_rows;
+        // 可见行集合发生变化（底部被裁剪），保守地整屏标脏
+        self.mark_all_rows_dirty();
+
+        // 光标与保存光标越界时钳制到底部
+        let mut new_cursor = *cursor;
+        if new_cursor.row >= new_rows {
+            new_cursor.row = new_rows.saturating_sub(1);
+        }
+        if let Some(sc) = self.saved_cursor.as_mut().filter(|sc| sc.row >= new_rows) {
+            sc.row = new_rows.saturating_sub(1);
+        }
+        new_cursor
     }
 
     /// 内容重排（缩小与放大列宽、行数变化共用）：
@@ -445,8 +496,7 @@ fn fix_wide_invariants(row: &mut Row) {
     while i < cols {
         if row[i].continuation {
             // 续列占位：前一个必须是宽字符首格
-            let lead_ok =
-                i > 0 && !row[i - 1].continuation && row[i - 1].is_wide_char();
+            let lead_ok = i > 0 && !row[i - 1].continuation && row[i - 1].is_wide_char();
             if !lead_ok {
                 row[i] = Cell::default();
             }
