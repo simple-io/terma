@@ -966,22 +966,22 @@ mod tests {
     }
 
     #[test]
-    // fn resize_preserves_hard_line_breaks() {
-    //     // 用 \r\n 分隔的两行在放大后不应被合并
-    //     let mut st = TerminalState::new(3, 5);
-    //     feed(&mut st, "abcde\r\nfghij");
-    //     // row 0 = "abcde", row 1 = "fghij"（硬换行分隔）
-    //     assert_eq!(st.screen().cell(0, 0).character, 'a');
-    //     assert_eq!(st.screen().cell(1, 0).character, 'f');
-    //
-    //     // 放大到 10 列
-    //     st.resize(3, 10);
-    //     // 两行应保持独立（硬换行不合并）
-    //     assert_eq!(st.screen().cell(0, 0).character, 'a');
-    //     assert_eq!(st.screen().cell(1, 0).character, 'f');
-    //     // 第一行不是 wrapped（硬换行）
-    //     assert!(!st.screen().grid[0].wrapped);
-    // }
+    fn resize_preserves_hard_line_breaks() {
+        // 用 \r\n 分隔的两行在放大后不应被合并
+        let mut st = TerminalState::new(3, 5);
+        feed(&mut st, "abcde\r\nfghij");
+        // row 0 = "abcde", row 1 = "fghij"（硬换行分隔）
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(1, 0).character, 'f');
+
+        // 放大到 10 列
+        st.resize(3, 10);
+        // 两行应保持独立（硬换行不合并）
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(1, 0).character, 'f');
+        // 第一行不是 wrapped（硬换行）
+        assert!(!st.screen().grid[0].is_soft_wrap());
+    }
 
     #[test]
     fn resize_reflow_wide_chars_not_split() {
@@ -1006,24 +1006,24 @@ mod tests {
     }
 
     #[test]
-    // fn resize_reflow_scrollback() {
-    //     // scrollback 历史行也应参与 reflow
-    //     let mut st = TerminalState::new(2, 5);
-    //     // 写入 3 行触发滚动，scrollback 有 1 行
-    //     feed(&mut st, "AAAAA\r\nBBBBB\r\nCCCCC");
-    //     assert_eq!(st.screen().scrollback.len(), 1);
-    //     assert_eq!(st.screen().cell(0, 0).character, 'B');
-    //     assert_eq!(st.screen().cell(1, 0).character, 'C');
-    //
-    //     // 放大到 10 列：scrollback + grid 统一重排
-    //     st.resize(2, 10);
-    //     // scrollback 的 "AAAAA" 和 grid 的 "BBBBB" 不应合并（硬换行）
-    //     // 但内容应在 scrollback 和 grid 中正确分布
-    //     assert_eq!(st.screen().scrollback.len(), 1);
-    //     assert_eq!(st.screen().scrollback[0].cells[0].character, 'A');
-    //     assert_eq!(st.screen().cell(0, 0).character, 'B');
-    //     assert_eq!(st.screen().cell(1, 0).character, 'C');
-    // }
+    fn resize_reflow_scrollback() {
+        // scrollback 历史行也应参与 reflow
+        let mut st = TerminalState::new(2, 5);
+        // 写入 3 行触发滚动，scrollback 有 1 行
+        feed(&mut st, "AAAAA\r\nBBBBB\r\nCCCCC");
+        assert_eq!(st.screen().scrollback.len(), 1);
+        assert_eq!(st.screen().cell(0, 0).character, 'B');
+        assert_eq!(st.screen().cell(1, 0).character, 'C');
+
+        // 放大到 10 列：scrollback + grid 统一重排
+        st.resize(2, 10);
+        // scrollback 的 "AAAAA" 和 grid 的 "BBBBB" 不应合并（硬换行）
+        // 但内容应在 scrollback 和 grid 中正确分布
+        assert_eq!(st.screen().scrollback.len(), 1);
+        assert_eq!(st.screen().scrollback[0].get_cell(0).unwrap().character, 'A');
+        assert_eq!(st.screen().cell(0, 0).character, 'B');
+        assert_eq!(st.screen().cell(1, 0).character, 'C');
+    }
 
     #[test]
     fn resize_narrowing_no_panic_at_exact_boundary() {
@@ -1096,47 +1096,47 @@ mod tests {
     }
 
     #[test]
-    // fn resize_widening_no_spurious_empty_row() {
-    //     // 回归：放大列宽时，尾部 `\0` 空 cell 不应被当作内容参与拆分，
-    //     // 否则会额外挤出一条空行，且末行 wrapped 标志错误。
-    //     let mut st = TerminalState::new(2, 5);
-    //     feed(&mut st, "abcdef"); // row0="abcde" wrapped, row1="f...."
-    //     st.resize(2, 6);
-    //     // 6 列恰好装下 "abcdef"，应合并为单行且非软换行
-    //     assert_eq!(st.screen().cell(0, 5).character, 'f');
-    //     assert!(!st.screen().grid[0].wrapped);
-    //     // 第二行是网格填充的空行
-    //     assert_eq!(st.screen().cell(1, 0).character, '\0');
-    // }
+    fn resize_widening_no_spurious_empty_row() {
+        // 回归：放大列宽时，尾部 `\0` 空 cell 不应被当作内容参与拆分，
+        // 否则会额外挤出一条空行，且末行 wrapped 标志错误。
+        let mut st = TerminalState::new(2, 5);
+        feed(&mut st, "abcdef"); // row0="abcde" wrapped, row1="f...."
+        st.resize(2, 6);
+        // 6 列恰好装下 "abcdef"，应合并为单行且非软换行
+        assert_eq!(st.screen().cell(0, 5).character, 'f');
+        assert!(!st.screen().grid[0].is_soft_wrap());
+        // 第二行是网格填充的空行
+        assert_eq!(st.screen().cell(1, 0).character, '\0');
+    }
 
     #[test]
-    // fn resize_narrowing_trims_trailing_spaces() {
-    //     // 回归：硬换行行末尾的空白空格是填充，缩小列宽时裁剪，
-    //     // 旧实现会把尾部空格拆成一行只有空格的「多余行」。
-    //     let mut st = TerminalState::new(2, 8);
-    //     feed(&mut st, "abc  "); // row0 = "abc  ..."（尾部 2 个显式空格）
-    //     st.resize(3, 3);
-    //     // 应只有 "abc" 一行内容，不产生只有空格的行
-    //     assert_eq!(st.screen().cell(0, 0).character, 'a');
-    //     assert_eq!(st.screen().cell(0, 2).character, 'c');
-    //     assert!(!st.screen().grid[0].wrapped);
-    //     assert_eq!(st.screen().cell(1, 0).character, '\0');
-    //     assert_eq!(st.screen().cell(2, 0).character, '\0');
-    // }
+    fn resize_narrowing_trims_trailing_spaces() {
+        // 回归：硬换行行末尾的空白空格是填充，缩小列宽时裁剪，
+        // 旧实现会把尾部空格拆成一行只有空格的「多余行」。
+        let mut st = TerminalState::new(2, 8);
+        feed(&mut st, "abc  "); // row0 = "abc  ..."（尾部 2 个显式空格）
+        st.resize(3, 3);
+        // 应只有 "abc" 一行内容，不产生只有空格的行
+        assert_eq!(st.screen().cell(0, 0).character, 'a');
+        assert_eq!(st.screen().cell(0, 2).character, 'c');
+        assert!(!st.screen().grid[0].is_soft_wrap());
+        assert_eq!(st.screen().cell(1, 0).character, '\0');
+        assert_eq!(st.screen().cell(2, 0).character, '\0');
+    }
 
     #[test]
-    // fn resize_widening_wide_char_not_truncated() {
-    //     // 回归：放大列宽按「列宽」而非「cell 数量」拆分，宽字符跨片段边界时不越界/不截断。
-    //     // 2 列写 "你A"（你占满一行，A 软换行到下一行），放大到 4 列应正确合并。
-    //     let mut st = TerminalState::new(2, 2);
-    //     feed(&mut st, "你A");
-    //     // row0 = [你, cont] wrapped, row1 = [A, \0]
-    //     st.resize(2, 4);
-    //     assert_eq!(st.screen().cell(0, 0).character, '你');
-    //     assert!(st.screen().cell(0, 1).continuation);
-    //     assert_eq!(st.screen().cell(0, 2).character, 'A');
-    //     assert!(!st.screen().grid[0].wrapped);
-    // }
+    fn resize_widening_wide_char_not_truncated() {
+        // 回归：放大列宽按「列宽」而非「cell 数量」拆分，宽字符跨片段边界时不越界/不截断。
+        // 2 列写 "你A"（你占满一行，A 软换行到下一行），放大到 4 列应正确合并。
+        let mut st = TerminalState::new(2, 2);
+        feed(&mut st, "你A");
+        // row0 = [你, cont] wrapped, row1 = [A, \0]
+        st.resize(2, 4);
+        assert_eq!(st.screen().cell(0, 0).character, '你');
+        assert!(st.screen().cell(0, 1).continuation);
+        assert_eq!(st.screen().cell(0, 2).character, 'A');
+        assert!(!st.screen().grid[0].is_soft_wrap());
+    }
 
     #[test]
     fn resize_reflow_roundtrip_preserves_content() {
@@ -1175,79 +1175,79 @@ mod tests {
 
     /// 把可见屏每行的非空白内容拼成字符串列表（调试 + 断言用）。
     /// 不做 trim_end：软换行边界可能落在空格串中间，行尾空格是合法内容。
-    // fn visible_text(st: &TerminalState) -> Vec<String> {
-    //     (0..st.rows)
-    //         .map(|r| {
-    //             st.screen().visible_rows()[r]
-    //                 .cells
-    //                 .iter()
-    //                 .filter(|c| !c.continuation && c.character != '\0')
-    //                 .map(|c| c.character)
-    //                 .collect::<String>()
-    //         })
-    //         .collect()
-    // }
+    fn visible_text(st: &TerminalState) -> Vec<String> {
+        (0..st.rows)
+            .map(|r| {
+                st.screen().visible_rows()[r]
+                    .get_cells()
+                    .iter()
+                    .filter(|c| !c.continuation && c.character != '\0')
+                    .map(|c| c.character)
+                    .collect::<String>()
+            })
+            .collect()
+    }
 
     #[test]
-    // fn resize_stepwise_narrowing_matches_single_step() {
-    //     // 回归：拖拽窗口会触发一串列宽逐 1 递减的 resize。旧实现逐行独立重排，
-    //     // 每缩 1 列就把行尾剥出一个「硬换行」单字符行，逐步缩小会把一行内容
-    //     // 撕成若干单字符竖排行（多余空行 + 内容错位）。修复后 reflow 先按
-    //     // wrapped 链合并逻辑行、再按新列宽拆分，逐步缩小与单步缩小结果一致。
-    //     let long_line = "vm            database        logs            project-build";
-    //     let mut stepwise = TerminalState::new(3, 60);
-    //     feed(&mut stepwise, long_line);
-    //     for c in (26..60).rev() {
-    //         stepwise.resize(3, c);
-    //     }
-    //
-    //     let mut single = TerminalState::new(3, 60);
-    //     feed(&mut single, long_line);
-    //     single.resize(3, 26);
-    //
-    //     assert_eq!(visible_text(&stepwise), visible_text(&single));
-    //     // 单步缩小的正确结果：第 0 行是前 26 个字符的软换行头
-    //     assert!(single.screen().grid[0].wrapped);
-    // }
+    fn resize_stepwise_narrowing_matches_single_step() {
+        // 回归：拖拽窗口会触发一串列宽逐 1 递减的 resize。旧实现逐行独立重排，
+        // 每缩 1 列就把行尾剥出一个「硬换行」单字符行，逐步缩小会把一行内容
+        // 撕成若干单字符竖排行（多余空行 + 内容错位）。修复后 reflow 先按
+        // wrapped 链合并逻辑行、再按新列宽拆分，逐步缩小与单步缩小结果一致。
+        let long_line = "vm            database        logs            project-build";
+        let mut stepwise = TerminalState::new(3, 60);
+        feed(&mut stepwise, long_line);
+        for c in (26..60).rev() {
+            stepwise.resize(3, c);
+        }
+
+        let mut single = TerminalState::new(3, 60);
+        feed(&mut single, long_line);
+        single.resize(3, 26);
+
+        assert_eq!(visible_text(&stepwise), visible_text(&single));
+        // 单步缩小的正确结果：第 0 行是前 26 个字符的软换行头
+        assert!(single.screen().grid[0].is_soft_wrap());
+    }
 
     #[test]
-    // fn resize_stepwise_narrowing_no_single_char_rows() {
-    //     // 回归：逐步缩小后内容必须按原始顺序完整保留，不得出现撕裂
-    //     //（多余空行、单字符独占一行、宽字符丢失）。宽字符行同样覆盖。
-    //     let mut st = TerminalState::new(5, 40);
-    //     feed(&mut st, "WorkBuddy      Desktop        Movies\r\n中企开发            soft");
-    //     for c in (12..40).rev() {
-    //         st.resize(5, c);
-    //     }
-    //     // 所有非空白字符按原始顺序完整保留（无丢失、无重复；软换行边界
-    //     // 落在空格串中间时行尾空格是内容，不得被吞掉）
-    //     let orig = "WorkBuddy      Desktop        Movies中企开发            soft";
-    //     assert_eq!(visible_text(&st).concat(), orig);
-    //     // 不得残留「连续多行单字符硬换行」的撕裂特征（软换行组末尾单个
-    //     // chunk 是合法的短硬行，但不会连续出现）
-    //     let lens: Vec<(usize, bool)> = st
-    //         .screen()
-    //         .visible_rows()
-    //         .iter()
-    //         .map(|row| {
-    //             let n = row
-    //                 .cells
-    //                 .iter()
-    //                 .filter(|c| !c.continuation && c.character != '\0')
-    //                 .count();
-    //             (n, row.wrapped)
-    //         })
-    //         .collect();
-    //     let mut consecutive = 0;
-    //     for &(n, wrapped) in &lens {
-    //         if n == 1 && !wrapped {
-    //             consecutive += 1;
-    //             assert!(consecutive <= 1, "出现连续单字符撕裂行: {:?}", lens);
-    //         } else {
-    //             consecutive = 0;
-    //         }
-    //     }
-    // }
+    fn resize_stepwise_narrowing_no_single_char_rows() {
+        // 回归：逐步缩小后内容必须按原始顺序完整保留，不得出现撕裂
+        //（多余空行、单字符独占一行、宽字符丢失）。宽字符行同样覆盖。
+        let mut st = TerminalState::new(5, 40);
+        feed(&mut st, "WorkBuddy      Desktop        Movies\r\n中企开发            soft");
+        for c in (12..40).rev() {
+            st.resize(5, c);
+        }
+        // 所有非空白字符按原始顺序完整保留（无丢失、无重复；软换行边界
+        // 落在空格串中间时行尾空格是内容，不得被吞掉）
+        let orig = "WorkBuddy      Desktop        Movies中企开发            soft";
+        assert_eq!(visible_text(&st).concat(), orig);
+        // 不得残留「连续多行单字符硬换行」的撕裂特征（软换行组末尾单个
+        // chunk 是合法的短硬行，但不会连续出现）
+        let lens: Vec<(usize, bool)> = st
+            .screen()
+            .visible_rows()
+            .iter()
+            .map(|row| {
+                let n = row
+                    .get_cells()
+                    .iter()
+                    .filter(|c| !c.continuation && c.character != '\0')
+                    .count();
+                (n, row.is_soft_wrap())
+            })
+            .collect();
+        let mut consecutive = 0;
+        for &(n, wrapped) in &lens {
+            if n == 1 && !wrapped {
+                consecutive += 1;
+                assert!(consecutive <= 1, "出现连续单字符撕裂行: {:?}", lens);
+            } else {
+                consecutive = 0;
+            }
+        }
+    }
 
     #[test]
     fn decsc_decrc_roundtrip() {
@@ -1280,24 +1280,24 @@ mod tests {
         assert_eq!(st.screen().cell(1, 5).character, '0');
     }
 
-    // #[test]
-    // fn resize_zle_redraw_flow_no_duplicate() {
-    //     // 端到端模拟 zsh SIGWINCH 重绘流程：DECSC 保存 → 输出 prompt+输入 →
-    //     // resize → DECRC 恢复 + \r + 清行 → 重新打印 prompt+输入。
-    //     // 保存光标正确跟随 reflow 时，重绘恰好覆盖重排后的行，
-    //     // 屏幕上 prompt 只出现一次、无重复行。
-    //     let prompt_input = "user@bogon ~ $ 0123456789ABCDEFGHIJ";
-    //     let mut st = TerminalState::new(4, 30);
-    //     feed(&mut st, "\x1b[1;1H\x1b7"); // 保存 prompt 起点 (0,0)
-    //     feed(&mut st, prompt_input); // 35 字符，30 列下软换行为两行
-    //
-    //     st.resize(4, 10);
-    //     // ZLE 重绘：恢复保存光标 + 回车 + 清屏以下 + 重打印
-    //     feed(&mut st, "\x1b8\r\x1b[0J");
-    //     feed(&mut st, prompt_input);
-    //
-    //     let text = visible_text(&st).concat();
-    //     assert_eq!(text.matches("user@bogon").count(), 1, "prompt 重复: {text:?}");
-    //     assert_eq!(text.matches("0123456789").count(), 1, "输入内容重复: {text:?}");
-    // }
+    #[test]
+    fn resize_zle_redraw_flow_no_duplicate() {
+        // 端到端模拟 zsh SIGWINCH 重绘流程：DECSC 保存 → 输出 prompt+输入 →
+        // resize → DECRC 恢复 + \r + 清行 → 重新打印 prompt+输入。
+        // 保存光标正确跟随 reflow 时，重绘恰好覆盖重排后的行，
+        // 屏幕上 prompt 只出现一次、无重复行。
+        let prompt_input = "user@bogon ~ $ 0123456789ABCDEFGHIJ";
+        let mut st = TerminalState::new(4, 30);
+        feed(&mut st, "\x1b[1;1H\x1b7"); // 保存 prompt 起点 (0,0)
+        feed(&mut st, prompt_input); // 35 字符，30 列下软换行为两行
+
+        st.resize(4, 10);
+        // ZLE 重绘：恢复保存光标 + 回车 + 清屏以下 + 重打印
+        feed(&mut st, "\x1b8\r\x1b[0J");
+        feed(&mut st, prompt_input);
+
+        let text = visible_text(&st).concat();
+        assert_eq!(text.matches("user@bogon").count(), 1, "prompt 重复: {text:?}");
+        assert_eq!(text.matches("0123456789").count(), 1, "输入内容重复: {text:?}");
+    }
 }

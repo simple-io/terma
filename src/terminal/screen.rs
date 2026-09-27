@@ -12,6 +12,7 @@
 
 use crate::terminal::Cursor;
 use crate::terminal::cell::{Cell};
+use crate::terminal::color::Color;
 use crate::terminal::row::Row;
 use std::cell::RefCell;
 
@@ -196,6 +197,15 @@ impl ScreenBuffer {
                     break;
                 }
             }
+
+            // 修剪逻辑行末尾的「填充空格」：缩小列宽时，硬换行行末尾的空白空格
+            // 只是填充，若不裁剪会被拆成一行只有空格的「多余行」，还会把上一行
+            // 内容误标为软换行。带样式（如背景色）的空格是可见内容，不裁剪。
+            while content.last().map_or(false, is_padding_space) {
+                content.pop();
+            }
+            active_idx = active_idx.map(|i| i.min(content.len()));
+            saved_idx = saved_idx.map(|i| i.min(content.len()));
 
             // 重排内容，根据新列宽重新折行
             let (rows, pos) = Row::reflow_content(&content, new_cols);
@@ -469,4 +479,16 @@ fn cursor_content_index(line: &Row, col: usize) -> usize {
         }
     }
     ci
+}
+
+/// 判断一个 cell 是否为「可裁剪的尾部填充空格」：默认样式的空格（`' '`）。
+/// 带样式（前景/背景色、粗斜下划取反）的空格是可见内容，不参与尾部裁剪。
+fn is_padding_space(c: &Cell) -> bool {
+    c.character == ' '
+        && c.foreground == Color::Default
+        && c.background == Color::Default
+        && !c.bold
+        && !c.italic
+        && !c.underline
+        && !c.inverse
 }
