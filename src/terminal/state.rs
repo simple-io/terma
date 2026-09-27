@@ -963,7 +963,8 @@ mod tests {
 
     #[test]
     fn resize_shrink_height_pushes_content_to_scrollback() {
-        // 仅缩小高度、且尾部有内容：被裁剪的内容行按「自顶向下」顺序写入 scrollback
+        // 仅缩小高度、尾部已无空白：超出的内容行应从屏幕顶部（而非底部）按序滚入 scrollback，
+        // 底部内容与光标保留。
         let mut st = TerminalState::new(3, 10);
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
 
@@ -971,19 +972,41 @@ mod tests {
 
         assert_eq!(st.rows, 1);
         assert_eq!(st.screen().visible_rows().len(), 1);
-        // 顶部一行保留
-        assert_eq!(st.screen().cell(0, 0).character, 'A');
-        // 被裁剪的 BBBB、CCCC 按序进入 scrollback
+        // 底部内容 CCCC 保留在屏上
+        assert_eq!(st.screen().cell(0, 0).character, 'C');
+        // 顶部 AAAA、BBBB 按序滚入 scrollback
         assert_eq!(st.screen().scrollback.len(), 2);
-        assert!(scrollback_text(&st, 0).starts_with("BBBB"));
-        assert!(scrollback_text(&st, 1).starts_with("CCCC"));
-        // 光标从底部被钳制到第 0 行
+        assert!(scrollback_text(&st, 0).starts_with("AAAA"));
+        assert!(scrollback_text(&st, 1).starts_with("BBBB"));
+        // 光标从底部 (2,4) 上移 2 行锚定 CCCC 行
         assert_eq!(st.cursor.row, 0);
+        assert_eq!(st.cursor.col, 4);
     }
 
     #[test]
-    fn resize_shrink_height_clamps_cursor_and_saved_cursor() {
-        // 缩小高度后，光标与保存光标若落在被裁剪行，应钳制到新底部
+    fn resize_shrink_prefers_trailing_blanks_then_scrolls_top() {
+        // 5 行：前 3 行内容、后 2 行空白。缩小到 2 行：
+        // 先裁掉 2 行尾部空白（不碰内容），高度仍不足再滚掉顶部 1 行内容 AAAA。
+        let mut st = TerminalState::new(5, 10);
+        feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
+        assert_eq!(st.cursor.row, 2);
+
+        st.resize(2, 10);
+
+        assert_eq!(st.rows, 2);
+        assert_eq!(st.screen().visible_rows().len(), 2);
+        // 顶部 AAAA 滚入 scrollback，底部 BBBB/CCCC 保留
+        assert_eq!(st.screen().scrollback.len(), 1);
+        assert!(scrollback_text(&st, 0).starts_with("AAAA"));
+        assert_eq!(st.screen().cell(0, 0).character, 'B');
+        assert_eq!(st.screen().cell(1, 0).character, 'C');
+        // 光标锚定 CCCC 行，从 (2,4) 上移到 (1,4)
+        assert_eq!((st.cursor.row, st.cursor.col), (1, 4));
+    }
+
+    #[test]
+    fn resize_shrink_height_shifts_cursor_and_saved_cursor() {
+        // 顶部内容滚入 scrollback 后，光标与保存光标随内容上移，锚定同一字符
         let mut st = TerminalState::new(3, 10);
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
         assert_eq!(st.cursor.row, 2);
@@ -991,6 +1014,12 @@ mod tests {
 
         st.resize(2, 10);
 
+        // AAAA 滚入 scrollback，BBBB/CCCC 保留
+        assert_eq!(st.screen().scrollback.len(), 1);
+        assert!(scrollback_text(&st, 0).starts_with("AAAA"));
+        assert_eq!(st.screen().cell(0, 0).character, 'B');
+        assert_eq!(st.screen().cell(1, 0).character, 'C');
+        // 光标与保存光标从第 2 行上移到第 1 行（列不变）
         assert_eq!(st.cursor.row, 1);
         assert_eq!(st.cursor.col, 4);
         assert_eq!(st.screen().saved_cursor.map(|c| c.row), Some(1));

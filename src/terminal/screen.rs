@@ -153,8 +153,9 @@ impl ScreenBuffer {
 
     /// 仅行数（高度）变化、列宽不变时调整网格，不做内容 reflow：
     ///   - 增大高度：尾部追加空白行，已有内容原样保留、不重排；
-    ///   - 缩小高度：从尾部裁剪行，空白填充行直接丢弃（减少尾部空白），
-    ///     有内容的行按「自顶向下」顺序写入 scrollback 保留，避免丢内容。
+    ///   - 缩小高度：优先裁剪尾部空白填充行（不触碰任何内容行）；仅当尾部已无
+    ///     空白且高度仍不足时，才把超出的内容行从屏幕顶部按序滚入 scrollback，
+    ///     底部其余内容与光标保持锚定（光标随顶部滚动上移，指向同一内容）。
     pub fn resize_row(&mut self, new_rows: usize, cursor: &Cursor) -> Cursor {
         if new_rows == self.rows {
             return *cursor;
@@ -173,26 +174,53 @@ impl ScreenBuffer {
             return *cursor;
         }
 
-        // 缩小高度：从尾部移除多余行
-        // split_off 返回的 tail 保持「自顶向下」顺序，内容行按序写入 scrollback 保序
-        let tail: Vec<Row> = self.grid.split_off(new_rows);
-        for row in tail {
-            if row.iter().any(|c| c.is_content()) {
+        // 缩小高度
+        let old_rows = self.rows;
+        let shrink = old_rows - new_rows;
+
+        // 1. 定位「内容底边」：自下而上最后一个有内容的行。光标 / 保存光标所在行
+        //    视为有内容，不可当作尾部空白裁剪，否则会动到光标位置。
+        let content_bottom = (0..old_rows)
+            .rev()
+            .find(|&r| self.grid[r].iter().any(|c| c.is_content()))
+            .unwrap_or(0)
+            .max(cursor.row)
+            .max(self.saved_cursor.map_or(0, |c| c.row));
+        // 内容底边之下的行都是尾部空白填充
+        let blank_tail = old_rows - 1 - content_bottom;
+
+        // 2. 优先裁剪尾部空白填充（从底部删），不调整任何内容行
+        let trim_blanks = shrink.min(blank_tail);
+        self.grid.truncate(old_rows - trim_blanks);
+
+        // 3. 高度仍不足：从屏幕顶部把超出的内容行按序滚入 scrollback
+        let scroll_rows = shrink - trim_blanks;
+        if scroll_rows > 0 {
+            let pushed: Vec<Row> = self.grid.drain(..scroll_rows).collect();
+            for row in pushed {
                 self.push_scrollback(row);
             }
-            // 空白填充行（无可见内容）直接丢弃
         }
+
         self.rows = new_rows;
-        // 可见行集合发生变化（底部被裁剪），保守地整屏标脏
+        // 可见行集合发生变化（底部被裁剪 / 顶部滚出），保守地整屏标脏
         self.mark_all_rows_dirty();
 
-        // 光标与保存光标越界时钳制到底部
+        // 4. 光标随顶部滚动上移 `scroll_rows` 行以锚定同一内容，再钳制兜底
         let mut new_cursor = *cursor;
+        if scroll_rows > 0 {
+            new_cursor.row = new_cursor.row.saturating_sub(scroll_rows);
+        }
         if new_cursor.row >= new_rows {
             new_cursor.row = new_rows.saturating_sub(1);
         }
-        if let Some(sc) = self.saved_cursor.as_mut().filter(|sc| sc.row >= new_rows) {
-            sc.row = new_rows.saturating_sub(1);
+        if let Some(sc) = self.saved_cursor.as_mut() {
+            if scroll_rows > 0 {
+                sc.row = sc.row.saturating_sub(scroll_rows);
+            }
+            if sc.row >= new_rows {
+                sc.row = new_rows.saturating_sub(1);
+            }
         }
         new_cursor
     }
