@@ -23,6 +23,8 @@ export struct TabInfo {
 export component TabBar inherits HorizontalLayout {
     in property <[TabInfo]> tabs;
     in property <string> default-profile-name;
+    // 单标签宽度：由 Rust 计算注入
+    in property <length> tab-width: 160px;
 
     callback new-tab();
     callback close-tab(string);
@@ -33,56 +35,65 @@ export component TabBar inherits HorizontalLayout {
     padding: 0px;
     height: 32px;
 
-    // Tab 列表
-    for tab in tabs : tab-item := Rectangle {
-        width: 160px;
-        height: 100%;
-        background: tab.active ? #2d2d2d : (self-touch.has-hover ? #252525 : #1f1f1f);
-        border-radius: 6px;
-
-        // 整个 Tab 的点击区域（置于底层，关闭按钮在其上方拦截点击）
-        self-touch := TouchArea {
-            clicked => {
-                root.select-tab(tab.id);
-            }
-        }
+    // Tab 列表：clip 容器 + min-width 0，阻断最小尺寸传播，避免标签总宽度反向撑大窗口最小尺寸
+    tab-clip := Rectangle {
+        clip: true;
+        min-width: 0px;
 
         HorizontalLayout {
-            padding-left: 12px;
-            padding-right: 6px;
-            spacing: 6px;
+            spacing: 2px;
 
-            // 标题
-            Text {
-                text: tab.title;
-                color: tab.active ? #ffffff : #aaaaaa;
-                font-size: 13px;
-                vertical-alignment: center;
-                overflow: elide;
-            }
+            for tab in tabs : tab-item := Rectangle {
+                width: root.tab-width;
+                height: 100%;
+                background: tab.active ? #2d2d2d : (self-touch.has-hover ? #252525 : #1f1f1f);
+                border-radius: 6px;
 
-            // 弹性占位
-            Rectangle { horizontal-stretch: 1; }
-
-            // 关闭按钮 ×
-            close-touch := TouchArea {
-                width: 18px;
-                height: 18px;
-                y: (parent.height - self.height) / 2;
-                clicked => {
-                    root.close-tab(tab.id);
+                // 整个 Tab 的点击区域（置于底层，关闭按钮在其上方拦截点击）
+                self-touch := TouchArea {
+                    clicked => {
+                        root.select-tab(tab.id);
+                    }
                 }
-                Rectangle {
-                    background: close-touch.has-hover ? #e81123aa : transparent;
-                    border-radius: 4px;
-                    width: 18px;
-                    height: 18px;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 6px;
+//                    spacing: 6px;
+
+                    // 标题
                     Text {
-                        text: "\u{00D7}";  // ×
-                        color: close-touch.has-hover ? #ffffff : #888;
-                        font-size: 14px;
-                        horizontal-alignment: center;
+                        text: tab.title;
+                        color: tab.active ? #ffffff : #aaaaaa;
+                        font-size: 13px;
                         vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    // 弹性占位
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // 关闭按钮 ×
+                    close-touch := TouchArea {
+                        width: 18px;
+                        height: 18px;
+                        y: (parent.height - self.height) / 2;
+                        clicked => {
+                            root.close-tab(tab.id);
+                        }
+                        Rectangle {
+                            background: close-touch.has-hover ? #e81123aa : transparent;
+                            border-radius: 4px;
+                            width: 18px;
+                            height: 18px;
+                            Text {
+                                text: "\u{00D7}";  // ×
+                                color: close-touch.has-hover ? #ffffff : #888;
+                                font-size: 14px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                 }
             }
@@ -134,6 +145,6 @@ export component TabBar inherits HorizontalLayout {
         }
     }
 
-    // 弹性填充
+    // 弹性填充：窗口宽于标签总宽时，剩余空间留白（不拉伸标签）
     Rectangle { horizontal-stretch: 1; }
 }

@@ -22,6 +22,7 @@ export component MainWindow inherits Window {
     //   宽 = 120 * 8(char-w) + 16(水平留白) = 976
     //   高 = 36 * 16(char-h) + 37(Tab栏) + 8(底部留白) = 621
     // 运行时 Rust 侧会按此网格再次显式设置，并随窗口缩放动态联动 PTY。
+    min-width: 20px;
     preferred-width: 976px;
     preferred-height: 621px;
     background: #1f1f1f;
@@ -29,6 +30,8 @@ export component MainWindow inherits Window {
     // ─── 对外暴露的数据属性（Rust 侧写入） ───
     // 会话标签
     in-out property <[TabInfo]> tabs;
+    // 单标签宽度（逻辑像素），Rust 侧按窗口宽度与标签数计算后注入
+    in-out property <length> tab-width: 160px;
     // 配置文件
     in-out property <[ProfileInfo]> profiles;
     in-out property <string> active-title;
@@ -71,6 +74,7 @@ export component MainWindow inherits Window {
         // Tab 栏
         tab-bar := TabBar {
             tabs: root.tabs;
+            tab-width: root.tab-width;
             default-profile-name: "Default";
             new-tab => { root.new-tab(); }
             close-tab(id) => { root.close-tab(id); }

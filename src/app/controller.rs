@@ -60,6 +60,15 @@ const V_PADDING: i32 = 8;
 /// 终端网格尺寸上限（防止异常窗口尺寸下分配过大缓冲）
 const MAX_COLS: i32 = 400;
 const MAX_ROWS: i32 = 200;
+/// Tab 最大宽度（逻辑像素）：空间充足时标签保持的宽度上限，不再拉伸
+const TAB_W_MAX: i32 = 160;
+/// Tab 最小下限（逻辑像素）：窗口极窄时均分收缩的最终下限，
+/// 保证标题区与 × 按钮仍可辨识（常规下限 80 不再截断收缩，见 update_tab_width）
+const TAB_W_MIN: i32 = 40;
+/// Tab 栏右侧固定占位（逻辑像素）：+ 按钮(30) + ▼ 按钮(30) + 布局 spacing(2×3)
+const BABAR_RESERVED_W: i32 = 66;
+/// 相邻标签之间的间距（逻辑像素，与 tab_bar.slint 的 spacing 一致）
+const TAB_GAP: i32 = 2;
 
 // UI 线程独占的 App 弱引用：供渲染分发线程的 `invoke_from_event_loop` 回调回访 App。
 //
@@ -218,7 +227,37 @@ impl App {
             }
         }
         drop(sessions);
+        // 标签数变化后重新计算标签宽度
+        self.update_tab_width();
         self.force_full_render();
+    }
+
+    /// 标签宽度计算并注入（逻辑像素）：
+    ///   单标签宽度 = clamp((窗口宽 − 固定占位 − 间距) / n, 40, 240)
+    /// - 空间充足：保持上限 240，右侧由弹性占位保留空白，不拉伸填满窗口
+    /// - 空间不足：均分可用宽度**持续收缩**（可低于常规下限 80），直至硬性下限 40，
+    ///   保证窗口始终可以继续缩小（放不下的部分由 TabBar 的 clip 容器裁剪）
+    /// 宽度计算放在 Rust 侧而非 Slint 绑定，避免锚定窗口宽度形成布局依赖环。
+    fn update_tab_width(&self) {
+        let n = self.sessions.borrow().len();
+        if n == 0 {
+            return;
+        }
+        let win = self.main_window.window();
+        let scale = win.scale_factor();
+        if scale <= 0.0 {
+            return;
+        }
+        let win_w = win.size().to_logical(scale).width as i32;
+        if win_w <= 0 {
+            return;
+        }
+        let avail = (win_w - BABAR_RESERVED_W - TAB_GAP * (n as i32 - 1)).max(0);
+        let w = (avail / n as i32).clamp(TAB_W_MIN, TAB_W_MAX) as f32;
+        // 值未变化时跳过注入，避免无谓的布局重算
+        if (self.main_window.get_tab_width() - w).abs() >= 1.0 {
+            self.main_window.set_tab_width(w);
+        }
     }
 
     // 会话变化（建/切/关 Tab）后强制全量重建激活会话整屏，将激活会话状态标为全脏，再走统一 render 路径。
@@ -607,6 +646,8 @@ impl App {
 
         let last = self.last_size.get();
         if last != (rows, cols) {
+            // 窗口尺寸变，联动调整标签宽度
+            self.update_tab_width();
             self.last_size.set((rows, cols));
             self.sessions.borrow_mut().resize_all(rows, cols);
             // resize 后清空渲染缓存（所有行内容因重排而变化），避免复用旧尺寸的缓存数据。
