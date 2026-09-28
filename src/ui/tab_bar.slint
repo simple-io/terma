@@ -42,16 +42,27 @@ export component TabBar inherits Rectangle {
         tab-clip := Rectangle {
             clip: true;
             min-width: 0px;
+            background: #000000;
 
             HorizontalLayout {
-                for tab in tabs: tab-item := Rectangle {
+                leftArea := Rectangle {
+                    background: #292C33;
+                    width: 10px;
+                    // active tab 是第一个时，leftArea 右下角圆角过渡
+                    border-bottom-right-radius: tabs[0].active ? 6px : 0px;
+                }
+
+                for tab[i] in tabs: tab-item := Rectangle {
                     width: root.tab-width;
                     height: 100%;
-                    background: tab.active ? #0c0c0c : (self-touch.has-hover ? #1a1a1a : #292C33);
-                    border-top-left-radius: 6px;
-                    border-top-right-radius: 6px;
-                    border-bottom-left-radius: tab.active ? 0px : 6px;
-                    border-bottom-right-radius: tab.active ? 0px : 6px;
+                    background: tab.active ? #000000 : (self-touch.has-hover ? #1a1a1a : #292C33);
+                    border-top-left-radius: tab.active ? 20px: 0px;
+                    border-top-right-radius: tab.active ? 20px: 0px;
+                    // 仅当左侧 tab 为 active 时，当前 tab 左下角圆角过渡
+                    border-bottom-left-radius: tabs[i - 1].active ? 6px : 0px;
+                    // 仅当右侧 tab 为 active 时，当前 tab 右下角圆角过渡
+                    border-bottom-right-radius: tabs[i + 1].active ? 6px : 0px;
+
 
                     // 整个 Tab 的点击区域（置于底层，关闭按钮在其上方拦截点击）
                     self-touch := TouchArea {
@@ -101,6 +112,12 @@ export component TabBar inherits Rectangle {
                             }
                         }
                     }
+                }
+                rightArea := Rectangle {
+                    background: #292C33;
+                    width: 5px;
+                    // active tab 是最后一个时，rightArea 左下角圆角过渡
+                    border-bottom-left-radius: tabs[tabs.length - 1].active ? 6px : 0px;
                 }
             }
         }
