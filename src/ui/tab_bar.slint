@@ -58,8 +58,8 @@ export component TabBar inherits Rectangle {
                     background: tab.active ? #292C33: #000000;
                     Rectangle {
                         background: tab.active ? #000000 : (self-touch.has-hover ? #1a1a1a : #292C33);
-                        border-top-left-radius: tab.active ? 8px: 0px;
-                        border-top-right-radius: tab.active ? 8px: 0px;
+                        border-top-left-radius: tab.active ? 10px: 0px;
+                        border-top-right-radius: tab.active ? 10px: 0px;
                         // 仅当左侧 tab 为 active 时，当前 tab 左下角圆角过渡
                         border-bottom-left-radius: tabs[i - 1].active ? 6px : 0px;
                         // 仅当右侧 tab 为 active 时，当前 tab 右下角圆角过渡
@@ -75,7 +75,6 @@ export component TabBar inherits Rectangle {
 
                     HorizontalLayout {
                         padding-left: 12px;
-                        padding-right: 6px;
 
                         // 标题
                         Text {
@@ -111,6 +110,24 @@ export component TabBar inherits Rectangle {
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
                                 }
+                            }
+                        }
+
+                        // 间隔占位：close-touch 与 separator 之间留 2px 间距
+                        Rectangle {
+                            width: 2px;
+                        }
+
+                        // 标签之间分隔线
+                        separator := Rectangle {
+                            width: 1px;
+                            background: transparent;
+                            Rectangle {
+                                width: 1px;
+                                height: 18px;
+                                y: (parent.height - self.height) / 2;
+                                visible: !tab.active && i + 1 < tabs.length && !tabs[i + 1].active;
+                                background: #555555;
                             }
                         }
                     }
