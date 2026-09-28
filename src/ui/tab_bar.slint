@@ -58,8 +58,8 @@ export component TabBar inherits Rectangle {
                     background: tab.active ? #292C33: #000000;
                     Rectangle {
                         background: tab.active ? #000000 : (self-touch.has-hover ? #1a1a1a : #292C33);
-                        border-top-left-radius: tab.active ? 10px: 0px;
-                        border-top-right-radius: tab.active ? 10px: 0px;
+                        border-top-left-radius: tab.active ? 12px: 0px;
+                        border-top-right-radius: tab.active ? 12px: 0px;
                         // 仅当左侧 tab 为 active 时，当前 tab 左下角圆角过渡
                         border-bottom-left-radius: tabs[i - 1].active ? 6px : 0px;
                         // 仅当右侧 tab 为 active 时，当前 tab 右下角圆角过渡
@@ -149,7 +149,7 @@ export component TabBar inherits Rectangle {
                 root.new-tab();
             }
             Rectangle {
-                background: add-touch.has-hover ? #2d2d2d : transparent;
+                background: add-touch.has-hover ? #1a1a1a : transparent;
                 border-radius: 6px;
                 width: 30px;
                 height: 100%;
@@ -172,7 +172,7 @@ export component TabBar inherits Rectangle {
                 root.show-profile-menu();
             }
             Rectangle {
-                background: menu-touch.has-hover ? #2d2d2d : transparent;
+                background: menu-touch.has-hover ? #1a1a1a : transparent;
                 border-radius: 6px;
                 width: 30px;
                 height: 100%;

@@ -25,6 +25,7 @@ export component MainWindow inherits Window {
     min-width: 20px;
     preferred-width: 976px;
     preferred-height: 621px;
+    background: #000000;
 
     // ─── 对外暴露的数据属性（Rust 侧写入） ───
     // 会话标签
@@ -81,6 +82,12 @@ export component MainWindow inherits Window {
             show-profile-menu => {
                 root.profile-menu-visible = !root.profile-menu-visible;
             }
+        }
+
+        // 间隔占位：标签和内容之间留 4px 间距
+        Rectangle {
+            height: 4px;
+            background: transparent;
         }
 
         // Terminal 区域
