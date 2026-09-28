@@ -20,7 +20,7 @@ export struct TabInfo {
     profile-name: string,
 }
 
-export component TabBar inherits HorizontalLayout {
+export component TabBar inherits Rectangle {
     in property <[TabInfo]> tabs;
     in property <string> default-profile-name;
     // 单标签宽度：由 Rust 计算注入
@@ -31,120 +31,128 @@ export component TabBar inherits HorizontalLayout {
     callback select-tab(string);
     callback show-profile-menu();
 
-    spacing: 2px;
-    padding: 0px;
-    height: 32px;
+    background: #292C33;
+    height: 36px;
 
-    // Tab 列表：clip 容器 + min-width 0，阻断最小尺寸传播，避免标签总宽度反向撑大窗口最小尺寸
-    tab-clip := Rectangle {
-        clip: true;
-        min-width: 0px;
+    HorizontalLayout {
+        spacing: 2px;
+        padding: 0px;
 
-        HorizontalLayout {
-            spacing: 2px;
+        // Tab 列表：clip 容器 + min-width 0，阻断最小尺寸传播，避免标签总宽度反向撑大窗口最小尺寸
+        tab-clip := Rectangle {
+            clip: true;
+            min-width: 0px;
 
-            for tab in tabs : tab-item := Rectangle {
-                width: root.tab-width;
-                height: 100%;
-                background: tab.active ? #2d2d2d : (self-touch.has-hover ? #252525 : #1f1f1f);
-                border-radius: 6px;
+            HorizontalLayout {
+                for tab in tabs: tab-item := Rectangle {
+                    width: root.tab-width;
+                    height: 100%;
+                    background: tab.active ? #0c0c0c : (self-touch.has-hover ? #1a1a1a : #292C33);
+                    border-top-left-radius: 6px;
+                    border-top-right-radius: 6px;
+                    border-bottom-left-radius: tab.active ? 0px : 6px;
+                    border-bottom-right-radius: tab.active ? 0px : 6px;
 
-                // 整个 Tab 的点击区域（置于底层，关闭按钮在其上方拦截点击）
-                self-touch := TouchArea {
-                    clicked => {
-                        root.select-tab(tab.id);
-                    }
-                }
-
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 6px;
-//                    spacing: 6px;
-
-                    // 标题
-                    Text {
-                        text: tab.title;
-                        color: tab.active ? #ffffff : #aaaaaa;
-                        font-size: 13px;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-
-                    // 弹性占位
-                    Rectangle { horizontal-stretch: 1; }
-
-                    // 关闭按钮 ×
-                    close-touch := TouchArea {
-                        width: 18px;
-                        height: 18px;
-                        y: (parent.height - self.height) / 2;
+                    // 整个 Tab 的点击区域（置于底层，关闭按钮在其上方拦截点击）
+                    self-touch := TouchArea {
                         clicked => {
-                            root.close-tab(tab.id);
+                            root.select-tab(tab.id);
                         }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 6px;
+
+                        // 标题
+                        Text {
+                            text: tab.title;
+                            color: tab.active ? #ffffff : #aaaaaa;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+
+                        // 弹性占位
                         Rectangle {
-                            background: close-touch.has-hover ? #e81123aa : transparent;
-                            border-radius: 4px;
+                            horizontal-stretch: 1;
+                        }
+
+                        // 关闭按钮 ×
+                        close-touch := TouchArea {
                             width: 18px;
                             height: 18px;
-                            Text {
-                                text: "\u{00D7}";  // ×
-                                color: close-touch.has-hover ? #ffffff : #888;
-                                font-size: 14px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            y: (parent.height - self.height) / 2;
+                            clicked => {
+                                root.close-tab(tab.id);
+                            }
+                            Rectangle {
+                                background: close-touch.has-hover ? #e81123aa : transparent;
+                                border-radius: 4px;
+                                width: 18px;
+                                height: 18px;
+                                Text {
+                                    text: "\u{00D7}";  // ×
+                                    color: close-touch.has-hover ? #ffffff : #888;
+                                    font-size: 14px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
                             }
                         }
                     }
                 }
             }
         }
-    }
 
-    // + 按钮：用默认 Profile 创建新 Tab
-    add-touch := TouchArea {
-        width: 30px;
-        height: 100%;
-        clicked => {
-            root.new-tab();
-        }
-        Rectangle {
-            background: add-touch.has-hover ? #2d2d2d : transparent;
-            border-radius: 6px;
+        // + 按钮：用默认 Profile 创建新 Tab
+        add-touch := TouchArea {
             width: 30px;
-            height: 36px;
-            Text {
-                text: "+";
-                color: #cccccc;
-                font-size: 16px;
-                font-weight: 700;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            height: 100%;
+            clicked => {
+                root.new-tab();
+            }
+            Rectangle {
+                background: add-touch.has-hover ? #2d2d2d : transparent;
+                border-radius: 6px;
+                width: 30px;
+                height: 36px;
+                Text {
+                    text: "+";
+                    color: #cccccc;
+                    font-size: 16px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
             }
         }
-    }
 
-    // ▼ 按钮：展开 Profile 菜单
-    menu-touch := TouchArea {
-        width: 30px;
-        height: 36px;
-        clicked => {
-            root.show-profile-menu();
-        }
-        Rectangle {
-            background: menu-touch.has-hover ? #2d2d2d : transparent;
-            border-radius: 6px;
+        // ▼ 按钮：展开 Profile 菜单
+        menu-touch := TouchArea {
             width: 30px;
-            height: 36px;
-            Text {
-                text: "\u{25BC}";  // ▼
+            height: 100%;
+            clicked => {
+                root.show-profile-menu();
+            }
+            Rectangle {
+                background: menu-touch.has-hover ? #2d2d2d : transparent;
+                border-radius: 6px;
+                width: 30px;
+                height: 100%;
+                Text {
+                    text: "\u{25BC}";  // ▼
                 color: #cccccc;
-                font-size: 10px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+                    font-size: 10px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
             }
         }
-    }
 
-    // 弹性填充：窗口宽于标签总宽时，剩余空间留白（不拉伸标签）
-    Rectangle { horizontal-stretch: 1; }
+        // 弹性填充：窗口宽于标签总宽时，剩余空间留白（不拉伸标签）
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+    }
 }
