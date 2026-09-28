@@ -55,14 +55,16 @@ export component TabBar inherits Rectangle {
                 for tab[i] in tabs: tab-item := Rectangle {
                     width: root.tab-width;
                     height: 100%;
-                    background: tab.active ? #000000 : (self-touch.has-hover ? #1a1a1a : #292C33);
-                    border-top-left-radius: tab.active ? 20px: 0px;
-                    border-top-right-radius: tab.active ? 20px: 0px;
-                    // 仅当左侧 tab 为 active 时，当前 tab 左下角圆角过渡
-                    border-bottom-left-radius: tabs[i - 1].active ? 6px : 0px;
-                    // 仅当右侧 tab 为 active 时，当前 tab 右下角圆角过渡
-                    border-bottom-right-radius: tabs[i + 1].active ? 6px : 0px;
-
+                    background: tab.active ? #292C33: #000000;
+                    Rectangle {
+                        background: tab.active ? #000000 : (self-touch.has-hover ? #1a1a1a : #292C33);
+                        border-top-left-radius: tab.active ? 8px: 0px;
+                        border-top-right-radius: tab.active ? 8px: 0px;
+                        // 仅当左侧 tab 为 active 时，当前 tab 左下角圆角过渡
+                        border-bottom-left-radius: tabs[i - 1].active ? 6px : 0px;
+                        // 仅当右侧 tab 为 active 时，当前 tab 右下角圆角过渡
+                        border-bottom-right-radius: tabs[i + 1].active ? 6px : 0px;
+                    }
 
                     // 整个 Tab 的点击区域（置于底层，关闭按钮在其上方拦截点击）
                     self-touch := TouchArea {
