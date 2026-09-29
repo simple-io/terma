@@ -30,7 +30,8 @@ use std::rc::{Rc, Weak};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 
-use crate::profile::{Profile, ProfileManager};
+use crate::profile::{Profile, ProfileManager, GeneralConfig};
+use crate::profile::loader::{parse_env_vars_text, format_env_vars_text};
 use crate::renderer::{RunRender, build_viewport_runs, runs_to_cell_runs};
 use crate::session::SessionManager;
 use crate::session::session::TerminalSessionLike;
@@ -43,7 +44,7 @@ mod ui_generated {
 }
 
 use crate::renderer::buffer::RenderCache;
-pub use ui_generated::{CellRun, MainWindow, ProfileInfo, TabInfo};
+pub use ui_generated::{CellRun, MainWindow, ProfileInfo, TabInfo, SettingsWindow, GeneralSettingsInfo, ProfileEditInfo};
 
 /// 等宽字体度量（与 terminal_view.slint 中 char-w/char-h 保持一致）
 const CHAR_W: i32 = 8;
@@ -96,7 +97,8 @@ pub struct ScrollState {
 pub struct App {
     main_window: MainWindow,
     sessions: RefCell<SessionManager>,
-    profiles: ProfileManager,
+    profiles: RefCell<ProfileManager>,
+    settings_window: RefCell<Option<SettingsWindow>>,
     tabs_model: Rc<VecModel<TabInfo>>,
     profiles_model: Rc<VecModel<ProfileInfo>>,
     // 终端 Cell 渲染模型（Run 列表）
@@ -131,7 +133,8 @@ impl App {
         let app = Rc::new(Self {
             main_window,
             sessions: RefCell::new(SessionManager::new()),
-            profiles: ProfileManager::new(),
+            profiles: RefCell::new(ProfileManager::new()),
+            settings_window: RefCell::new(None),
             tabs_model,
             profiles_model,
             cells_model,
@@ -189,6 +192,7 @@ impl App {
     fn populate_profiles(&self) {
         let items: Vec<ProfileInfo> = self
             .profiles
+            .borrow()
             .profiles()
             .iter()
             .map(|p| ProfileInfo {
@@ -515,8 +519,8 @@ impl App {
         self.main_window.on_select_profile(move |pid_str| {
             if let Some(app) = weak.upgrade() {
                 let pid = ProfileId::new(pid_str.to_string());
-                if let Some(profile) = app.profiles.get_profile(&pid) {
-                    app.create_session_for_profile(profile);
+                if let Some(profile) = app.profiles.borrow().get_profile(&pid).cloned() {
+                    app.create_session_for_profile(&profile);
                 }
             }
         });
@@ -577,11 +581,19 @@ impl App {
                 app.handle_resize();
             }
         });
+
+        // 打开设置窗口
+        let weak = Rc::downgrade(self);
+        self.main_window.on_open_settings(move || {
+            if let Some(app) = weak.upgrade() {
+                app.open_settings_window();
+            }
+        });
     }
 
     // 创建默认会话
     fn create_default_session(self: &Rc<Self>) {
-        let profile = self.profiles.default_profile().clone();
+        let profile = self.profiles.borrow().default_profile().clone();
         self.create_session_for_profile(&profile);
     }
 
@@ -655,6 +667,200 @@ impl App {
             // 用 force_full_render 显式强制全量重绘，而不是走 render() 的
             self.force_full_render();
         }
+    }
+
+    // ─── 设置窗口 ───
+
+    /// 打开设置窗口（懒创建：首次打开时创建，后续仅激活）
+    fn open_settings_window(self: &Rc<Self>) {
+        let mut guard = self.settings_window.borrow_mut();
+        if let Some(ref window) = *guard {
+            // 窗口已存在，重新显示并激活
+            window.show().ok();
+            return;
+        }
+
+        let window = SettingsWindow::new().expect("failed to create SettingsWindow");
+        self.sync_settings_to_ui(&window);
+
+        // 绑定回调
+        let weak = Rc::downgrade(self);
+        window.on_save_general(move |info| {
+            if let Some(app) = weak.upgrade() {
+                app.apply_general_settings(info);
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        window.on_save_profile(move |info| {
+            if let Some(app) = weak.upgrade() {
+                app.save_profile(info);
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        window.on_add_profile(move || {
+            if let Some(app) = weak.upgrade() {
+                app.add_profile();
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        window.on_delete_profile(move |id| {
+            if let Some(app) = weak.upgrade() {
+                app.delete_profile(id);
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        window.on_cancelled(move || {
+            if let Some(app) = weak.upgrade() {
+                if let Some(ref w) = *app.settings_window.borrow() {
+                    w.hide().ok();
+                }
+            }
+        });
+
+        // 窗口关闭请求 → 隐藏而非销毁
+        let weak = Rc::downgrade(self);
+        window.window().on_close_requested(move || {
+            if let Some(app) = weak.upgrade() {
+                if let Some(ref w) = *app.settings_window.borrow() {
+                    w.hide().ok();
+                }
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+
+        window.show().expect("failed to show settings window");
+        *guard = Some(window);
+    }
+
+    /// 把当前配置同步到 SettingsWindow UI
+    fn sync_settings_to_ui(self: &Rc<Self>, window: &SettingsWindow) {
+        let mgr = self.profiles.borrow();
+
+        // 通用配置
+        let g = mgr.general();
+        window.set_general_settings(GeneralSettingsInfo {
+            font_family: g.font_family.clone().into(),
+            font_size: g.font_size as i32,
+            background_color: g.background_color.clone().into(),
+            cursor_style: g.cursor_style.clone().into(),
+            color_scheme: g.color_scheme.clone().into(),
+            bell_sound: g.bell_sound,
+            scrollback_limit: g.scrollback_limit as i32,
+            default_profile_id: mgr.default_profile_id().0.clone().into(),
+        });
+
+        // Profile 列表
+        let profiles: Vec<ProfileEditInfo> = mgr
+            .profiles()
+            .iter()
+            .map(|p| ProfileEditInfo {
+                id: p.id.0.as_str().into(),
+                name: p.name.as_str().into(),
+                command: p.command.as_str().into(),
+                args: p.args.join(" ").into(),
+                working_directory: p
+                    .working_directory
+                    .as_ref()
+                    .map(|d| d.display().to_string())
+                    .unwrap_or_default()
+                    .into(),
+                env_vars: format_env_vars_text(&p.env_vars).into(),
+            })
+            .collect();
+        window.set_profile_list(Rc::new(VecModel::from(profiles)).into());
+        window.set_selected_index(0);
+    }
+
+    /// 刷新设置窗口 UI（Profile 列表变化后调用）
+    fn refresh_settings_ui(self: &Rc<Self>) {
+        if let Some(ref w) = *self.settings_window.borrow() {
+            self.sync_settings_to_ui(w);
+        }
+    }
+
+    /// 保存通用配置并实时生效
+    fn apply_general_settings(self: &Rc<Self>, info: GeneralSettingsInfo) {
+        let config = GeneralConfig {
+            default_profile: info.default_profile_id.to_string(),
+            font_family: info.font_family.to_string(),
+            font_size: info.font_size as u32,
+            background_color: info.background_color.to_string(),
+            cursor_style: info.cursor_style.to_string(),
+            color_scheme: info.color_scheme.to_string(),
+            bell_sound: info.bell_sound,
+            scrollback_limit: info.scrollback_limit as usize,
+        };
+
+        self.profiles.borrow_mut().update_general(config);
+
+        // 即时生效：背景色
+        let bg = self.profiles.borrow().general().background_color.clone();
+        if let Some(color) = parse_color(&bg) {
+            self.main_window.set_bg_color(color);
+        }
+
+        // 刷新主窗口 Profile 下拉菜单（默认 Profile 可能变化）
+        self.populate_profiles();
+        // 强制全量重绘
+        self.force_full_render();
+        // 隐藏设置窗口
+        if let Some(ref w) = *self.settings_window.borrow() {
+            w.hide().ok();
+        }
+    }
+
+    /// 保存 Profile 修改
+    fn save_profile(self: &Rc<Self>, info: ProfileEditInfo) {
+        let profile = Profile {
+            id: ProfileId::new(info.id.to_string()),
+            name: info.name.to_string(),
+            command: info.command.to_string(),
+            args: info
+                .args
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect(),
+            working_directory: if info.working_directory.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(info.working_directory.to_string()))
+            },
+            env_vars: parse_env_vars_text(&info.env_vars),
+            icon: None,
+            color_scheme: None,
+        };
+        self.profiles.borrow_mut().update_profile(profile);
+        self.refresh_settings_ui();
+        self.populate_profiles();
+    }
+
+    /// 添加新 Profile
+    fn add_profile(self: &Rc<Self>) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let id = format!("profile-{}", ts);
+        let profile = Profile::new(id, "New Profile", "/bin/sh");
+        let idx = self.profiles.borrow_mut().add_profile(profile);
+        self.refresh_settings_ui();
+        // 选中新添加的 Profile
+        if let Some(ref w) = *self.settings_window.borrow() {
+            w.set_selected_index(idx as i32);
+        }
+        self.populate_profiles();
+    }
+
+    /// 删除 Profile
+    fn delete_profile(self: &Rc<Self>, id: slint::SharedString) {
+        let pid = ProfileId::new(id.to_string());
+        self.profiles.borrow_mut().delete_profile(&pid);
+        self.refresh_settings_ui();
+        self.populate_profiles();
     }
 }
 
@@ -738,4 +944,18 @@ fn encode_key(text: &slint::SharedString, meta: bool, _cort: bool, _alt: bool, _
 
     // 普通可见字符 → utf8 字节
     s.as_bytes().to_vec()
+}
+
+/// 解析十六进制颜色字符串（如 "#000000"）为 Slint Color
+fn parse_color(s: &str) -> Option<slint::Color> {
+    let s = s.strip_prefix('#')?;
+    match s.len() {
+        6 => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            Some(slint::Color::from_rgb_u8(r, g, b))
+        }
+        _ => None,
+    }
 }

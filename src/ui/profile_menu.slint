@@ -1,16 +1,15 @@
-// profile_menu.slint — Profile 下拉菜单（Phase 1 占位实现）
+// profile_menu.slint — Profile 下拉菜单
 //
 // 职责：
 //   - 显示可用的 Profile 列表
 //   - 用户选中某项时触发 select-profile 回调
-//   - Phase 6 接入真实 ProfileManager 后填充数据
+//   - 底部提供「设置」入口，打开独立配置窗口
 //
 // 通信：
 //   入：profiles (Model<ProfileInfo>)
 //   出：callback select-profile(profile-id)
-//   出：callback dismissed
-
-import { Button } from "std-widgets.slint";
+//   出：callback open-settings()
+//   出：callback dismissed()
 
 export struct ProfileInfo {
     id: string,
@@ -24,6 +23,7 @@ export component ProfileMenu inherits Rectangle {
 
     callback select-profile(string /* profile-id */);
     callback dismissed();
+    callback open-settings();
 
     // 简单垂直列表浮层
     if menu-visible : vertical-layout := VerticalLayout {
@@ -55,6 +55,41 @@ export component ProfileMenu inherits Rectangle {
                     touch := TouchArea {
                         clicked => {
                             root.select-profile(profile.id);
+                            root.dismissed();
+                        }
+                    }
+                }
+
+                // ── 分隔线 ──
+                Rectangle {
+                    height: 5px;
+                    background: transparent;
+                    Rectangle {
+                        y: 2px;
+                        height: 1px;
+                        width: parent.width - 8px;
+                        x: 4px;
+                        background: #444;
+                    }
+                }
+
+                // ── 设置选项 ──
+                Rectangle {
+                    height: 30px;
+                    background: settings-touch.pressed ? #3a3a3a : (settings-touch.has-hover ? #353535 : transparent);
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        spacing: 8px;
+                        Text {
+                            text: "\u{2699} 设置...";
+                            color: #e6e6e6;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    settings-touch := TouchArea {
+                        clicked => {
+                            root.open-settings();
                             root.dismissed();
                         }
                     }

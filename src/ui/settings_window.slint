@@ -1,0 +1,679 @@
+// settings_window.slint — 独立配置窗口
+//
+// 职责：
+//   - 独立 OS 窗口，与主窗口分离，设置时不影响终端
+//   - 两个分类页：通用配置 + 启动项配置
+//   - 通用配置：字体、颜色、光标、配色方案、声音、scrollback、默认启动项
+//   - 启动项配置：Profile 列表的增删改查
+//
+// 通信（与 Rust 侧 controller.rs 交互）：
+//   入：general-settings (GeneralSettingsInfo)
+//   入：profile-list ([ProfileEditInfo])
+//   出：callback save-general(GeneralSettingsInfo)
+//   出：callback save-profile(ProfileEditInfo)
+//   出：callback add-profile()
+//   出：callback delete-profile(string)
+//   出：callback cancelled()
+//
+// 注意：此文件独立编译，不 import 项目内其他 .slint 文件，
+// 避免跨编译单元 struct 类型冲突。所有 struct 在此文件内独立定义。
+
+export struct GeneralSettingsInfo {
+    font-family: string,
+    font-size: int,
+    background-color: string,
+    cursor-style: string,
+    color-scheme: string,
+    bell-sound: bool,
+    scrollback-limit: int,
+    default-profile-id: string,
+}
+
+export struct ProfileEditInfo {
+    id: string,
+    name: string,
+    command: string,
+    args: string,
+    working-directory: string,
+    env-vars: string,
+}
+
+export component SettingsWindow inherits Window {
+    title: "terma 设置";
+    preferred-width: 620px;
+    preferred-height: 520px;
+    min-width: 480px;
+    min-height: 400px;
+    background: #1e1e1e;
+
+    // ─── Rust 侧注入的数据 ───
+    in property <GeneralSettingsInfo> general-settings;
+    in property <[ProfileEditInfo]> profile-list;
+    in-out property <int> selected-index: 0;
+
+    // ─── 回调 ───
+    callback save-general(GeneralSettingsInfo);
+    callback save-profile(ProfileEditInfo);
+    callback add-profile();
+    callback delete-profile(string);
+    callback cancelled();
+
+    // ─── 本地草稿 ───
+    property <GeneralSettingsInfo> general-draft: root.general-settings;
+    property <ProfileEditInfo> profile-draft;
+
+    // 选中索引变化或列表变化时，刷新 profile-draft
+    changed selected-index => {
+        root.refresh-profile-draft();
+    }
+    changed profile-list => {
+        root.refresh-profile-draft();
+    }
+
+    function refresh-profile-draft() {
+        if root.selected-index >= 0 && root.selected-index < root.profile-list.length {
+            root.profile-draft = root.profile-list[root.selected-index];
+        }
+    }
+
+    // ─── 当前激活的分类页：0=通用配置, 1=启动项配置 ───
+    property <int> active-tab: 0;
+
+    VerticalLayout {
+        // 顶部 Tab 栏
+        Rectangle {
+            height: 40px;
+            background: #252526;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                spacing: 4px;
+
+                Rectangle {
+                    width: 100px;
+                    background: root.active-tab == 0 ? #1e1e1e : (tab0-touch.has-hover ? #2d2d2d : transparent);
+                    border-top-left-radius: 6px;
+                    border-top-right-radius: 6px;
+                    Text {
+                        text: "通用配置";
+                        color: root.active-tab == 0 ? #ffffff : #aaa;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    tab0-touch := TouchArea {
+                        clicked => { root.active-tab = 0; }
+                    }
+                }
+
+                Rectangle {
+                    width: 100px;
+                    background: root.active-tab == 1 ? #1e1e1e : (tab1-touch.has-hover ? #2d2d2d : transparent);
+                    border-top-left-radius: 6px;
+                    border-top-right-radius: 6px;
+                    Text {
+                        text: "启动项配置";
+                        color: root.active-tab == 1 ? #ffffff : #aaa;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    tab1-touch := TouchArea {
+                        clicked => { root.active-tab = 1; }
+                    }
+                }
+            }
+        }
+
+        // ─── 内容区 ───
+        Rectangle {
+            background: #1e1e1e;
+
+            // ═══ 通用配置页 ═══
+            if root.active-tab == 0 : Rectangle {
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    Text {
+                        text: "外观";
+                        color: #ffffff;
+                        font-size: 15px;
+                        font-weight: 700;
+                    }
+
+                    // 字体
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "字体";
+                            color: #ccc;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            width: 100px;
+                        }
+                        TextInput {
+                            width: 200px;
+                            text: root.general-draft.font-family;
+                            edited => { root.general-draft.font-family = self.text; }
+                        }
+                    }
+
+                    // 字号
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "字号";
+                            color: #ccc;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            width: 100px;
+                        }
+                        TextInput {
+                            width: 60px;
+                            text: root.general-draft.font-size;
+                            edited => {
+                                if self.text.to-float() > 0 {
+                                    root.general-draft.font-size = self.text.to-float();
+                                }
+                            }
+                        }
+                        Text {
+                            text: "px";
+                            color: #888;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // 背景色
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "背景色";
+                            color: #ccc;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            width: 100px;
+                        }
+                        TextInput {
+                            width: 120px;
+                            text: root.general-draft.background-color;
+                            edited => { root.general-draft.background-color = self.text; }
+                        }
+                        // 背景色预览：使用固定矩形展示当前输入的色值
+                        Rectangle {
+                            width: 20px;
+                            height: 20px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: #555;
+                            background: #2d2d2d;
+                        }
+                    }
+
+                    // 光标样式
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "光标样式";
+                            color: #ccc;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            width: 100px;
+                        }
+                        TextInput {
+                            width: 120px;
+                            text: root.general-draft.cursor-style;
+                            edited => { root.general-draft.cursor-style = self.text; }
+                        }
+                        Text {
+                            text: "(block / beam / underline)";
+                            color: #666;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // 配色方案
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "配色方案";
+                            color: #ccc;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            width: 100px;
+                        }
+                        TextInput {
+                            width: 120px;
+                            text: root.general-draft.color-scheme;
+                            edited => { root.general-draft.color-scheme = self.text; }
+                        }
+                        Text {
+                            text: "(default / solarized-dark / dracula)";
+                            color: #666;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // 声音
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "响铃";
+                            color: #ccc;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            width: 100px;
+                        }
+                        Rectangle {
+                            width: 16px;
+                            height: 16px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: #666;
+                            background: root.general-draft.bell-sound ? #4caf50 : transparent;
+                            bell-touch := TouchArea {
+                                clicked => {
+                                    root.general-draft.bell-sound = !root.general-draft.bell-sound;
+                                }
+                            }
+                            Text {
+                                text: root.general-draft.bell-sound ? "\u{2713}" : "";
+                                color: #fff;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: "终端响铃时播放声音";
+                            color: #888;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Text {
+                        text: "行为";
+                        color: #ffffff;
+                        font-size: 15px;
+                        font-weight: 700;
+                    }
+
+                    // Scrollback 上限
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Scrollback 上限";
+                            color: #ccc;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            width: 100px;
+                        }
+                        TextInput {
+                            width: 80px;
+                            text: root.general-draft.scrollback-limit;
+                            edited => {
+                                if self.text.to-float() >= 0 {
+                                    root.general-draft.scrollback-limit = self.text.to-float();
+                                }
+                            }
+                        }
+                        Text {
+                            text: "行（0=无限制）";
+                            color: #666;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Text {
+                        text: "默认启动项";
+                        color: #ffffff;
+                        font-size: 15px;
+                        font-weight: 700;
+                    }
+
+                    // 默认 Profile 选择列表
+                    for profile[i] in root.profile-list : Rectangle {
+                        height: 28px;
+                        background: profile.id == root.general-draft.default-profile-id ? #2d5a2d55 : (default-touch.has-hover ? #2a2a2a : transparent);
+                        border-radius: 4px;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            spacing: 8px;
+
+                            // 单选圆点
+                            Rectangle {
+                                width: 14px;
+                                height: 14px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 7px;
+                                border-width: 1px;
+                                border-color: #888;
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    x: 2px;
+                                    y: 2px;
+                                    border-radius: 4px;
+                                    background: profile.id == root.general-draft.default-profile-id ? #4caf50 : transparent;
+                                }
+                            }
+                            Text {
+                                text: profile.name;
+                                color: #e6e6e6;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        default-touch := TouchArea {
+                            clicked => {
+                                root.general-draft.default-profile-id = profile.id;
+                            }
+                        }
+                    }
+
+                    // 弹性填充
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+
+            // ═══ 启动项配置页 ═══
+            if root.active-tab == 1 : HorizontalLayout {
+                padding: 12px;
+                spacing: 12px;
+
+                // ── 左侧：Profile 列表 ──
+                Rectangle {
+                    width: 180px;
+                    background: #252526;
+                    border-radius: 4px;
+
+                    VerticalLayout {
+                        padding: 6px;
+                        spacing: 2px;
+
+                        // Profile 列表项
+                        for profile[i] in root.profile-list : Rectangle {
+                            height: 30px;
+                            background: i == root.selected-index ? #3a3a3a : (item-touch.has-hover ? #333 : transparent);
+                            border-radius: 4px;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                spacing: 6px;
+
+                                Text {
+                                    text: profile.name;
+                                    color: i == root.selected-index ? #fff : #ccc;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                // 默认标记
+                                Text {
+                                    text: profile.id == root.general-settings.default-profile-id ? "★" : "";
+                                    color: #4caf50;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            item-touch := TouchArea {
+                                clicked => {
+                                    root.selected-index = i;
+                                }
+                            }
+                        }
+
+                        Rectangle { vertical-stretch: 1; }
+
+                        // 添加按钮
+                        Rectangle {
+                            height: 28px;
+                            background: add-btn.has-hover ? #2d5a2d : #2d2d2d;
+                            border-radius: 4px;
+                            Text {
+                                text: "+ 添加";
+                                color: #4caf50;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            add-btn := TouchArea {
+                                clicked => {
+                                    root.add-profile();
+                                }
+                            }
+                        }
+
+                        // 删除按钮
+                        Rectangle {
+                            height: 28px;
+                            background: del-btn.has-hover ? #5a2d2d : #2d2d2d;
+                            border-radius: 4px;
+                            Text {
+                                text: "\u{2212} 删除";
+                                color: #e81123;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            del-btn := TouchArea {
+                                clicked => {
+                                    if root.profile-list.length > 0 {
+                                        root.delete-profile(root.profile-draft.id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── 右侧：编辑表单 ──
+                Rectangle {
+                    background: #252526;
+                    border-radius: 4px;
+
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+
+                        // 仅在有选中项时显示编辑表单
+                        if root.profile-list.length > 0 : VerticalLayout {
+                            spacing: 12px;
+
+                            // 名称
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "名称";
+                                    color: #ccc;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    width: 90px;
+                                }
+                                TextInput {
+                                    width: 250px;
+                                    text: root.profile-draft.name;
+                                    edited => { root.profile-draft.name = self.text; }
+                                }
+                            }
+
+                            // 命令
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "命令";
+                                    color: #ccc;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    width: 90px;
+                                }
+                                TextInput {
+                                    width: 250px;
+                                    text: root.profile-draft.command;
+                                    edited => { root.profile-draft.command = self.text; }
+                                }
+                            }
+
+                            // 参数
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "参数";
+                                    color: #ccc;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    width: 90px;
+                                }
+                                TextInput {
+                                    width: 250px;
+                                    text: root.profile-draft.args;
+                                    edited => { root.profile-draft.args = self.text; }
+                                }
+                            }
+
+                            // 工作目录
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "工作目录";
+                                    color: #ccc;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    width: 90px;
+                                }
+                                TextInput {
+                                    width: 250px;
+                                    text: root.profile-draft.working-directory;
+                                    edited => { root.profile-draft.working-directory = self.text; }
+                                }
+                            }
+
+                            // 环境变量
+                            VerticalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "环境变量";
+                                    color: #ccc;
+                                    font-size: 13px;
+                                }
+                                Text {
+                                    text: "每行 KEY=VALUE 格式";
+                                    color: #666;
+                                    font-size: 11px;
+                                }
+                                Rectangle {
+                                    height: 80px;
+                                    background: #1a1a1a;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: #444;
+                                    TextInput {
+                                        text: root.profile-draft.env-vars;
+                                        single-line: false;
+                                        wrap: word-wrap;
+                                        edited => {
+                                            root.profile-draft.env-vars = self.text;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle { vertical-stretch: 1; }
+
+                        // 保存按钮
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+
+                            Rectangle {
+                                width: 90px;
+                                height: 28px;
+                                background: save-prof.has-hover ? #4caf50 : #388e3c;
+                                border-radius: 4px;
+                                Text {
+                                    text: "保存修改";
+                                    color: #fff;
+                                    font-size: 13px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                save-prof := TouchArea {
+                                    clicked => {
+                                        root.save-profile(root.profile-draft);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ─── 底部按钮栏 ───
+        Rectangle {
+            height: 44px;
+            background: #252526;
+
+            HorizontalLayout {
+                padding-right: 16px;
+                spacing: 8px;
+                alignment: end;
+
+                // 取消按钮
+                Rectangle {
+                    width: 80px;
+                    height: 30px;
+                    y: (parent.height - self.height) / 2;
+                    background: cancel-touch.has-hover ? #3a3a3a : #2d2d2d;
+                    border-radius: 4px;
+                    Text {
+                        text: "关闭";
+                        color: #ccc;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    cancel-touch := TouchArea {
+                        clicked => {
+                            root.cancelled();
+                        }
+                    }
+                }
+
+                // 保存通用配置按钮（仅通用配置页显示）
+                if root.active-tab == 0 : Rectangle {
+                    width: 80px;
+                    height: 30px;
+                    y: (parent.height - self.height) / 2;
+                    background: save-gen.has-hover ? #4caf50 : #388e3c;
+                    border-radius: 4px;
+                    Text {
+                        text: "保存";
+                        color: #fff;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    save-gen := TouchArea {
+                        clicked => {
+                            root.save-general(root.general-draft);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

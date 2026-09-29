@@ -110,6 +110,11 @@ impl TerminalSession {
             cmd.cwd(cwd);
         }
 
+        // 注入 Profile 自定义环境变量
+        for (key, value) in &profile.env_vars {
+            cmd.env(key, value);
+        }
+
         // 确保子 shell 使用 UTF-8 locale，否则中文（及多字节字符）会乱码。
         if let Some(locale) = detect_utf8_locale() {
             if std::env::var_os("LANG").filter(|v| !v.is_empty()).is_none() {

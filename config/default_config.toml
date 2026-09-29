@@ -1,0 +1,64 @@
+# terma 默认配置参考
+#
+# 实际配置文件位置：
+#   macOS:  ~/Library/Application Support/terma/config.toml
+#   Linux:  ~/.config/terma/config.toml
+#   Windows: %APPDATA%\terma\config.toml
+#
+# 文件不存在时由 ProfileManager 生成平台默认配置并落盘。
+# 旧版 profiles.toml 会被自动迁移为 config.toml。
+#
+# 结构说明：
+#   [general]      通用配置（外观、行为、默认启动项）
+#   [[profiles]]   启动项列表（每个 Profile 描述如何启动一个终端）
+
+[general]
+default_profile = "zsh"
+font_family = "Monaco"
+font_size = 13
+background_color = "#000000"
+cursor_style = "block"
+color_scheme = "default"
+bell_sound = false
+scrollback_limit = 10000
+
+[[profiles]]
+id = "zsh"
+name = "Zsh"
+command = "/bin/zsh"
+
+[[profiles]]
+id = "bash"
+name = "Bash"
+command = "/bin/bash"
+
+# Profile 字段说明：
+#   id                Profile 唯一标识（字符串）
+#   name              Tab 标题 / 菜单显示名
+#   command           启动的 shell / 命令
+#   args              命令参数（可选，数组）
+#   working_directory 工作目录（可选）
+#   env_vars          环境变量（可选，键值对）
+#   icon              图标标识（可选，后续）
+#   color_scheme      颜色方案名（可选，后续）
+
+# 带完整字段的 Profile 示例：
+# [[profiles]]
+# id = "dev"
+# name = "Dev Shell"
+# command = "/bin/zsh"
+# args = ["--login"]
+# working_directory = "/home/user/projects"
+# env_vars = { TERM = "xterm-256color", MY_PROJECT = "terma" }
+
+# Windows 示例：
+# [[profiles]]
+# id = "powershell"
+# name = "PowerShell"
+# command = "powershell.exe"
+#
+# [[profiles]]
+# id = "wsl-ubuntu"
+# name = "WSL Ubuntu"
+# command = "wsl.exe"
+# args = ["-d", "Ubuntu"]

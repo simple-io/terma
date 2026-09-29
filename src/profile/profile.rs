@@ -4,8 +4,10 @@
 //!   - 用什么 shell / command
 //!   - 启动参数
 //!   - 工作目录
+//!   - 环境变量
 //!   - 图标 / 颜色方案（后续）
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::session::session_id::ProfileId;
@@ -17,6 +19,7 @@ pub struct Profile {
     pub command: String,
     pub args: Vec<String>,
     pub working_directory: Option<PathBuf>,
+    pub env_vars: BTreeMap<String, String>,
     pub icon: Option<String>,
     pub color_scheme: Option<String>,
 }
@@ -29,6 +32,7 @@ impl Profile {
             command: command.into(),
             args: Vec::new(),
             working_directory: None,
+            env_vars: BTreeMap::new(),
             icon: None,
             color_scheme: None,
         }

@@ -15,6 +15,9 @@
 import { TabBar, TabInfo } from "tab_bar.slint";
 import { TerminalView, CellRun } from "terminal_view.slint";
 import { ProfileMenu, ProfileInfo } from "profile_menu.slint";
+import { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo } from "settings_window.slint";
+
+export { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo }
 
 export component MainWindow inherits Window {
     title: "terma";
@@ -25,7 +28,9 @@ export component MainWindow inherits Window {
     min-width: 20px;
     preferred-width: 976px;
     preferred-height: 621px;
-    background: #000000;
+    // 背景色：通过 in-out 属性暴露给 Rust 侧，支持运行时修改
+    in-out property <color> bg-color: #000000;
+    background: root.bg-color;
 
     // ─── 对外暴露的数据属性（Rust 侧写入） ───
     // 会话标签
@@ -52,6 +57,7 @@ export component MainWindow inherits Window {
     callback close-tab(string);
     callback select-tab(string);
     callback select-profile(string);
+    callback open-settings();
     callback key-pressed(string, KeyboardModifiers) -> bool;
     callback ime-commit(string);
     callback terminal-clicked();
@@ -138,6 +144,10 @@ export component MainWindow inherits Window {
         menu-visible: root.profile-menu-visible;
         select-profile(pid) => {
             root.select-profile(pid);
+            root.profile-menu-visible = false;
+        }
+        open-settings => {
+            root.open-settings();
             root.profile-menu-visible = false;
         }
         dismissed => {
