@@ -43,8 +43,8 @@ export struct ProfileEditInfo {
 
 export component SettingsWindow inherits Window {
     title: "terma 设置";
-    preferred-width: 700px;
-    preferred-height: 540px;
+    preferred-width: 800px;
+    preferred-height: 640px;
     min-width: 520px;
     min-height: 420px;
     background: #ffffff;
@@ -93,6 +93,15 @@ export component SettingsWindow inherits Window {
         }
     }
 
+    // ─── 默认启动项下拉框状态 ───
+    // 选中索引：初始/同步值由 Rust 侧按 default-profile-id 反查注入
+    in-out property <int> default-index: -1;
+    // 当前选中项显示文本："名称(命令)"，未选中时为空
+    property <string> default-label:
+        (root.default-index >= 0 && root.default-index < root.profile-list.length)
+        ? (root.profile-list[root.default-index].name + "(" + root.profile-list[root.default-index].command + ")")
+        : "";
+
     // ─── 当前激活的分类页：0=通用配置, 1=启动项配置 ───
     property <int> active-tab: 0;
 
@@ -107,60 +116,126 @@ export component SettingsWindow inherits Window {
                 padding-left: 12px;
                 padding-right: 12px;
                 padding-bottom: 12px;
-                spacing: 4px;
+                spacing: 6px;
 
                 // 标题
                 Text {
                     text: "设置";
                     color: root.c-text;
-                    font-size: 18px;
+                    font-size: 20px;
                     font-weight: 700;
                     horizontal-alignment: left;
-                    height: 36px;
+                    height: 30px;
                     vertical-alignment: center;
                 }
 
-                Rectangle { height: 10px; }
+                Rectangle { height: 5px; }
 
-                // 导航项：通用配置
-                Rectangle {
-                    height: 36px;
-                    border-radius: 6px;
-                    background: root.active-tab == 0 ? root.c-primary : (nav0-touch.has-hover ? root.c-hover : transparent);
+                // 导航主体（可滚动，启动项过多时不溢出）
+                ScrollView {
+                vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 6px;
 
-                    Text {
-                        x: 12px;
-                        text: "通用配置";
-                        color: root.active-tab == 0 ? #ffffff : root.c-text;
-                        font-size: 13px;
-                        font-weight: root.active-tab == 0 ? 600 : 400;
-                        vertical-alignment: center;
-                    }
-                    nav0-touch := TouchArea {
-                        clicked => { root.active-tab = 0; }
+                        // 导航项：通用配置
+                        Rectangle {
+                            height: 38px;
+                            border-radius: 6px;
+                            background: root.active-tab == 0 ? root.c-primary : (nav0-touch.has-hover ? root.c-hover : transparent);
+
+                            Text {
+                                x: 12px;
+                                text: "通用配置";
+                                color: root.active-tab == 0 ? #ffffff : root.c-text;
+                                font-size: 14px;
+                                font-weight: root.active-tab == 0 ? 600 : 400;
+                                vertical-alignment: center;
+                            }
+                            nav0-touch := TouchArea {
+                                clicked => { root.active-tab = 0; }
+                            }
+                        }
+
+                        // 导航项：启动项配置
+                        Rectangle {
+                            height: 38px;
+                            border-radius: 6px;
+                            background: root.active-tab == 1 ? root.c-primary : (nav1-touch.has-hover ? root.c-hover : transparent);
+
+                            Text {
+                                x: 12px;
+                                text: "启动项配置";
+                                color: root.active-tab == 1 ? #ffffff : root.c-text;
+                                font-size: 14px;
+                                font-weight: root.active-tab == 1 ? 600 : 400;
+                                vertical-alignment: center;
+                            }
+                            nav1-touch := TouchArea {
+                                clicked => { root.active-tab = 1; }
+                            }
+                        }
+
+                        // ── 启动项子级节点（缩进体现层级从属） ──
+                        for profile[i] in root.profile-list : Rectangle {
+                            height: 32px;
+                            border-radius: 6px;
+                            background: (root.active-tab == 1 && i == root.selected-index)
+                                ? root.c-selected-soft
+                                : (nav-prof-touch.has-hover ? root.c-hover : transparent);
+
+                            HorizontalLayout {
+                                padding-left: 34px;
+                                padding-right: 10px;
+                                spacing: 6px;
+
+                                Text {
+                                    text: profile.name;
+                                    color: (root.active-tab == 1 && i == root.selected-index) ? root.c-primary : root.c-text-secondary;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                // 默认启动项标记
+                                Text {
+                                    text: profile.id == root.general-settings.default-profile-id ? "★" : "";
+                                    color: root.c-primary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            nav-prof-touch := TouchArea {
+                                clicked => {
+                                    // 选中子节点 = 切到启动项页并选中对应 Profile
+                                    root.active-tab = 1;
+                                    root.selected-index = i;
+                                }
+                            }
+                        }
+
+                        // ── 添加启动项（子级节点样式，主色引导点击） ──
+                        Rectangle {
+                            height: 32px;
+                            border-radius: 6px;
+                            background: nav-add-touch.has-hover ? root.c-hover : transparent;
+
+                            Text {
+                                x: 34px;
+                                text: "+ 添加启动项";
+                                color: root.c-primary;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            nav-add-touch := TouchArea {
+                                clicked => {
+                                    root.active-tab = 1;
+                                    root.add-profile();
+                                }
+                            }
+                        }
                     }
                 }
-
-                // 导航项：启动项配置
-                Rectangle {
-                    height: 36px;
-                    border-radius: 6px;
-                    background: root.active-tab == 1 ? root.c-primary : (nav1-touch.has-hover ? root.c-hover : transparent);
-
-                    Text {
-                        x: 12px;
-                        text: "启动项配置";
-                        color: root.active-tab == 1 ? #ffffff : root.c-text;
-                        font-size: 13px;
-                        font-weight: root.active-tab == 1 ? 600 : 400;
-                        vertical-alignment: center;
-                    }
-                    nav1-touch := TouchArea {
-                        clicked => { root.active-tab = 1; }
-                    }
-                }
-
-                Rectangle { vertical-stretch: 1; }
             }
         }
 
@@ -176,27 +251,28 @@ export component SettingsWindow inherits Window {
                 if root.active-tab == 0 : Rectangle {
                     ScrollView {
                         VerticalLayout {
-                            padding: 24px;
-                            spacing: 14px;
+                            padding: 28px;
+                            spacing: 18px;
 
                             Text {
                                 text: "外观";
                                 color: root.c-text;
-                                font-size: 15px;
+                                font-size: 17px;
                                 font-weight: 700;
                             }
 
                             // 字体
                             HorizontalLayout {
-                                spacing: 8px;
+                                spacing: 10px;
                                 Text {
                                     text: "字体";
                                     color: root.c-text-secondary;
-                                    font-size: 13px;
+                                    font-size: 14px;
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
                                 TextInput {
+                                    font-size: 14px;
                                     width: 220px;
                                     text: root.general-draft.font-family;
                                     edited => { root.general-draft.font-family = self.text; }
@@ -205,15 +281,16 @@ export component SettingsWindow inherits Window {
 
                             // 字号
                             HorizontalLayout {
-                                spacing: 8px;
+                                spacing: 10px;
                                 Text {
                                     text: "字号";
                                     color: root.c-text-secondary;
-                                    font-size: 13px;
+                                    font-size: 14px;
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
                                 TextInput {
+                                    font-size: 14px;
                                     width: 60px;
                                     text: root.general-draft.font-size;
                                     edited => {
@@ -225,22 +302,23 @@ export component SettingsWindow inherits Window {
                                 Text {
                                     text: "px";
                                     color: root.c-text-hint;
-                                    font-size: 12px;
+                                    font-size: 13px;
                                     vertical-alignment: center;
                                 }
                             }
 
                             // 背景色
                             HorizontalLayout {
-                                spacing: 8px;
+                                spacing: 10px;
                                 Text {
                                     text: "背景色";
                                     color: root.c-text-secondary;
-                                    font-size: 13px;
+                                    font-size: 14px;
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
                                 TextInput {
+                                    font-size: 14px;
                                     width: 120px;
                                     text: root.general-draft.background-color;
                                     edited => { root.general-draft.background-color = self.text; }
@@ -259,15 +337,16 @@ export component SettingsWindow inherits Window {
 
                             // 光标样式
                             HorizontalLayout {
-                                spacing: 8px;
+                                spacing: 10px;
                                 Text {
                                     text: "光标样式";
                                     color: root.c-text-secondary;
-                                    font-size: 13px;
+                                    font-size: 14px;
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
                                 TextInput {
+                                    font-size: 14px;
                                     width: 120px;
                                     text: root.general-draft.cursor-style;
                                     edited => { root.general-draft.cursor-style = self.text; }
@@ -275,22 +354,23 @@ export component SettingsWindow inherits Window {
                                 Text {
                                     text: "(block / beam / underline)";
                                     color: root.c-text-hint;
-                                    font-size: 11px;
+                                    font-size: 12px;
                                     vertical-alignment: center;
                                 }
                             }
 
                             // 配色方案
                             HorizontalLayout {
-                                spacing: 8px;
+                                spacing: 10px;
                                 Text {
                                     text: "配色方案";
                                     color: root.c-text-secondary;
-                                    font-size: 13px;
+                                    font-size: 14px;
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
                                 TextInput {
+                                    font-size: 14px;
                                     width: 120px;
                                     text: root.general-draft.color-scheme;
                                     edited => { root.general-draft.color-scheme = self.text; }
@@ -298,18 +378,18 @@ export component SettingsWindow inherits Window {
                                 Text {
                                     text: "(default / solarized-dark / dracula)";
                                     color: root.c-text-hint;
-                                    font-size: 11px;
+                                    font-size: 12px;
                                     vertical-alignment: center;
                                 }
                             }
 
                             // 声音
                             HorizontalLayout {
-                                spacing: 8px;
+                                spacing: 10px;
                                 Text {
                                     text: "响铃";
                                     color: root.c-text-secondary;
-                                    font-size: 13px;
+                                    font-size: 14px;
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
@@ -329,7 +409,7 @@ export component SettingsWindow inherits Window {
                                     Text {
                                         text: root.general-draft.bell-sound ? "\u{2713}" : "";
                                         color: #ffffff;
-                                        font-size: 11px;
+                                        font-size: 12px;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
@@ -337,29 +417,33 @@ export component SettingsWindow inherits Window {
                                 Text {
                                     text: "终端响铃时播放声音";
                                     color: root.c-text-secondary;
-                                    font-size: 12px;
+                                    font-size: 13px;
                                     vertical-alignment: center;
                                 }
                             }
 
+                            // 组间留白：分组之间间距明显大于组内
+                            Rectangle { height: 14px; }
+
                             Text {
                                 text: "行为";
                                 color: root.c-text;
-                                font-size: 15px;
+                                font-size: 17px;
                                 font-weight: 700;
                             }
 
                             // Scrollback 上限
                             HorizontalLayout {
-                                spacing: 8px;
+                                spacing: 10px;
                                 Text {
                                     text: "Scrollback 上限";
                                     color: root.c-text-secondary;
-                                    font-size: 13px;
+                                    font-size: 14px;
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
                                 TextInput {
+                                    font-size: 14px;
                                     width: 80px;
                                     text: root.general-draft.scrollback-limit;
                                     edited => {
@@ -371,56 +455,120 @@ export component SettingsWindow inherits Window {
                                 Text {
                                     text: "行（0=无限制）";
                                     color: root.c-text-hint;
-                                    font-size: 11px;
+                                    font-size: 12px;
                                     vertical-alignment: center;
                                 }
                             }
 
+                            // 组间留白：分组之间间距明显大于组内
+                            Rectangle { height: 14px; }
+
                             Text {
                                 text: "默认启动项";
                                 color: root.c-text;
-                                font-size: 15px;
+                                font-size: 17px;
                                 font-weight: 700;
                             }
 
-                            // 默认 Profile 选择列表
-                            for profile[i] in root.profile-list : Rectangle {
-                                height: 30px;
-                                background: profile.id == root.general-draft.default-profile-id ? root.c-selected-soft : (default-touch.has-hover ? root.c-hover : transparent);
-                                border-radius: 4px;
+                            // 默认启动项下拉框（选项格式：名称(命令)）
+                            HorizontalLayout {
+                                spacing: 10px;
 
-                                HorizontalLayout {
-                                    padding-left: 12px;
-                                    spacing: 8px;
-
-                                    // 单选圆点
-                                    Rectangle {
-                                        width: 14px;
-                                        height: 14px;
-                                        y: (parent.height - self.height) / 2;
-                                        border-radius: 7px;
-                                        border-width: 1px;
-                                        border-color: profile.id == root.general-draft.default-profile-id ? root.c-primary : #9aa0a6;
-                                        Rectangle {
-                                            width: 8px;
-                                            height: 8px;
-                                            x: 2px;
-                                            y: 2px;
-                                            border-radius: 4px;
-                                            background: profile.id == root.general-draft.default-profile-id ? root.c-primary : transparent;
-                                        }
-                                    }
-                                    Text {
-                                        text: profile.name;
-                                        color: root.c-text;
-                                        font-size: 13px;
-                                        vertical-alignment: center;
-                                    }
+                                Text {
+                                    text: "启动项";
+                                    color: root.c-text-secondary;
+                                    font-size: 14px;
+                                    vertical-alignment: center;
+                                    width: 100px;
                                 }
 
-                                default-touch := TouchArea {
-                                    clicked => {
-                                        root.general-draft.default-profile-id = profile.id;
+                                default-dd := Rectangle {
+                                    width: 260px;
+                                    height: 34px;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: dd-touch.has-hover ? root.c-primary : root.c-border;
+                                    background: #ffffff;
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 10px;
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: root.default-label == "" ? "请选择启动项" : root.default-label;
+                                            color: root.default-label == "" ? root.c-text-hint : root.c-text;
+                                            font-size: 14px;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        // 下拉箭头
+                                        Text {
+                                            text: "\u{25BE}";
+                                            color: root.c-text-secondary;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    dd-touch := TouchArea {
+                                        clicked => {
+                                            default-pop.show();
+                                        }
+                                    }
+
+                                    // 下拉选项浮层
+                                    default-pop := PopupWindow {
+                                        y: 38px;
+                                        width: default-dd.width;
+
+                                        Rectangle {
+                                            background: #ffffff;
+                                            border-radius: 6px;
+                                            border-width: 1px;
+                                            border-color: root.c-border;
+                                            clip: true;
+
+                                            VerticalLayout {
+                                                padding: 4px;
+                                                spacing: 2px;
+
+                                                // 空列表提示
+                                                if root.profile-list.length == 0 : Text {
+                                                    text: "暂无启动项";
+                                                    color: root.c-text-hint;
+                                                    font-size: 13px;
+                                                    horizontal-alignment: center;
+                                                    height: 32px;
+                                                    vertical-alignment: center;
+                                                }
+
+                                                // 选项：名称(命令)
+                                                for profile[i] in root.profile-list : Rectangle {
+                                                    height: 32px;
+                                                    border-radius: 4px;
+                                                    background: i == root.default-index ? root.c-selected-soft : (opt-touch.has-hover ? root.c-hover : transparent);
+
+                                                    Text {
+                                                        x: 10px;
+                                                        text: profile.name + "(" + profile.command + ")";
+                                                        color: i == root.default-index ? root.c-primary : root.c-text;
+                                                        font-size: 13px;
+                                                        vertical-alignment: center;
+                                                        overflow: elide;
+                                                    }
+
+                                                    opt-touch := TouchArea {
+                                                        clicked => {
+                                                            root.default-index = i;
+                                                            root.general-draft.default-profile-id = profile.id;
+                                                            default-pop.close();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -431,130 +579,39 @@ export component SettingsWindow inherits Window {
                     }
                 }
 
-                // ═══ 启动项配置页 ═══
-                if root.active-tab == 1 : HorizontalLayout {
-                    padding: 12px;
-                    spacing: 12px;
+                // ═══ 启动项配置页（列表已由左侧导航承担，此处仅保留编辑表单） ═══
+                if root.active-tab == 1 : Rectangle {
+                    background: root.c-content-bg;
+                    clip: true;
 
-                    // ── 左侧：Profile 列表 ──
-                    Rectangle {
-                        width: 180px;
-                        background: #f7f8fa;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: root.c-border;
-                        clip: true;
-
+                    ScrollView {
                         VerticalLayout {
-                            padding: 6px;
-                            spacing: 2px;
+                            padding: 24px;
+                            spacing: 18px;
 
-                            // Profile 列表项
-                            for profile[i] in root.profile-list : Rectangle {
-                                height: 30px;
-                                background: i == root.selected-index ? root.c-selected-soft : (item-touch.has-hover ? root.c-hover : transparent);
-                                border-radius: 4px;
-
-                                HorizontalLayout {
-                                    padding-left: 10px;
-                                    spacing: 6px;
-
-                                    Text {
-                                        text: profile.name;
-                                        color: i == root.selected-index ? root.c-primary : root.c-text;
-                                        font-size: 13px;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                    }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    // 默认标记
-                                    Text {
-                                        text: profile.id == root.general-settings.default-profile-id ? "★" : "";
-                                        color: root.c-primary;
-                                        font-size: 12px;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                item-touch := TouchArea {
-                                    clicked => {
-                                        root.selected-index = i;
-                                    }
-                                }
+                            // 无启动项时的空状态提示
+                            if root.profile-list.length == 0 : Text {
+                                text: "暂无启动项，点击左侧导航「+ 添加启动项」创建";
+                                color: root.c-text-hint;
+                                font-size: 14px;
                             }
-
-                            Rectangle { vertical-stretch: 1; }
-
-                            // 添加按钮
-                            Rectangle {
-                                height: 28px;
-                                background: add-btn.has-hover ? root.c-selected-soft : #eceff1;
-                                border-radius: 4px;
-                                Text {
-                                    text: "+ 添加";
-                                    color: root.c-primary;
-                                    font-size: 12px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                add-btn := TouchArea {
-                                    clicked => {
-                                        root.add-profile();
-                                    }
-                                }
-                            }
-
-                            // 删除按钮
-                            Rectangle {
-                                height: 28px;
-                                background: del-btn.has-hover ? #fdecec : #eceff1;
-                                border-radius: 4px;
-                                Text {
-                                    text: "\u{2212} 删除";
-                                    color: root.c-danger;
-                                    font-size: 12px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                del-btn := TouchArea {
-                                    clicked => {
-                                        if root.profile-list.length > 0 {
-                                            root.delete-profile(root.profile-draft.id);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ── 右侧：编辑表单 ──
-                    Rectangle {
-                        background: root.c-content-bg;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: root.c-border;
-                        clip: true;
-
-                        ScrollView {
-                            VerticalLayout {
-                                padding: 16px;
-                                spacing: 12px;
 
                                 // 仅在有选中项时显示编辑表单
                                 if root.profile-list.length > 0 : VerticalLayout {
-                                    spacing: 12px;
+                                    spacing: 18px;
 
                                     // 名称
                                     HorizontalLayout {
-                                        spacing: 8px;
+                                        spacing: 10px;
                                         Text {
                                             text: "名称";
                                             color: root.c-text-secondary;
-                                            font-size: 13px;
+                                            font-size: 14px;
                                             vertical-alignment: center;
                                             width: 90px;
                                         }
                                         TextInput {
+                                            font-size: 14px;
                                             width: 250px;
                                             text: root.profile-draft.name;
                                             edited => { root.profile-draft.name = self.text; }
@@ -563,15 +620,16 @@ export component SettingsWindow inherits Window {
 
                                     // 命令
                                     HorizontalLayout {
-                                        spacing: 8px;
+                                        spacing: 10px;
                                         Text {
                                             text: "命令";
                                             color: root.c-text-secondary;
-                                            font-size: 13px;
+                                            font-size: 14px;
                                             vertical-alignment: center;
                                             width: 90px;
                                         }
                                         TextInput {
+                                            font-size: 14px;
                                             width: 250px;
                                             text: root.profile-draft.command;
                                             edited => { root.profile-draft.command = self.text; }
@@ -580,15 +638,16 @@ export component SettingsWindow inherits Window {
 
                                     // 参数
                                     HorizontalLayout {
-                                        spacing: 8px;
+                                        spacing: 10px;
                                         Text {
                                             text: "参数";
                                             color: root.c-text-secondary;
-                                            font-size: 13px;
+                                            font-size: 14px;
                                             vertical-alignment: center;
                                             width: 90px;
                                         }
                                         TextInput {
+                                            font-size: 14px;
                                             width: 250px;
                                             text: root.profile-draft.args;
                                             edited => { root.profile-draft.args = self.text; }
@@ -597,15 +656,16 @@ export component SettingsWindow inherits Window {
 
                                     // 工作目录
                                     HorizontalLayout {
-                                        spacing: 8px;
+                                        spacing: 10px;
                                         Text {
                                             text: "工作目录";
                                             color: root.c-text-secondary;
-                                            font-size: 13px;
+                                            font-size: 14px;
                                             vertical-alignment: center;
                                             width: 90px;
                                         }
                                         TextInput {
+                                            font-size: 14px;
                                             width: 250px;
                                             text: root.profile-draft.working-directory;
                                             edited => { root.profile-draft.working-directory = self.text; }
@@ -614,16 +674,16 @@ export component SettingsWindow inherits Window {
 
                                     // 环境变量
                                     VerticalLayout {
-                                        spacing: 4px;
+                                        spacing: 6px;
                                         Text {
                                             text: "环境变量";
                                             color: root.c-text-secondary;
-                                            font-size: 13px;
+                                            font-size: 14px;
                                         }
                                         Text {
                                             text: "每行 KEY=VALUE 格式";
                                             color: root.c-text-hint;
-                                            font-size: 11px;
+                                            font-size: 12px;
                                         }
                                         Rectangle {
                                             height: 80px;
@@ -633,6 +693,7 @@ export component SettingsWindow inherits Window {
                                             border-color: root.c-border;
                                             clip: true;
                                             TextInput {
+                                                font-size: 14px;
                                                 text: root.profile-draft.env-vars;
                                                 single-line: false;
                                                 wrap: word-wrap;
@@ -646,20 +707,44 @@ export component SettingsWindow inherits Window {
 
                                 Rectangle { vertical-stretch: 1; }
 
-                                // 保存按钮
+                                // 操作按钮：删除 + 保存
                                 HorizontalLayout {
                                     alignment: end;
-                                    spacing: 8px;
+                                    spacing: 10px;
+
+                                    // 删除按钮（功能自原列表面板迁入）
+                                    Rectangle {
+                                        width: 104px;
+                                        height: 32px;
+                                        background: del-btn.has-hover ? #fdecec : #ffffff;
+                                        border-radius: 4px;
+                                        border-width: 1px;
+                                        border-color: root.c-danger;
+                                        Text {
+                                            text: "删除启动项";
+                                            color: root.c-danger;
+                                            font-size: 14px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                        del-btn := TouchArea {
+                                            clicked => {
+                                                if root.profile-list.length > 0 {
+                                                    root.delete-profile(root.profile-draft.id);
+                                                }
+                                            }
+                                        }
+                                    }
 
                                     Rectangle {
-                                        width: 90px;
-                                        height: 30px;
+                                        width: 100px;
+                                        height: 32px;
                                         background: save-prof.has-hover ? root.c-primary-hover : root.c-primary;
                                         border-radius: 4px;
                                         Text {
                                             text: "保存修改";
                                             color: #ffffff;
-                                            font-size: 13px;
+                                            font-size: 14px;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
@@ -674,11 +759,10 @@ export component SettingsWindow inherits Window {
                         }
                     }
                 }
-            }
 
             // ─── 底部按钮栏 ───
             Rectangle {
-                height: 44px;
+                height: 52px;
                 background: #fafbfc;
 
                 Rectangle {
@@ -688,14 +772,14 @@ export component SettingsWindow inherits Window {
                 }
 
                 HorizontalLayout {
-                    padding-right: 16px;
-                    spacing: 8px;
+                    padding-right: 20px;
+                    spacing: 10px;
                     alignment: end;
 
                     // 取消按钮
                     Rectangle {
-                        width: 80px;
-                        height: 30px;
+                        width: 88px;
+                        height: 32px;
                         y: (parent.height - self.height) / 2;
                         background: cancel-touch.has-hover ? root.c-hover : #ffffff;
                         border-radius: 4px;
@@ -704,7 +788,7 @@ export component SettingsWindow inherits Window {
                         Text {
                             text: "关闭";
                             color: root.c-text;
-                            font-size: 13px;
+                            font-size: 14px;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -717,15 +801,15 @@ export component SettingsWindow inherits Window {
 
                     // 保存通用配置按钮（仅通用配置页显示）
                     if root.active-tab == 0 : Rectangle {
-                        width: 80px;
-                        height: 30px;
+                        width: 88px;
+                        height: 32px;
                         y: (parent.height - self.height) / 2;
                         background: save-gen.has-hover ? root.c-primary-hover : root.c-primary;
                         border-radius: 4px;
                         Text {
                             text: "保存";
                             color: #ffffff;
-                            font-size: 13px;
+                            font-size: 14px;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }

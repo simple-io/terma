@@ -773,6 +773,16 @@ impl App {
             .collect();
         window.set_profile_list(Rc::new(VecModel::from(profiles)).into());
         window.set_selected_index(0);
+
+        // 默认启动项下拉框：由 default-profile-id 反查列表索引注入
+        let default_id = mgr.default_profile_id().0.clone();
+        let idx = mgr
+            .profiles()
+            .iter()
+            .position(|p| p.id.0 == default_id)
+            .map(|i| i as i32)
+            .unwrap_or(-1);
+        window.set_default_index(idx);
     }
 
     /// 刷新设置窗口 UI（Profile 列表变化后调用）
