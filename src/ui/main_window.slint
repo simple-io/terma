@@ -117,11 +117,23 @@ export component MainWindow inherits Window {
         }
     }
 
-    // Profile 下拉菜单（浮层，覆盖在 Tab 栏右下方）
+    // Profile 下拉菜单（浮层，跟随 menu-touch 按钮位置动态展开）
     profile-menu := ProfileMenu {
-        x: tab-bar.width - 180px;
-        y: 38px;
         width: 170px;
+        // y 坐标：TabBar 底部（menu-touch 按钮下方）
+        y: tab-bar.height + 2px;
+        // x 坐标动态计算（基于 menu-touch 按钮在窗口内的位置 + 窗口宽度）：
+        //   menu-touch 右边缘 = menu-touch-x + menu-touch-width
+        //   右侧剩余空间 = 窗口宽度 − menu-touch 右边缘
+        //   左侧剩余空间 = menu-touch-x
+        //   若右侧空间 ≥ 菜单宽度 → 菜单在 menu-touch 右侧展开
+        //   若右侧不足且左侧 ≥ 菜单宽度 → 菜单在 menu-touch 左侧展开
+        //   两侧均不足 → 默认在右侧展开
+        x: (root.width - (tab-bar.menu-touch-x + tab-bar.menu-touch-width) >= self.width)
+            ? (tab-bar.menu-touch-x + tab-bar.menu-touch-width)
+            : (tab-bar.menu-touch-x >= self.width
+                ? (tab-bar.menu-touch-x - self.width)
+                : (tab-bar.menu-touch-x + tab-bar.menu-touch-width));
         profiles: root.profiles;
         menu-visible: root.profile-menu-visible;
         select-profile(pid) => {
