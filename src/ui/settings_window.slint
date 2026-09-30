@@ -530,8 +530,8 @@ export component SettingsWindow inherits Window {
 
                                                                 Text {
                                                                     text: font.family;
-                                                                    color: font.family == root.general-draft.font-family
-                                                                        ? root.c-primary : root.c-text;
+                                                                    font-family: font.family;
+                                                                    color: font.family == root.general-draft.font-family ? root.c-primary : root.c-text;
                                                                     font-size: 13px;
                                                                     vertical-alignment: center;
                                                                     overflow: elide;
@@ -708,6 +708,7 @@ export component SettingsWindow inherits Window {
                             // 组间留白：分组之间间距明显大于组内
                             Rectangle { height: 14px; }
 
+                            // 行为
                             Text {
                                 text: "行为";
                                 color: root.c-text;
@@ -746,6 +747,7 @@ export component SettingsWindow inherits Window {
                             // 组间留白：分组之间间距明显大于组内
                             Rectangle { height: 14px; }
 
+                            // 默认启动项
                             Text {
                                 text: "默认启动项";
                                 color: root.c-text;
