@@ -62,6 +62,7 @@ impl ProfileManager {
 
     // ─── Profile 查询 ───
 
+    // 获取启动项列表
     pub fn profiles(&self) -> &[Profile] {
         &self.profiles
     }

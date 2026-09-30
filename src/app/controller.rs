@@ -44,7 +44,8 @@ mod ui_generated {
 }
 
 use crate::renderer::buffer::RenderCache;
-pub use ui_generated::{CellRun, MainWindow, ProfileInfo, TabInfo, SettingsWindow, GeneralSettingsInfo, ProfileEditInfo};
+pub use ui_generated::{CellRun, MainWindow, ProfileInfo, TabInfo, SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry};
+use crate::fonts;
 
 /// 等宽字体度量（与 terminal_view.slint 中 char-w/char-h 保持一致）
 const CHAR_W: i32 = 8;
@@ -113,6 +114,9 @@ pub struct App {
     wake_rx: Arc<Mutex<Receiver<()>>>,
     // 每个会话（Tab）独立的滚动视图状态，以 SessionId 索引，互不影响
     scroll_states: RefCell<HashMap<SessionId, ScrollState>>,
+    // 字体下拉框完整候选列表缓存（内置 + 系统字体），供搜索过滤时复用，
+    // 避免每次关键词变化都重新枚举系统字体（font-kit 枚举开销较大）
+    font_entries: RefCell<Vec<FontEntry>>,
 }
 
 impl App {
@@ -143,10 +147,13 @@ impl App {
             wake_tx,
             wake_rx: Arc::new(Mutex::new(wake_rx)),
             scroll_states: RefCell::new(HashMap::new()),
+            font_entries: RefCell::new(Vec::new()),
         });
 
         // 加载配置文件
         app.populate_profiles();
+        // 按配置注入 UI 字体（含默认回退：未配置时使用内置 JetBrains Mono）
+        app.apply_font_to_ui();
         // 启动异步渲染线程
         app.async_render_ui();
         // 先按目标终端网格设置窗口初始物理尺寸，使首个会话能以正确网格创建。
@@ -189,6 +196,24 @@ impl App {
     }
 
     // ─── UI 数据同步 ───
+
+    /// 当前生效字体 family：配置为空时回退默认字体（JetBrains Mono）。
+    fn current_font_family(&self) -> String {
+        let family = self.profiles.borrow().general().font_family.clone();
+        if family.is_empty() {
+            fonts::DEFAULT_FONT_FAMILY.to_string()
+        } else {
+            family
+        }
+    }
+
+    /// 把配置中的字体注入主窗口。经 Window.default-font-family 作用于
+    /// 整个窗口：终端、标签栏、菜单等，改字体后调用即可全窗口即时生效。
+    fn apply_font_to_ui(&self) {
+        let family = self.current_font_family();
+        self.main_window.set_font_family(family.into());
+    }
+
     fn populate_profiles(&self) {
         let items: Vec<ProfileInfo> = self
             .profiles
@@ -691,6 +716,14 @@ impl App {
             }
         });
 
+        // 字体搜索：关键词变化 → 模糊过滤候选列表回填
+        let weak = Rc::downgrade(self);
+        window.on_font_search_edited(move |keyword, current| {
+            if let Some(app) = weak.upgrade() {
+                app.filter_fonts(&keyword, &current);
+            }
+        });
+
         let weak = Rc::downgrade(self);
         window.on_save_profile(move |info| {
             if let Some(app) = weak.upgrade() {
@@ -774,6 +807,27 @@ impl App {
         window.set_profile_list(Rc::new(VecModel::from(profiles)).into());
         window.set_selected_index(0);
 
+        // 字体下拉框候选列表：内置字体置顶，其后系统字体（同名剔除在
+        // candidate_families 内完成）。完整列表缓存进 font_entries（搜索
+        // 过滤复用），filtered 初始为完整列表，并回填当前字体索引（下拉
+        // 打开时键盘高亮定位用）。
+        let (bundled, system) = fonts::candidate_families();
+        let font_entries: Vec<FontEntry> = bundled
+            .iter()
+            .map(|f| FontEntry {
+                family: f.as_str().into(),
+                is_bundled: true,
+            })
+            .chain(system.iter().map(|f| FontEntry {
+                family: f.as_str().into(),
+                is_bundled: false,
+            }))
+            .collect();
+        *self.font_entries.borrow_mut() = font_entries.clone();
+        window.set_font_list(Rc::new(VecModel::from(font_entries.clone())).into());
+        window.set_filtered_font_list(Rc::new(VecModel::from(font_entries.clone())).into());
+        window.set_font_current_index(Self::family_index(&font_entries, &g.font_family));
+
         // 默认启动项下拉框：由 default-profile-id 反查列表索引注入
         let default_id = mgr.default_profile_id().0.clone();
         let idx = mgr
@@ -792,6 +846,35 @@ impl App {
         }
     }
 
+    /// 按关键词模糊过滤字体候选列表并回填设置窗口（部分匹配、不区分大小写）。
+    /// 空关键词（或仅空白）= 恢复完整列表，同时回填当前字体索引（下拉打开
+    /// 时键盘高亮定位用）。current_family 为设置窗口当前草稿的字体（可能
+    /// 尚未保存），基于过滤后列表反查——保证高亮定位与展示列表一致。
+    fn filter_fonts(&self, keyword: &str, current_family: &str) {
+        if let Some(ref w) = *self.settings_window.borrow() {
+            let filtered: Vec<FontEntry> = self
+                .font_entries
+                .borrow()
+                .iter()
+                .filter(|e| crate::fonts::fuzzy_match(&e.family, keyword))
+                .cloned()
+                .collect();
+            if keyword.trim().is_empty() {
+                w.set_font_current_index(Self::family_index(&filtered, current_family));
+            }
+            w.set_filtered_font_list(Rc::new(VecModel::from(filtered)).into());
+        }
+    }
+
+    /// 按 family 名精确查找索引，未命中返回 -1（Slint 侧"无高亮"哨兵值）
+    fn family_index(entries: &[FontEntry], family: &str) -> i32 {
+        entries
+            .iter()
+            .position(|e| e.family.as_str() == family)
+            .map(|i| i as i32)
+            .unwrap_or(-1)
+    }
+
     /// 保存通用配置并实时生效
     fn apply_general_settings(self: &Rc<Self>, info: GeneralSettingsInfo) {
         let config = GeneralConfig {
@@ -807,7 +890,8 @@ impl App {
 
         self.profiles.borrow_mut().update_general(config);
 
-        // 即时生效：背景色
+        // 即时生效：字体 + 背景色
+        self.apply_font_to_ui();
         let bg = self.profiles.borrow().general().background_color.clone();
         if let Some(color) = parse_color(&bg) {
             self.main_window.set_bg_color(color);

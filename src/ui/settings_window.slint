@@ -21,17 +21,33 @@
 
 import { ScrollView } from "std-widgets.slint";
 
+// 通用配置信息
 export struct GeneralSettingsInfo {
+    // 字体
     font-family: string,
+    // 字号
     font-size: int,
+    // 背景
     background-color: string,
+    // 光标
     cursor-style: string,
+    // 配色方案
     color-scheme: string,
+    // 响铃
     bell-sound: bool,
+    // scrollback
     scrollback-limit: int,
+    // 默认启动项
     default-profile-id: string,
 }
 
+// 字体下拉框候选项：is-bundled 区分项目自带字体（置顶）与系统字体
+export struct FontEntry {
+    family: string,
+    is-bundled: bool,
+}
+
+// Profile 编辑信息
 export struct ProfileEditInfo {
     id: string,
     name: string,
@@ -66,7 +82,30 @@ export component SettingsWindow inherits Window {
     // ─── Rust 侧注入的数据 ───
     in property <GeneralSettingsInfo> general-settings;
     in property <[ProfileEditInfo]> profile-list;
+    // 字体下拉框完整候选列表：内置字体在前、系统字体在后（由 Rust 侧拼装）
+    in property <[FontEntry]> font-list;
+    // 搜索过滤后的展示列表（Rust 侧按关键词模糊过滤后回填；空关键词 = 完整列表）
+    in property <[FontEntry]> filtered-font-list;
+    // 选中 profiles 索引（-1 = 无选中）
     in-out property <int> selected-index: 0;
+
+    // ─── 字体下拉框状态 ───
+    // 搜索关键词（与弹层内搜索输入框双向绑定；PopupWindow 是独立作用域，
+    // 弹层内部 id 不暴露给根级代码，经根属性桥接）
+    in-out property <string> font-search: "";
+    // 字体列表滚动位置（与弹层内 ScrollView 的 content-y 双向绑定，供滚动定位计算）。
+    // content-y 语义：0 = 内容顶对齐可视区顶，向下滚动为负值。
+    in-out property <length> font-vy: 0px;
+    // 键盘导航高亮索引（-1 = 无高亮）
+    in-out property <int> font-hl-index: -1;
+    // 当前选中字体在完整列表中的索引（Rust 侧回填，供下拉打开时高亮定位）
+    in property <int> font-current-index: -1;
+    // 列表项度量（ensure-visible 滚动计算与弹层高度公式共享，避免双处硬编码漂移）
+    property <length> font-item-h: 30px;
+    property <length> font-item-step: 32px; // 项高 + 2px 间距
+    // 搜索词变更（关键词, 当前字体）：Rust 侧做模糊过滤（部分匹配、不区分大小写）
+    // 回填 filtered-font-list；空关键词时同时回填 font-current-index
+    callback font-search-edited(string, string);
 
     // ─── 回调 ───
     callback save-general(GeneralSettingsInfo);
@@ -91,6 +130,47 @@ export component SettingsWindow inherits Window {
         if root.selected-index >= 0 && root.selected-index < root.profile-list.length {
             root.profile-draft = root.profile-list[root.selected-index];
         }
+    }
+
+    // ─── 字体下拉框：搜索过滤 + 键盘导航 ───
+
+    // 移动键盘高亮（delta: -1 上移 / +1 下移），并滚动保证高亮项可见。
+    // 无高亮时（-1）无论方向都落到首项；到边界后夹紧不循环。
+    function font-move-hl(delta: int) {
+        if (root.filtered-font-list.length == 0) {
+            return;
+        }
+        let raw = root.font-hl-index < 0 ? 0 : root.font-hl-index + delta;
+        root.font-hl-index = min(root.filtered-font-list.length - 1, max(0, raw));
+        root.font-ensure-visible(root.font-hl-index);
+    }
+
+    // 滚动字体列表使高亮项保持在可视区内。
+    // content-y 语义：0 = 顶部，向下滚动为负；可视窗口（内容坐标系）= [-vy, -vy + 可视高]。
+    // 可视高与弹层高度公式保持一致：360px 封顶 − 搜索框及留白 46px = 314px。
+    // （弹层内 ScrollView 经 root.font-vy 双向绑定联动，根级函数不直接访问弹层内部 id）
+    function font-ensure-visible(index: int) {
+        let content-h = root.filtered-font-list.length * root.font-item-step - 2px;
+        let vh = min(314px, content-h);
+        let item-top = index * root.font-item-step;
+        let item-bottom = item-top + root.font-item-h;
+        if (item-top < -root.font-vy) {
+            // 高亮项在可视窗口上方 → 上滚至项顶贴可视区顶
+            root.font-vy = -item-top;
+        } else if (item-bottom > -root.font-vy + vh) {
+            // 高亮项在可视窗口下方 → 下滚至项底贴可视区底
+            root.font-vy = vh - item-bottom;
+        }
+    }
+
+    // 选中当前键盘高亮项（无高亮时选过滤列表首项）；列表为空时不动作
+    function font-select-current() {
+        if (root.filtered-font-list.length == 0) {
+            return;
+        }
+        let idx = (root.font-hl-index >= 0 && root.font-hl-index < root.filtered-font-list.length)
+            ? root.font-hl-index : 0;
+        root.general-draft.font-family = root.filtered-font-list[idx].family;
     }
 
     // ─── 默认启动项下拉框状态 ───
@@ -261,7 +341,7 @@ export component SettingsWindow inherits Window {
                                 font-weight: 700;
                             }
 
-                            // 字体
+                            // 字体（下拉选择：项目自带字体置顶 + 分割线 + 系统字体）
                             HorizontalLayout {
                                 spacing: 10px;
                                 Text {
@@ -271,11 +351,216 @@ export component SettingsWindow inherits Window {
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
-                                TextInput {
-                                    font-size: 14px;
-                                    width: 220px;
-                                    text: root.general-draft.font-family;
-                                    edited => { root.general-draft.font-family = self.text; }
+
+                                font-dd := Rectangle {
+                                    width: 260px;
+                                    height: 34px;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: font-dd-touch.has-hover ? root.c-primary : root.c-border;
+                                    background: #ffffff;
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 10px;
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: root.general-draft.font-family == "" ? "请选择字体" : root.general-draft.font-family;
+                                            color: root.general-draft.font-family == "" ? root.c-text-hint : root.c-text;
+                                            font-size: 14px;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        // 下拉箭头
+                                        Text {
+                                            text: "\u{25BE}";
+                                            color: root.c-text-secondary;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    font-dd-touch := TouchArea {
+                                        clicked => {
+                                            // 每次打开重置搜索状态：清空关键词、恢复完整列表、回到列表顶部；
+                                            // 键盘高亮定位到当前选中字体（Rust 侧随完整列表回填
+                                            // font-current-index），使「打开即回车」保持现选择、
+                                            // ↑↓ 从当前位置移动（焦点由弹层 forward-focus 自动落到搜索框）
+                                            root.font-search = "";
+                                            root.font-vy = 0px;
+                                            root.font-search-edited("", root.general-draft.font-family);
+                                            root.font-hl-index = root.font-current-index;
+                                            if (root.font-hl-index >= 0) {
+                                                root.font-ensure-visible(root.font-hl-index);
+                                            }
+                                            font-pop.show();
+                                        }
+                                    }
+
+                                    // 字体下拉浮层：顶部搜索框 + 选项列表
+                                    // （内置字体置顶，分割线后接系统字体；输入关键词实时模糊过滤）
+                                    font-pop := PopupWindow {
+                                        y: 38px;
+                                        width: font-dd.width;
+                                        // 弹层显示时把键盘焦点转给搜索输入框，可直接输入
+                                        forward-focus: font-search-input;
+                                        // 高度自适应：搜索框(34) + 布局留白(10) + 列表内容，封顶 360px 内部滚动
+                                        height: root.filtered-font-list.length == 0
+                                            ? 78px
+                                            : min(360px, 44px + root.filtered-font-list.length * root.font-item-step);
+
+                                        Rectangle {
+                                            background: #ffffff;
+                                            border-radius: 6px;
+                                            border-width: 1px;
+                                            border-color: root.c-border;
+                                            clip: true;
+
+                                            VerticalLayout {
+                                                padding: 4px;
+                                                spacing: 4px;
+
+                                                // ── 搜索框：输入关键词实时过滤选项 ──
+                                                Rectangle {
+                                                    height: 34px;
+                                                    border-radius: 4px;
+                                                    border-width: 1px;
+                                                    border-color: root.c-border;
+                                                    clip: true;
+
+                                                    HorizontalLayout {
+                                                        padding-left: 10px;
+                                                        padding-right: 10px;
+
+                                                        font-search-input := TextInput {
+                                                            // 与根属性双向绑定：根级（下拉框点击）可重置，输入内容同步回根
+                                                            text <=> root.font-search;
+                                                            font-size: 13px;
+                                                            color: root.c-text;
+                                                            vertical-alignment: center;
+                                                            single-line: true;
+
+                                                            // 实时过滤：关键词变化 → Rust 侧模糊过滤回填列表，
+                                                            // 重置键盘高亮并回到列表顶部
+                                                            edited => {
+                                                                root.font-hl-index = -1;
+                                                                root.font-vy = 0px;
+                                                                root.font-search-edited(self.text, root.general-draft.font-family);
+                                                            }
+
+                                                            // 回车：选中当前高亮项（无高亮时选首项）
+                                                            accepted => {
+                                                                root.font-select-current();
+                                                                font-pop.close();
+                                                            }
+
+                                                            // 键盘导航：↑/↓ 移动高亮，Esc 关闭；其余按键交给输入框默认处理
+                                                            key-pressed(e) => {
+                                                                if (e.text == Key.UpArrow) {
+                                                                    root.font-move-hl(-1);
+                                                                    accept
+                                                                } else if (e.text == Key.DownArrow) {
+                                                                    root.font-move-hl(1);
+                                                                    accept
+                                                                } else if (e.text == Key.Escape) {
+                                                                    font-pop.close();
+                                                                    accept
+                                                                } else {
+                                                                    reject
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // 占位提示（无输入时显示；Text 不拦截鼠标，点击仍落到输入框）
+                                                    Text {
+                                                        x: 10px;
+                                                        width: parent.width - 20px;
+                                                        height: parent.height;
+                                                        text: "输入关键词过滤字体…";
+                                                        color: root.c-text-hint;
+                                                        font-size: 13px;
+                                                        vertical-alignment: center;
+                                                        visible: font-search-input.text == "";
+                                                    }
+                                                }
+
+                                                // ── 选项列表（过滤后） ──
+                                                font-scroll := ScrollView {
+                                                    vertical-stretch: 1;
+                                                    // 与根属性双向绑定：键盘导航在根级函数中计算滚动位置
+                                                    content-y <=> root.font-vy;
+
+                                                    VerticalLayout {
+                                                        padding: 0px;
+                                                        spacing: 2px;
+
+                                                        // 空列表提示：完整列表为空（枚举失败）与无匹配区分提示
+                                                        if root.filtered-font-list.length == 0 : Text {
+                                                            text: root.font-list.length == 0
+                                                                ? "未找到可用字体" : "未找到匹配的字体";
+                                                            color: root.c-text-hint;
+                                                            font-size: 13px;
+                                                            horizontal-alignment: center;
+                                                            height: 32px;
+                                                            vertical-alignment: center;
+                                                        }
+
+                                                        for font[i] in root.filtered-font-list : Rectangle {
+                                                            height: root.font-item-h;
+                                                            border-radius: 4px;
+                                                            background: font.family == root.general-draft.font-family
+                                                                ? root.c-selected-soft
+                                                                : ((i == root.font-hl-index || font-opt-touch.has-hover)
+                                                                    ? root.c-hover : transparent);
+
+                                                            // 分割线：内置字体组与系统字体组之间
+                                                            // （过滤后仍保持组序：内置在前；仅在前项是内置时画线）
+                                                            if !font.is-bundled && i > 0 && root.filtered-font-list[i - 1].is-bundled : Rectangle {
+                                                                y: -1px;
+                                                                width: 100%;
+                                                                height: 1px;
+                                                                background: root.c-border;
+                                                            }
+
+                                                            HorizontalLayout {
+                                                                padding-left: 10px;
+                                                                padding-right: 10px;
+                                                                spacing: 8px;
+
+                                                                Text {
+                                                                    text: font.family;
+                                                                    color: font.family == root.general-draft.font-family
+                                                                        ? root.c-primary : root.c-text;
+                                                                    font-size: 13px;
+                                                                    vertical-alignment: center;
+                                                                    overflow: elide;
+                                                                }
+                                                                Rectangle { horizontal-stretch: 1; }
+                                                                // 内置字体来源标记
+                                                                Text {
+                                                                    text: font.is-bundled ? "内置" : "";
+                                                                    color: root.c-text-hint;
+                                                                    font-size: 11px;
+                                                                    vertical-alignment: center;
+                                                                }
+                                                            }
+
+                                                            font-opt-touch := TouchArea {
+                                                                clicked => {
+                                                                    root.general-draft.font-family = font.family;
+                                                                    root.font-hl-index = -1;
+                                                                    font-pop.close();
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
 

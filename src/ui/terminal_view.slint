@@ -109,7 +109,7 @@ export component TerminalView inherits Rectangle {
         Text {
             text: cell.text;
             color: cell.fg;
-            font-family: "Monaco";
+            // 字体继承主窗口 default-font-family（Rust 侧动态注入，支持设置界面切换）
             font-size: 13px;
             font-weight: cell.bold ? 700 : 400;
             horizontal-alignment: left;

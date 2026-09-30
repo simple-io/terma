@@ -19,7 +19,7 @@ use crate::session::session_id::ProfileId;
 
 // ─── 默认值函数 ───
 
-fn default_font_family() -> String { "Monaco".into() }
+fn default_font_family() -> String { crate::fonts::DEFAULT_FONT_FAMILY.into() }
 fn default_font_size() -> u32 { 13 }
 fn default_bg_color() -> String { "#000000".into() }
 fn default_cursor_style() -> String { "block".into() }
@@ -130,7 +130,15 @@ pub fn load() -> Option<ConfigFile> {
 fn load_config() -> Option<ConfigFile> {
     let path = config_path().ok()?;
     let content = std::fs::read_to_string(&path).ok()?;
-    toml::from_str(&content).ok()
+    let mut config: ConfigFile = toml::from_str(&content).ok()?;
+
+    // 迁移：旧版默认字体 Monaco → 新版默认字体（JetBrains Mono）。
+    // Monaco 是旧版的隐式默认值（用户几乎不会手输），统一迁移到新默认。
+    if config.general.font_family == "Monaco" {
+        config.general.font_family = default_font_family();
+    }
+
+    Some(config)
 }
 
 /// 检测旧版 profiles.toml 并迁移为 config.toml。
