@@ -38,11 +38,9 @@ export component MainWindow inherits Window {
     in-out property <color> bg-color: #000000;
     background: root.bg-color;
 
-    // ─── 字体（Rust 侧注入，作用于整个窗口：终端、标签栏、菜单等） ───
-    // 未显式指定 font-family 的 Text 元素继承此默认字体；
-    // 默认值为项目内置字体 JetBrains Mono（fonts/ 目录静态打包）
+    // 终端字体（Rust 侧注入）, 只对终端内容生效，菜单、标签等采用系统默认字体
     in-out property <string> font-family: "JetBrains Mono";
-    default-font-family: root.font-family;
+//    default-font-family: root.font-family;
 
     // ─── 对外暴露的数据属性（Rust 侧写入） ───
     // 会话标签
@@ -111,6 +109,7 @@ export component MainWindow inherits Window {
         // Terminal 区域
         terminal-area := TerminalView {
             cells: root.cells;
+            font-family: root.font-family;
             cursor-row: root.cursor-row;
             cursor-col: root.cursor-col;
             cursor-visible: root.cursor-visible;
