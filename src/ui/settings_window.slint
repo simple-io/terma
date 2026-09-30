@@ -137,12 +137,11 @@ export component SettingsWindow inherits Window {
     // 移动键盘高亮（delta: -1 上移 / +1 下移），并滚动保证高亮项可见。
     // 无高亮时（-1）无论方向都落到首项；到边界后夹紧不循环。
     function font-move-hl(delta: int) {
-        if (root.filtered-font-list.length == 0) {
-            return;
+        if (root.filtered-font-list.length != 0) {
+            let raw = root.font-hl-index < 0 ? 0 : root.font-hl-index + delta;
+            root.font-hl-index = min(root.filtered-font-list.length - 1, max(0, raw));
+            root.font-ensure-visible(root.font-hl-index);
         }
-        let raw = root.font-hl-index < 0 ? 0 : root.font-hl-index + delta;
-        root.font-hl-index = min(root.filtered-font-list.length - 1, max(0, raw));
-        root.font-ensure-visible(root.font-hl-index);
     }
 
     // 滚动字体列表使高亮项保持在可视区内。
@@ -165,12 +164,11 @@ export component SettingsWindow inherits Window {
 
     // 选中当前键盘高亮项（无高亮时选过滤列表首项）；列表为空时不动作
     function font-select-current() {
-        if (root.filtered-font-list.length == 0) {
-            return;
+        if (root.filtered-font-list.length != 0) {
+            let idx = (root.font-hl-index >= 0 && root.font-hl-index < root.filtered-font-list.length)
+                        ? root.font-hl-index : 0;
+            root.general-draft.font-family = root.filtered-font-list[idx].family;
         }
-        let idx = (root.font-hl-index >= 0 && root.font-hl-index < root.filtered-font-list.length)
-            ? root.font-hl-index : 0;
-        root.general-draft.font-family = root.filtered-font-list[idx].family;
     }
 
     // ─── 默认启动项下拉框状态 ───
