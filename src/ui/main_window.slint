@@ -16,9 +16,12 @@ import { TabBar, TabInfo } from "tab_bar.slint";
 import { TerminalView, CellRun } from "terminal_view.slint";
 import { ProfileMenu, ProfileInfo } from "profile_menu.slint";
 import { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry } from "settings_window.slint";
-// 内置字体（build.rs 生成于 OUT_DIR）：import 使 Slint 编译器把 fonts/ 目录字体
-// 以 FileData 静态内嵌进二进制，字体 family 全局可用于 font-family 属性
-//import { BundledFonts } from "bundled_fonts.slint";
+
+// 导入内置字体
+import "../../fonts/JetBrainsMono-Regular.ttf";
+import "../../fonts/JetBrainsMono-Bold.ttf";
+import "../../fonts/CascadiaCode.ttf";
+
 
 export { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry }
 

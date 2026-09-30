@@ -1,40 +1,30 @@
 //! fonts — 内置字体元信息与系统字体枚举
 //!
-//! 内置字体的数据内嵌由 Slint 编译器完成：build.rs 扫描 `fonts/` 目录生成
-//! `bundled_fonts.slint`（字体 import 语句），Slint 以 FileData 形式把字体
-//! 静态编译进二进制，并在窗口初始化时注册到字体系统。本模块仅提供：
+//! 内置字体的数据内嵌由 Slint 编译器完成，在 src/ui/main_window.slint 中的
+//! import 语句让 Slint 以 FileData 形式把字体静态编译进二进制，并在窗口
+//! 初始化时注册到字体系统。本模块仅提供：
 //!   - 默认字体 family 常量（JetBrains Mono）
-//!   - 内置字体 family 列表（build.rs 生成的解析结果，与内嵌字体同源）
+//!   - 内置字体 family 列表（手动维护，在 main_window.slint 中导入）
 //!   - 操作系统已安装字体 family 列表（font-kit，进程内缓存）
 
 use std::sync::OnceLock;
 use font_kit::source::SystemSource;
 
-mod bundled {
-    include!(concat!(env!("OUT_DIR"), "/bundled_font_names.rs"));
-}
+/// 内置字体，在 main_window.slint 中导入
+static BUNDLED_FONT_FAMILIES: &[&str] = &[
+    "JetBrains Mono",
+    "Cascadia Code",
+];
 
 /// 项目默认字体：未选择其他字体时 UI 使用该值（需与 fonts/ 内嵌字体一致）
 pub const DEFAULT_FONT_FAMILY: &str = "JetBrains Mono";
 
-/// 内置字体 family 列表：默认字体置顶，其余按打包顺序排列（已按文件名去重）。
+/// 内置字体 family 列表
 pub fn bundled_families() -> Vec<String> {
-    let mut families: Vec<String> = bundled::BUNDLED_FONT_FAMILIES
+    BUNDLED_FONT_FAMILIES
         .iter()
         .map(|s| s.to_string())
-        .collect();
-    // 默认字体置顶
-    if let Some(pos) = families
-        .iter()
-        .position(|f| f.eq_ignore_ascii_case(DEFAULT_FONT_FAMILY))
-    {
-        let f = families.remove(pos);
-        families.insert(0, f);
-    } else {
-        // 内嵌字体中找不到默认字体时兜底插入（避免下拉框缺失默认项）
-        families.insert(0, DEFAULT_FONT_FAMILY.to_string());
-    }
-    families
+        .collect::<Vec<_>>()
 }
 
 /// 操作系统已安装字体 family 列表（不区分大小写去重、按字母排序，进程内缓存）。
@@ -50,9 +40,7 @@ pub fn system_families() -> Vec<String> {
     CACHE.get_or_init(system_families_uncached).clone()
 }
 
-/// 字体下拉框候选：(内置列表, 系统列表)。
-/// 系统列表剔除与内置同名的项，避免同一 family 重复展示；
-/// 调用方按 内置置顶 → 分割线 → 系统字体 的次序拼装展示。
+/// 字体下拉框候选：内置列表, 系统列表
 pub fn candidate_families() -> (Vec<String>, Vec<String>) {
     let bundled = bundled_families();
     let mut system = system_families();
