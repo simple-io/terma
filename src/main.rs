@@ -3,7 +3,6 @@
 #![allow(dead_code, unused_imports)]
 
 mod app;
-mod fonts;
 mod platform;
 mod profile;
 mod pty;

@@ -30,22 +30,24 @@ use std::rc::{Rc, Weak};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 
-use crate::profile::{Profile, ProfileManager, GeneralConfig};
-use crate::profile::loader::{parse_env_vars_text, format_env_vars_text};
-use crate::renderer::{RunRender, build_viewport_runs, runs_to_cell_runs};
+use crate::app::fonts;
+use crate::profile::loader::{format_env_vars_text, parse_env_vars_text};
+use crate::profile::{GeneralConfig, Profile, ProfileManager};
+use crate::renderer::buffer::RenderCache;
+use crate::renderer::{build_viewport_runs, runs_to_cell_runs};
 use crate::session::SessionManager;
 use crate::session::session::TerminalSessionLike;
 use crate::session::session_id::{ProfileId, SessionId};
-use crate::terminal::Cell as TerminalCell;
 use crate::terminal::TerminalState;
 
 mod ui_generated {
     slint::include_modules!();
 }
 
-use crate::renderer::buffer::RenderCache;
-pub use ui_generated::{CellRun, MainWindow, ProfileInfo, TabInfo, SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry};
-use crate::fonts;
+pub use ui_generated::{
+    CellRun, FontEntry, GeneralSettingsInfo, MainWindow, ProfileEditInfo, ProfileInfo,
+    SettingsWindow, TabInfo,
+};
 
 /// 等宽字体度量（与 terminal_view.slint 中 char-w/char-h 保持一致）
 const CHAR_W: i32 = 8;
@@ -355,12 +357,14 @@ impl App {
             let dirty_rows = guard.take_dirty_rows();
             if dirty_rows.len() > 0 {
                 self.render_cache.update(dirty_rows, screen.visible_rows());
-                self.cells_model.set_vec(self.render_cache.build_cell_runs());
+                self.cells_model
+                    .set_vec(self.render_cache.build_cell_runs());
             }
         } else {
             // 滚动模式：全量重建视口（scrollback 历史 + 当前屏拼接），丢弃脏行标记
             let _ = guard.take_dirty_rows();
-            self.cells_model.set_vec(runs_to_cell_runs(&build_viewport_runs(screen, offset)));
+            self.cells_model
+                .set_vec(runs_to_cell_runs(&build_viewport_runs(screen, offset)));
         };
 
         // 光标：滚动状态下隐藏（实时光标位于视口之外）
@@ -376,10 +380,12 @@ impl App {
         self.main_window.set_has_scrollback(sb_len > 0);
         if sb_len > 0 {
             // 滚动条的位置 = offset / sb_len。0 = 底部（最新），1 = 顶部（最老历史）
-            self.main_window.set_scroll_ratio(offset as f32 / sb_len as f32);
+            self.main_window
+                .set_scroll_ratio(offset as f32 / sb_len as f32);
             // 滑块大小比例 = 可见行数 / 总行数（scrollback + 可见行），控制滚动条滑块的视觉长度——历史越长，滑块越短。max(1) 防止除零
             let rows = screen.rows.max(1);
-            self.main_window.set_viewport_ratio(rows as f32 / (sb_len + rows) as f32);
+            self.main_window
+                .set_viewport_ratio(rows as f32 / (sb_len + rows) as f32);
         }
     }
 
@@ -640,7 +646,9 @@ impl App {
         ) {
             Ok(id) => {
                 // 为新建会话登记独立的滚动状态（每 Tab 互不影响）
-                self.scroll_states.borrow_mut().insert(id, ScrollState::default());
+                self.scroll_states
+                    .borrow_mut()
+                    .insert(id, ScrollState::default());
             }
             Err(e) => eprintln!("[terma] create session failed: {e:#}"),
         }
@@ -856,7 +864,7 @@ impl App {
                 .font_entries
                 .borrow()
                 .iter()
-                .filter(|e| crate::fonts::fuzzy_match(&e.family, keyword))
+                .filter(|e| fonts::fuzzy_match(&e.family, keyword))
                 .cloned()
                 .collect();
             if keyword.trim().is_empty() {
@@ -989,7 +997,13 @@ fn parse_session_id(s: &slint::SharedString) -> Option<SessionId> {
 }
 
 /// 把键盘事件编码为写入 PTY 的字节序列
-fn encode_key(text: &slint::SharedString, meta: bool, _cort: bool, _alt: bool, _shift: bool) -> Vec<u8> {
+fn encode_key(
+    text: &slint::SharedString,
+    meta: bool,
+    _cort: bool,
+    _alt: bool,
+    _shift: bool,
+) -> Vec<u8> {
     let s = text.as_str();
     let c = match s.chars().next() {
         Some(c) => c,

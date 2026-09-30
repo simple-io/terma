@@ -13,13 +13,13 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-
+use crate::app::fonts;
 use crate::profile::Profile;
-use crate::session::session_id::ProfileId;
 
 // ─── 默认值函数 ───
 
-fn default_font_family() -> String { crate::fonts::DEFAULT_FONT_FAMILY.into() }
+// fn default_font_family() -> String { crate::app::fonts::DEFAULT_FONT_FAMILY.into() }
+fn default_font_family() -> String { fonts::DEFAULT_FONT_FAMILY.into() }
 fn default_font_size() -> u32 { 13 }
 fn default_bg_color() -> String { "#000000".into() }
 fn default_cursor_style() -> String { "block".into() }
