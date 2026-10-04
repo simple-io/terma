@@ -23,13 +23,7 @@
 //!   on_key_pressed(text, mods) → 转发到激活 Session 的 PTY
 //!   on_resized()          → 窗口尺寸变化即时同步网格 + PTY + 重绘
 
-use slint::{ComponentHandle, VecModel};
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::rc::{Rc, Weak};
-use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::{Arc, Mutex};
-
+use crate::app::events::{TerminalEvent, WindowEvent};
 use crate::app::fonts;
 use crate::profile::loader::{format_env_vars_text, parse_env_vars_text};
 use crate::profile::{GeneralConfig, Profile, ProfileManager};
@@ -39,6 +33,13 @@ use crate::session::SessionManager;
 use crate::session::session::TerminalSessionLike;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::TerminalState;
+use slint::language::KeyboardModifiers;
+use slint::{ComponentHandle, SharedString, VecModel};
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::{Rc, Weak};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex};
 
 mod ui_generated {
     slint::include_modules!();
@@ -75,11 +76,8 @@ const BABAR_RESERVED_W: i32 = 66;
 const TAB_GAP: i32 = 2;
 
 // UI 线程独占的 App 弱引用：供渲染分发线程的 `invoke_from_event_loop` 回调回访 App。
-//
-// App 用 `Rc` 管理（非 Send），无法跨线程捕获；此处借助 thread_local 让回调在 UI 线程上
-// 安全 upgrade 到 App，避免把非 Send 的 `Weak<App>` 移入其他线程。
 thread_local! {
-    static APP_WEAK: RefCell<Option<Weak<App>>> = const { RefCell::new(None) };
+    static WEAK_APP: RefCell<Option<Weak<RefCell<App>>>> = const { RefCell::new(None) };
 }
 
 /// 单个会话（Tab）独立的滚动视图状态。
@@ -99,9 +97,9 @@ pub struct ScrollState {
 /// 应用控制器：持有窗口、会话管理器、Profile 管理器与 UI Model。
 pub struct App {
     main_window: MainWindow,
-    sessions: RefCell<SessionManager>,
+    sessions: SessionManager,
     profiles: RefCell<ProfileManager>,
-    settings_window: RefCell<Option<SettingsWindow>>,
+    settings_window: Option<SettingsWindow>,
     tabs_model: Rc<VecModel<TabInfo>>,
     profiles_model: Rc<VecModel<ProfileInfo>>,
     // 终端 Cell 渲染模型（Run 列表）
@@ -110,94 +108,74 @@ pub struct App {
     last_size: Cell<(u16, u16)>,
     // 渲染缓存：按行缓存渲染项，脏行重建、未变更行复用
     render_cache: RenderCache,
-    // PTY 输出唤醒通道发送端：新建会话时 clone 给对应 Output Thread
-    wake_tx: SyncSender<()>,
-    // PTY 输出唤醒通道接收端：渲染分发线程经此通道接收唤醒信号
-    wake_rx: Arc<Mutex<Receiver<()>>>,
     // 每个会话（Tab）独立的滚动视图状态，以 SessionId 索引，互不影响
     scroll_states: RefCell<HashMap<SessionId, ScrollState>>,
     // 字体下拉框完整候选列表缓存（内置 + 系统字体），供搜索过滤时复用，
     // 避免每次关键词变化都重新枚举系统字体（font-kit 枚举开销较大）
     font_entries: RefCell<Vec<FontEntry>>,
+    // 命令通道发送端
+    event_tx: SyncSender<WindowEvent>,
+    // 命令通道接收端
+    event_rx: Arc<Mutex<Receiver<WindowEvent>>>,
 }
 
 impl App {
     pub fn run() {
-        let main_window = MainWindow::new().expect("failed to create MainWindow");
-
         let tabs_model = Rc::new(VecModel::default());
         let profiles_model = Rc::new(VecModel::default());
         let cells_model = Rc::new(VecModel::default());
 
+        // 窗口对象
+        let main_window = MainWindow::new().expect("failed to create MainWindow");
         main_window.set_tabs(tabs_model.clone().into());
         main_window.set_profiles(profiles_model.clone().into());
         main_window.set_cells(cells_model.clone().into());
 
-        // 唤醒通道，使用容量为 1 的同步队列，避免 PTY 高频输出，通道仅作为「有数据待消费」信号传递，不传输数据数据
-        let (wake_tx, wake_rx) = mpsc::sync_channel::<()>(1);
+        // 事件管道
+        let (event_tx, event_rx) = mpsc::sync_channel(32);
 
-        let app = Rc::new(Self {
+        let app = Rc::new(RefCell::new(Self {
             main_window,
-            sessions: RefCell::new(SessionManager::new()),
+            sessions: SessionManager::new(),
             profiles: RefCell::new(ProfileManager::new()),
-            settings_window: RefCell::new(None),
+            settings_window: None,
             tabs_model,
             profiles_model,
             cells_model,
             last_size: Cell::new((0, 0)),
             render_cache: RenderCache::new(),
-            wake_tx,
-            wake_rx: Arc::new(Mutex::new(wake_rx)),
             scroll_states: RefCell::new(HashMap::new()),
             font_entries: RefCell::new(Vec::new()),
-        });
+            event_tx,
+            event_rx: Arc::new(Mutex::new(event_rx)),
+        }));
 
-        // 加载配置文件
-        app.populate_profiles();
-        // 按配置注入 UI 字体（含默认回退：未配置时使用内置 JetBrains Mono）
-        app.apply_font_to_ui();
-        // 启动异步渲染线程
-        app.async_render_ui();
-        // 先按目标终端网格设置窗口初始物理尺寸，使首个会话能以正确网格创建。
-        app.apply_initial_window_size();
-        // 创建默认会话（内部 create_session_for_profile 已 sync_tabs 并渲染）
-        app.create_default_session();
-        // 设置 UI 回调函数
-        app.bind_callbacks();
+        // 初始化
+        app.borrow().app_init();
+        // 启动异步事件线程
+        async_recv_event(&app);
+        // 启动默认会话
+        app.borrow_mut().on_create_default_session();
 
-        let weak = Rc::downgrade(&app);
-        app.main_window.window().on_close_requested(move || {
-            let _ = weak.upgrade();
-            slint::CloseRequestResponse::HideWindow
-        });
-
-        app.main_window.show().expect("failed to show window");
+        // 显示主窗口
+        app.borrow()
+            .main_window
+            .show()
+            .expect("failed to show window");
         slint::run_event_loop().expect("event loop error");
     }
 
-    fn async_render_ui(self: &Rc<Self>) {
-        // 在 UI 线程中注册 thread_local 的 App 弱引用，以便在供渲染分发线程回访
-        APP_WEAK.with(|slot| *slot.borrow_mut() = Some(Rc::downgrade(self)));
-        // 获取管道的接收端
-        let wake_rx_mux = self.wake_rx.clone();
-        // 启动异步线程
-        let _ = std::thread::Builder::new()
-            .name("terma-render-wake".into())
-            .spawn(move || {
-                let wake_rx = wake_rx_mux.lock().unwrap();
-                while wake_rx.recv().is_ok() {
-                    let _ = slint::invoke_from_event_loop(|| {
-                        APP_WEAK.with(|slot| {
-                            if let Some(app) = slot.borrow().as_ref().and_then(|w| w.upgrade()) {
-                                app.render();
-                            }
-                        });
-                    });
-                }
-            });
+    // 应用初始化
+    fn app_init(&self) {
+        // 应用配置
+        self.apply_profiles();
+        // 应用字体
+        self.apply_font();
+        // 应用初始窗口尺寸
+        self.apply_initial_window_size();
+        // 设置 UI 回调函数
+        self.bind_callbacks();
     }
-
-    // ─── UI 数据同步 ───
 
     /// 当前生效字体 family：配置为空时回退默认字体（JetBrains Mono）。
     fn current_font_family(&self) -> String {
@@ -209,14 +187,14 @@ impl App {
         }
     }
 
-    /// 把配置中的字体注入主窗口。经 Window.default-font-family 作用于
-    /// 整个窗口：终端、标签栏、菜单等，改字体后调用即可全窗口即时生效。
-    fn apply_font_to_ui(&self) {
+    // 设置终端字体
+    fn apply_font(&self) {
         let family = self.current_font_family();
         self.main_window.set_font_family(family.into());
     }
 
-    fn populate_profiles(&self) {
+    // 设置终端配置
+    fn apply_profiles(&self) {
         let items: Vec<ProfileInfo> = self
             .profiles
             .borrow()
@@ -231,22 +209,33 @@ impl App {
         self.profiles_model.set_vec(items);
     }
 
+    // 设置终端窗口初始尺寸
+    fn apply_initial_window_size(&self) {
+        let logical = slint::LogicalSize::new(
+            (DEFAULT_COLS as i32 * CHAR_W + H_PADDING) as f32,
+            (DEFAULT_ROWS as i32 * CHAR_H + CHROME_H + V_PADDING) as f32,
+        );
+        self.main_window
+            .window()
+            .set_size(slint::WindowSize::Logical(logical));
+    }
+
     // 同步 Tab 列表 + 激活态标题，切/关/建 Tab 后激活会话可能变化，并强制渲染激活会话。
     fn sync_tabs(&self) {
-        let sessions = self.sessions.borrow();
-        let tabs: Vec<TabInfo> = sessions
+        // let sessions = self.sessions.borrow();
+        let tabs: Vec<TabInfo> = self.sessions
             .sessions_in_order()
             .iter()
             .map(|s| TabInfo {
                 id: s.id().to_slint_string().into(),
                 title: s.title().into(),
-                active: Some(s.id()) == sessions.active_id(),
+                active: Some(s.id()) == self.sessions.active_id(),
                 profile_name: s.profile_name().into(),
             })
             .collect();
         self.tabs_model.set_vec(tabs);
 
-        match sessions.active_session() {
+        match self.sessions.active_session() {
             Some(s) => {
                 self.main_window.set_active_title(s.title().into());
                 self.main_window
@@ -257,7 +246,7 @@ impl App {
                 self.main_window.set_active_profile_name("".into());
             }
         }
-        drop(sessions);
+        // drop(sessions);
         // 标签数变化后重新计算标签宽度
         self.update_tab_width();
         self.force_full_render();
@@ -270,7 +259,7 @@ impl App {
     ///   保证窗口始终可以继续缩小（放不下的部分由 TabBar 的 clip 容器裁剪）
     /// 宽度计算放在 Rust 侧而非 Slint 绑定，避免锚定窗口宽度形成布局依赖环。
     fn update_tab_width(&self) {
-        let n = self.sessions.borrow().len();
+        let n = self.sessions.len();
         if n == 0 {
             return;
         }
@@ -293,7 +282,7 @@ impl App {
 
     // 会话变化（建/切/关 Tab）后强制全量重建激活会话整屏，将激活会话状态标为全脏，再走统一 render 路径。
     fn force_full_render(&self) {
-        if let Some(state) = self.sessions.borrow().active_state() {
+        if let Some(state) = self.sessions.active_state() {
             state.lock().unwrap().mark_all_dirty();
         }
         self.render();
@@ -301,7 +290,7 @@ impl App {
 
     // 脏行渲染，利用 TerminalState 的 dirty 标记有脏行时才触发渲染
     fn render(&self) {
-        let state = match self.sessions.borrow().active_state() {
+        let state = match self.sessions.active_state() {
             Some(s) => s,
             None => {
                 self.clear_view();
@@ -321,7 +310,7 @@ impl App {
 
     // 滚动渲染入口，滚动偏移变化时强制重绘（此时终端状态可能不脏，不能走 is_dirty 守卫）。
     fn render_viewport(&self) {
-        let state = match self.sessions.borrow().active_state() {
+        let state = match self.sessions.active_state() {
             Some(s) => s,
             None => {
                 self.clear_view();
@@ -394,7 +383,7 @@ impl App {
     // 保持用户正在查看的历史内容在视口中不动；跟随模式（offset == 0）直接返回 0。
     // 同时刷新锚点长度为当前 scrollback 长度，供下一次增长量计算。
     fn settle_scroll(&self, sb_len: usize) -> usize {
-        let id = match self.sessions.borrow().active_id() {
+        let id = match self.sessions.active_id() {
             Some(id) => id,
             None => return 0,
         };
@@ -412,11 +401,241 @@ impl App {
         offset
     }
 
+    // 设置新的滚动偏移量(scroll_offset)，更新偏移与锚点，并按需重绘
+    //  scroll_offset == 0，跟随模式，查看最新数据
+    //  scroll_offset >  0，滚动模式，查看历史数据
+    fn commit_scroll(&self, offset: usize, sb_len: usize) {
+        let id = match self.sessions.active_id() {
+            Some(id) => id,
+            None => return,
+        };
+        let offset = offset.min(sb_len);
+        // 更新激活会话的滚动状态；滚动位置未变则直接跳过，避免无谓重绘。
+        let (prev, changed) = {
+            let mut states = self.scroll_states.borrow_mut();
+            let st = states.entry(id).or_default();
+            let prev = st.offset;
+            if offset == prev {
+                (prev, false)
+            } else {
+                st.offset = offset;
+                st.anchor_len = sb_len;
+                (prev, true)
+            }
+        };
+        if !changed {
+            return;
+        }
+        if prev > 0 && offset == 0 {
+            // 从滚动模式回到了跟随模式，全量重建。
+            self.force_full_render();
+        } else {
+            // 滚动模式，滚动位置变了，仅重建视口
+            self.render_viewport();
+        }
+    }
+
+    // 读取当前激活会话的 scrollback 长度（无会话时为 0）。
+    fn scrollback_len(&self) -> usize {
+        self.sessions
+            .active_state()
+            .map(|s| s.lock().unwrap().screen().scrollback.len())
+            .unwrap_or(0)
+    }
+
+    // UI 回调绑定
+    fn bind_callbacks(&self) {
+        // 关闭主窗口时，只是隐藏界面
+        self.main_window
+            .window()
+            .on_close_requested(move || slint::CloseRequestResponse::HideWindow);
+
+        // 新建 Tab
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_new_tab(move || {
+            command_tx.send(WindowEvent::NewTab).unwrap();
+        });
+
+        // 关闭 Tab
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_close_tab(move |id_str| {
+            if let Some(id) = parse_session_id(&id_str) {
+                command_tx.send(WindowEvent::CloseTab(id)).unwrap();
+            }
+        });
+
+        // 切换 Tab
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_select_tab(move |id_str| {
+            if let Some(id) = parse_session_id(&id_str) {
+                command_tx.send(WindowEvent::SelectTab(id)).unwrap();
+            }
+        });
+
+        // 创建新会话
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_select_profile(move |pid_str| {
+            let pid = ProfileId::new(pid_str.to_string());
+            command_tx.send(WindowEvent::NewTabForProfile(pid)).unwrap();
+        });
+
+        // 窗口尺寸变化
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_resized(move || {
+            command_tx.send(WindowEvent::Resize).unwrap();
+
+        });
+
+        // 键盘回调，处理键盘输入转发到激活会话的 PTY
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_key_pressed(move |text, mods| {
+            command_tx.send(WindowEvent::KeyInput(text, mods)).unwrap();
+            true
+        });
+
+        // IME 提交回调
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_ime_commit(move |text| {
+            command_tx.send(WindowEvent::ImeCommit(text)).unwrap();
+        });
+
+        // 滚动：鼠标滚轮
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_scroll_delta(move |dy| {
+            command_tx.send(WindowEvent::ScrollDelta(dy)).unwrap();
+        });
+
+        // 滚动：滚动条拖动/点击
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_scroll_to(move |ratio| {
+            command_tx.send(WindowEvent::ScrollTo(ratio)).unwrap();
+        });
+
+        // 打开设置窗口
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_open_settings(move || {
+            command_tx.send(WindowEvent::OpenSettings).unwrap();
+        });
+    }
+
+    fn on_event(&mut self, event: WindowEvent) {
+        match event {
+            WindowEvent::Pty(TerminalEvent::Data) => self.render(),
+            // 新建 Tab
+            WindowEvent::NewTab => self.on_create_default_session(),
+            // 新建 Tab 会话
+            WindowEvent::NewTabForProfile(pid) => self.on_create_session_for_profile(&pid),
+            // 关闭 Tab 会话
+            WindowEvent::CloseTab(sid) => self.on_close_session(sid),
+            // 切换 Tab 会话
+            WindowEvent::SelectTab(sid) => self.on_select_tab(sid),
+            // 窗口尺寸变化
+            WindowEvent::Resize => self.on_resized(),
+            // 鼠标滚轮滚动
+            WindowEvent::ScrollDelta(dy) => self.on_scroll_offset_by(dy),
+            // 鼠标拖转滑块
+            WindowEvent::ScrollTo(ratio) => self.on_scroll_offset_to(ratio),
+            // 键盘输入
+            WindowEvent::KeyInput(text, mods) => self.on_key_input(text, mods),
+            // IME 提交
+            WindowEvent::ImeCommit(text) => self.on_ime_commit(text),
+
+            // 打开设置窗口
+            WindowEvent::OpenSettings => self.on_open_settings(),
+            // 关闭设置窗口
+            WindowEvent::CloseSettings => self.on_close_settings(),
+            // 保存设置
+            WindowEvent::SaveSettings(settings) => self.on_save_settings(settings),
+            // 保存配置文件
+            WindowEvent::SaveProfile(profile) => self.on_save_profile(profile),
+            // 添加配置文件
+            WindowEvent::AddProfile() => self.on_add_profile(),
+            // 删除配置文件
+            WindowEvent::DelProfile(id) => self.on_delete_profile(id),
+            // 模糊搜索字体
+            WindowEvent::FilterFonts(keyword, current) => self.on_filter_fonts(&keyword, &current),
+        }
+    }
+
+    // 创建默认会话
+    fn on_create_default_session(&mut self) {
+        let default_id = self.profiles.borrow().default_profile_id().clone();
+        self.on_create_session_for_profile(&default_id);
+    }
+
+    // 根据 Profile 创建会话
+    fn on_create_session_for_profile(&mut self, profile_id: &ProfileId) {
+        let profile = match self.profiles.borrow().get_profile(profile_id) {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        let (rows, cols) = self.current_grid();
+        self.last_size.set((rows, cols));
+        let title = format!("{} {}", profile.name, self.sessions.len() + 1);
+
+        match self.sessions.create_session(&profile, title, rows, cols, self.event_tx.clone()) {
+            Ok(id) => {
+                // 为新建会话登记独立的滚动状态（每 Tab 互不影响）
+                self.scroll_states
+                    .borrow_mut()
+                    .insert(id, ScrollState::default());
+            }
+            Err(e) => eprintln!("[terma] create session failed: {e:#}"),
+        }
+        self.render_cache.clear();
+        self.sync_tabs();
+    }
+
+    // 根据 id 关闭会话
+    fn on_close_session(&mut self, id: SessionId) {
+        // 关闭会话
+        self.sessions.close_session(id);
+        self.scroll_states.borrow_mut().remove(&id);
+
+        // 清理缓存
+        self.render_cache.clear();
+        // 同步标签
+        self.sync_tabs();
+        // 关闭的是最后一个会话，则退出整个应用
+        if self.sessions.is_empty() {
+            let _ = slint::quit_event_loop();
+        }
+    }
+
+    // 根据 id 切换会话
+    fn on_select_tab(&mut self, id: SessionId) {
+        // 设置活动会话
+        self.sessions.set_active_session(id);
+        // 清空缓存
+        self.render_cache.clear();
+        // 刷新标签 UI
+        self.sync_tabs();
+    }
+
+    // 窗口尺寸变化回调处理：由 `changed width/height` 即时触发。
+    // 根据窗口尺寸重新计算 cols/rows，变化时同步所有会话的 PTY + ScreenBuffer。
+    fn on_resized(&mut self) {
+       let (rows, cols) = self.current_grid();
+
+        let last = self.last_size.get();
+        if last != (rows, cols) {
+            // 窗口尺寸变，联动调整标签宽度
+            self.update_tab_width();
+            self.last_size.set((rows, cols));
+            self.sessions.resize_all(rows, cols);
+            // 清空渲染缓存，避免复用旧尺寸的缓存数据。
+            self.render_cache.clear();
+            // 强制全量重绘终端
+            self.force_full_render();
+        }
+    }
+
     // 滚轮滚动触发执行，按行数滚动：正 = 向上（进入历史），负 = 向下（回到最新）。
     // 滚动像素级累加，累积满一个字符行高（CHAR_H）触发一次整行滚动。
-    fn scroll_offset_by(&self, dy: f32) {
+    fn on_scroll_offset_by(&self, dy: f32) {
         let sb_len = self.scrollback_len();
-        let id = match self.sessions.borrow().active_id() {
+        let id = match self.sessions.active_id() {
             Some(id) => id,
             None => return,
         };
@@ -454,331 +673,213 @@ impl App {
     }
 
     // 滚动条跳转：ratio ∈ [0,1]（0 = 底部，1 = 顶部）。
-    fn scroll_offset_to(&self, ratio: f32) {
+    fn on_scroll_offset_to(&self, ratio: f32) {
         let sb_len = self.scrollback_len();
         let offset = (ratio.clamp(0.0, 1.0) * sb_len as f32).round() as usize;
         self.commit_scroll(offset, sb_len);
     }
 
-    // 设置新的滚动偏移量(scroll_offset)，更新偏移与锚点，并按需重绘
-    //  scroll_offset == 0，跟随模式，查看最新数据
-    //  scroll_offset >  0，滚动模式，查看历史数据
-    fn commit_scroll(&self, offset: usize, sb_len: usize) {
-        let id = match self.sessions.borrow().active_id() {
-            Some(id) => id,
-            None => return,
+    // 键盘输入
+    fn on_key_input(&mut self, text: SharedString, mods: KeyboardModifiers) {
+        let input_data = encode_key(&text, mods);
+        if !input_data.is_empty() {
+            if let Err(e) = self.sessions.write_to_active(&input_data) {
+                eprintln!("[terma] key input write error: {e}");
+            }
+        }
+    }
+
+    // IME 回调提交文本, 输入法完成选词后提交的完整字符串（如中文）, 直接转为 UTF-8 字节写入激活会话的 PTY。
+    fn on_ime_commit(&mut self, text: SharedString) {
+        let ime_data = text.as_bytes().to_vec();
+        if !ime_data.is_empty() {
+            if let Err(e) = self.sessions.write_to_active(&ime_data) {
+                eprintln!("[terma] ime commit write error: {e}");
+            }
+        }
+    }
+
+    // 打开设置窗口
+    fn on_open_settings(&mut self) {
+        self.open_settings_window();
+    }
+
+    // 关闭设置窗口
+    fn on_close_settings(&self) {
+        if let Some(w) = self.settings_window.as_ref() {
+            w.hide().ok();
+        }
+    }
+
+    // 保存通用配置并实时生效
+    fn on_save_settings(&self, info: GeneralSettingsInfo) {
+        let config = GeneralConfig {
+            default_profile: info.default_profile_id.to_string(),
+            font_family: info.font_family.to_string(),
+            font_size: info.font_size as u32,
+            background_color: info.background_color.to_string(),
+            cursor_style: info.cursor_style.to_string(),
+            color_scheme: info.color_scheme.to_string(),
+            bell_sound: info.bell_sound,
+            scrollback_limit: info.scrollback_limit as usize,
         };
-        let offset = offset.min(sb_len);
-        // 更新激活会话的滚动状态；滚动位置未变则直接跳过，避免无谓重绘。
-        let (prev, changed) = {
-            let mut states = self.scroll_states.borrow_mut();
-            let st = states.entry(id).or_default();
-            let prev = st.offset;
-            if offset == prev {
-                (prev, false)
+        self.profiles.borrow_mut().update_general(config);
+
+        // 即时生效：字体 + 背景色
+        self.apply_font();
+        let bg = self.profiles.borrow().general().background_color.clone();
+        if let Some(color) = parse_color(&bg) {
+            self.main_window.set_bg_color(color);
+        }
+
+        // 刷新主窗口 Profile 下拉菜单（默认 Profile 可能变化）
+        self.apply_profiles();
+        // 强制全量重绘
+        self.force_full_render();
+    }
+
+    // 保存 Profile 修改
+    fn on_save_profile(&self, info: ProfileEditInfo) {
+        let profile = Profile {
+            id: ProfileId::new(info.id.to_string()),
+            name: info.name.to_string(),
+            command: info.command.to_string(),
+            args: info
+                .args
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect(),
+            working_directory: if info.working_directory.is_empty() {
+                None
             } else {
-                st.offset = offset;
-                st.anchor_len = sb_len;
-                (prev, true)
-            }
+                Some(std::path::PathBuf::from(info.working_directory.to_string()))
+            },
+            env_vars: parse_env_vars_text(&info.env_vars),
+            icon: None,
+            color_scheme: None,
         };
-        if !changed {
-            return;
+        self.profiles.borrow_mut().update_profile(profile);
+    }
+
+    // 添加新 Profile
+    fn on_add_profile(&mut self) {
+        // 新建 profile
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let id = format!("profile-{}", ts);
+        let profile = Profile::new(id, "New Profile", "/bin/sh");
+        let idx = self.profiles.borrow_mut().add_profile(profile);
+
+        // 选中新添加的 Profile
+        if let Some(w) = self.settings_window.as_mut() {
+            w.set_selected_index(idx as i32);
         }
-        if prev > 0 && offset == 0 {
-            // 从滚动模式回到了跟随模式，全量重建。
-            self.force_full_render();
-        } else {
-            // 滚动模式，滚动位置变了，仅重建视口
-            self.render_viewport();
+    }
+
+    // 删除 Profile
+    fn on_delete_profile(&self, id: SharedString) {
+        let pid = ProfileId::new(id.to_string());
+        self.profiles.borrow_mut().delete_profile(&pid);
+        // self.refresh_settings_ui();
+        // self.populate_profiles();
+    }
+
+    // 按关键词模糊过滤字体候选列表并回填设置窗口（部分匹配、不区分大小写）。
+    // 空关键词（或仅空白）= 恢复完整列表，同时回填当前字体索引（下拉打开
+    // 时键盘高亮定位用）。current_family 为设置窗口当前草稿的字体（可能
+    // 尚未保存），基于过滤后列表反查——保证高亮定位与展示列表一致。
+    fn on_filter_fonts(&mut self, keyword: &str, current: &str) {
+        if let Some(ref w) = self.settings_window.as_mut() {
+            let filtered: Vec<FontEntry> = self
+                .font_entries
+                .borrow()
+                .iter()
+                .filter(|e| fonts::fuzzy_match(&e.family, keyword))
+                .cloned()
+                .collect();
+            if keyword.trim().is_empty() {
+                w.set_font_current_index(Self::family_index(&filtered, current));
+            }
+            w.set_filtered_font_list(Rc::new(VecModel::from(filtered)).into());
         }
     }
 
-    // 读取当前激活会话的 scrollback 长度（无会话时为 0）。
-    fn scrollback_len(&self) -> usize {
-        self.sessions
-            .borrow()
-            .active_state()
-            .map(|s| s.lock().unwrap().screen().scrollback.len())
-            .unwrap_or(0)
-    }
-
-    // UI 回调绑定
-    fn bind_callbacks(self: &Rc<Self>) {
-        // 新建 Tab
-        let weak = Rc::downgrade(self);
-        self.main_window.on_new_tab(move || {
-            if let Some(app) = weak.upgrade() {
-                // create_default_session 内部已 sync_tabs（含强制渲染）
-                app.create_default_session();
-            }
-        });
-
-        // 关闭 Tab
-        let weak = Rc::downgrade(self);
-        self.main_window.on_close_tab(move |id_str| {
-            if let Some(app) = weak.upgrade() {
-                if let Some(id) = parse_session_id(&id_str) {
-                    app.close_session(id);
-                }
-                // 关闭后激活会话可能切换，清空渲染缓存再强制渲染新激活会话
-                app.render_cache.clear();
-                app.sync_tabs();
-                // 关闭的是最后一个会话（管理器已无会话）→ 退出整个应用
-                if app.sessions.borrow().is_empty() {
-                    let _ = slint::quit_event_loop();
-                }
-            }
-        });
-
-        // 切换 Tab
-        let weak = Rc::downgrade(self);
-        self.main_window.on_select_tab(move |id_str| {
-            if let Some(app) = weak.upgrade() {
-                if let Some(id) = parse_session_id(&id_str) {
-                    app.sessions.borrow_mut().set_active_session(id);
-                    // 切换 Tab 时清空渲染缓存（新会话的行内容与旧会话无关）
-                    app.render_cache.clear();
-                    // sync_tabs 末尾强制全量渲染，立即显示新会话最新状态（无白屏）
-                    app.sync_tabs();
-                }
-            }
-        });
-
-        // 选择 Profile 新建会话
-        let weak = Rc::downgrade(self);
-        self.main_window.on_select_profile(move |pid_str| {
-            if let Some(app) = weak.upgrade() {
-                let pid = ProfileId::new(pid_str.to_string());
-                if let Some(profile) = app.profiles.borrow().get_profile(&pid).cloned() {
-                    app.create_session_for_profile(&profile);
-                }
-            }
-        });
-
-        // 键盘回调，处理键盘输入转发到激活会话的 PTY
-        let weak = Rc::downgrade(self);
-        self.main_window.on_key_pressed(move |text, mods| {
-            if let Some(app) = weak.upgrade() {
-                let data = encode_key(&text, mods.meta, mods.control, mods.alt, mods.shift);
-                if !data.is_empty() {
-                    if let Err(e) = app.sessions.borrow_mut().write_to_active(&data) {
-                        eprintln!("[terma] pty write error: {e}");
-                    }
-                }
-            }
-            true
-        });
-
-        // IME 提交回调：输入法完成选词后提交的完整字符串（如中文），
-        // 直接转为 UTF-8 字节写入激活会话的 PTY。
-        //
-        // 与 on_key_pressed 的区别：IME 提交走 TextInput 的 edited 回调，
-        // 提交文本已是完整字符串，无需经过 encode_key 的特殊键映射，
-        // 直接按 UTF-8 原样写入，避免误触 Backspace/Delete 等控制符转换。
-        let weak = Rc::downgrade(self);
-        self.main_window.on_ime_commit(move |text| {
-            if let Some(app) = weak.upgrade() {
-                let data = text.as_bytes().to_vec();
-                if !data.is_empty() {
-                    if let Err(e) = app.sessions.borrow_mut().write_to_active(&data) {
-                        eprintln!("[terma] ime pty write error: {e}");
-                    }
-                }
-            }
-        });
-
-        // 滚动：鼠标滚轮
-        let weak = Rc::downgrade(self);
-        self.main_window.on_scroll_delta(move |dy| {
-            if let Some(app) = weak.upgrade() {
-                app.scroll_offset_by(dy);
-            }
-        });
-
-        // 滚动：滚动条拖动/点击
-        let weak = Rc::downgrade(self);
-        self.main_window.on_scroll_to(move |ratio| {
-            if let Some(app) = weak.upgrade() {
-                app.scroll_offset_to(ratio);
-            }
-        });
-
-        // 窗口尺寸变化：由 MainWindow 的 changed width/height 回调即时触发，
-        // 替代原先的低频率轮询定时器，实现零延迟同步网格 + PTY + 重绘。
-        let weak = Rc::downgrade(self);
-        self.main_window.on_resized(move || {
-            if let Some(app) = weak.upgrade() {
-                app.handle_resize();
-            }
-        });
-
-        // 打开设置窗口
-        let weak = Rc::downgrade(self);
-        self.main_window.on_open_settings(move || {
-            if let Some(app) = weak.upgrade() {
-                app.open_settings_window();
-            }
-        });
-    }
-
-    // 创建默认会话
-    fn create_default_session(self: &Rc<Self>) {
-        let profile = self.profiles.borrow().default_profile().clone();
-        self.create_session_for_profile(&profile);
-    }
-
-    // 根据 Profile 创建会话
-    fn create_session_for_profile(self: &Rc<Self>, profile: &Profile) {
-        // 用当前主窗口实际尺寸计算初始终端网格，避免新建会话回到固定 24×80。
-        let (rows, cols) = self.current_grid();
-        // 同步 last_size 到当前网格
-        self.last_size.set((rows, cols));
-        let next_index = self.sessions.borrow().len() + 1;
-        let title = format!("{} {}", profile.name, next_index);
-
-        match self.sessions.borrow_mut().create_session(
-            profile,
-            title,
-            rows,
-            cols,
-            self.wake_tx.clone(),
-        ) {
-            Ok(id) => {
-                // 为新建会话登记独立的滚动状态（每 Tab 互不影响）
-                self.scroll_states
-                    .borrow_mut()
-                    .insert(id, ScrollState::default());
-            }
-            Err(e) => eprintln!("[terma] create session failed: {e:#}"),
-        }
-        // 新建会话后清空渲染缓存（新会话的行内容与旧会话无关），
-        // sync_tabs 末尾强制渲染，立即显示新会话（空屏 + prompt）。
-        self.render_cache.clear();
-        self.sync_tabs();
-    }
-
-    // 根据 id 关闭会话
-    fn close_session(&self, id: SessionId) {
-        self.sessions.borrow_mut().close_session(id);
-        // 会话关闭后清理其独立的滚动状态，避免残留
-        self.scroll_states.borrow_mut().remove(&id);
-    }
-
-    /// 按目标终端网格设置主窗口初始尺寸（物理像素），供启动时创建首个会话使用。
-    fn apply_initial_window_size(&self) {
-        let logical = slint::LogicalSize::new(
-            (DEFAULT_COLS as i32 * CHAR_W + H_PADDING) as f32,
-            (DEFAULT_ROWS as i32 * CHAR_H + CHROME_H + V_PADDING) as f32,
-        );
-        self.main_window
-            .window()
-            .set_size(slint::WindowSize::Logical(logical));
-    }
-
-    /// 当前主窗口对应的终端网格（rows, cols）。
+    // 当前主窗口对应的终端网格（rows, cols）。
     fn current_grid(&self) -> (u16, u16) {
-        compute_grid(self.main_window.window()).unwrap_or((DEFAULT_ROWS, DEFAULT_COLS))
-    }
-
-    // 窗口尺寸变化回调处理：由 `changed width/height` 即时触发。
-    // 根据窗口尺寸重新计算 cols/rows，变化时同步所有会话的 PTY + ScreenBuffer。
-    // resize 会置脏标记，此处立即清空渲染缓存并渲染，确保窗口缩放无延迟。
-    fn handle_resize(&self) {
-        let Some((rows, cols)) = compute_grid(self.main_window.window()) else {
-            return;
-        };
-
-        let last = self.last_size.get();
-        if last != (rows, cols) {
-            // 窗口尺寸变，联动调整标签宽度
-            self.update_tab_width();
-            self.last_size.set((rows, cols));
-            self.sessions.borrow_mut().resize_all(rows, cols);
-            // resize 后清空渲染缓存（所有行内容因重排而变化），避免复用旧尺寸的缓存数据。
-            self.render_cache.clear();
-            // 用 force_full_render 显式强制全量重绘，而不是走 render() 的
-            self.force_full_render();
+        let win = self.main_window.window();
+        let scale = win.scale_factor();
+        if scale <= 0.0 {
+            return (DEFAULT_ROWS, DEFAULT_COLS);
         }
+        let logical = win.size().to_logical(scale);
+        let term_w = logical.width as i32 - H_PADDING;
+        let term_h = logical.height as i32 - CHROME_H - V_PADDING;
+        if term_w <= 0 || term_h <= 0 {
+            return (DEFAULT_ROWS, DEFAULT_COLS);
+        }
+        let cols = (term_w / CHAR_W).clamp(1, MAX_COLS) as u16;
+        let rows = (term_h / CHAR_H).clamp(1, MAX_ROWS) as u16;
+        (rows, cols)
     }
 
-    // ─── 设置窗口 ───
-
-    /// 打开设置窗口（懒创建：首次打开时创建，后续仅激活）
-    fn open_settings_window(self: &Rc<Self>) {
-        let mut guard = self.settings_window.borrow_mut();
-        if let Some(ref window) = *guard {
+    // 打开设置窗口（懒创建：首次打开时创建，后续仅激活）
+    fn open_settings_window(&mut self) {
+        if let Some(w) = self.settings_window.as_ref() {
             // 窗口已存在，重新显示并激活
-            window.show().ok();
+            w.show().ok();
             return;
         }
 
         let window = SettingsWindow::new().expect("failed to create SettingsWindow");
-        self.sync_settings_to_ui(&window);
+        self.apply_settings(&window);
 
-        // 绑定回调
-        let weak = Rc::downgrade(self);
+        // 取消设置（关闭设置窗口）
+        let command_tx = self.event_tx.clone();
+        window.on_cancelled(move || {
+            command_tx.send(WindowEvent::CloseSettings).unwrap();
+        });
+
+        // 保存通用配置
+        let command_tx = self.event_tx.clone();
         window.on_save_general(move |info| {
-            if let Some(app) = weak.upgrade() {
-                app.apply_general_settings(info);
-            }
+            command_tx.send(WindowEvent::SaveSettings(info)).unwrap();
+
+        });
+
+        let command_tx = self.event_tx.clone();
+        window.on_save_profile(move |info| {
+            command_tx.send(WindowEvent::SaveProfile(info)).unwrap();
+        });
+
+        let command_tx = self.event_tx.clone();
+        window.on_add_profile(move || {
+            command_tx.send(WindowEvent::AddProfile()).unwrap();
+        });
+
+        let command_tx = self.event_tx.clone();
+        window.on_delete_profile(move |id| {
+            command_tx.send(WindowEvent::DelProfile(id)).unwrap();
         });
 
         // 字体搜索：关键词变化 → 模糊过滤候选列表回填
-        let weak = Rc::downgrade(self);
+        let command_tx = self.event_tx.clone();
         window.on_font_search_edited(move |keyword, current| {
-            if let Some(app) = weak.upgrade() {
-                app.filter_fonts(&keyword, &current);
-            }
-        });
-
-        let weak = Rc::downgrade(self);
-        window.on_save_profile(move |info| {
-            if let Some(app) = weak.upgrade() {
-                app.save_profile(info);
-            }
-        });
-
-        let weak = Rc::downgrade(self);
-        window.on_add_profile(move || {
-            if let Some(app) = weak.upgrade() {
-                app.add_profile();
-            }
-        });
-
-        let weak = Rc::downgrade(self);
-        window.on_delete_profile(move |id| {
-            if let Some(app) = weak.upgrade() {
-                app.delete_profile(id);
-            }
-        });
-
-        let weak = Rc::downgrade(self);
-        window.on_cancelled(move || {
-            if let Some(app) = weak.upgrade() {
-                if let Some(ref w) = *app.settings_window.borrow() {
-                    w.hide().ok();
-                }
-            }
+            command_tx.send(WindowEvent::FilterFonts(keyword, current)).unwrap();
         });
 
         // 窗口关闭请求 → 隐藏而非销毁
-        let weak = Rc::downgrade(self);
-        window.window().on_close_requested(move || {
-            if let Some(app) = weak.upgrade() {
-                if let Some(ref w) = *app.settings_window.borrow() {
-                    w.hide().ok();
-                }
-            }
-            slint::CloseRequestResponse::HideWindow
-        });
+        window
+            .window()
+            .on_close_requested(move || slint::CloseRequestResponse::HideWindow);
 
         window.show().expect("failed to show settings window");
-        *guard = Some(window);
+        self.settings_window = Some(window);
     }
 
-    /// 把当前配置同步到 SettingsWindow UI
-    fn sync_settings_to_ui(self: &Rc<Self>, window: &SettingsWindow) {
+    // 把当前配置同步到 SettingsWindow UI
+    fn apply_settings(&self, window: &SettingsWindow) {
         let mgr = self.profiles.borrow();
 
         // 通用配置
@@ -847,34 +948,8 @@ impl App {
         window.set_default_index(idx);
     }
 
-    /// 刷新设置窗口 UI（Profile 列表变化后调用）
-    fn refresh_settings_ui(self: &Rc<Self>) {
-        if let Some(ref w) = *self.settings_window.borrow() {
-            self.sync_settings_to_ui(w);
-        }
-    }
 
-    /// 按关键词模糊过滤字体候选列表并回填设置窗口（部分匹配、不区分大小写）。
-    /// 空关键词（或仅空白）= 恢复完整列表，同时回填当前字体索引（下拉打开
-    /// 时键盘高亮定位用）。current_family 为设置窗口当前草稿的字体（可能
-    /// 尚未保存），基于过滤后列表反查——保证高亮定位与展示列表一致。
-    fn filter_fonts(&self, keyword: &str, current_family: &str) {
-        if let Some(ref w) = *self.settings_window.borrow() {
-            let filtered: Vec<FontEntry> = self
-                .font_entries
-                .borrow()
-                .iter()
-                .filter(|e| fonts::fuzzy_match(&e.family, keyword))
-                .cloned()
-                .collect();
-            if keyword.trim().is_empty() {
-                w.set_font_current_index(Self::family_index(&filtered, current_family));
-            }
-            w.set_filtered_font_list(Rc::new(VecModel::from(filtered)).into());
-        }
-    }
-
-    /// 按 family 名精确查找索引，未命中返回 -1（Slint 侧"无高亮"哨兵值）
+    // 按 family 名精确查找索引，未命中返回 -1（Slint 侧"无高亮"哨兵值）
     fn family_index(entries: &[FontEntry], family: &str) -> i32 {
         entries
             .iter()
@@ -882,128 +957,45 @@ impl App {
             .map(|i| i as i32)
             .unwrap_or(-1)
     }
-
-    /// 保存通用配置并实时生效
-    fn apply_general_settings(self: &Rc<Self>, info: GeneralSettingsInfo) {
-        let config = GeneralConfig {
-            default_profile: info.default_profile_id.to_string(),
-            font_family: info.font_family.to_string(),
-            font_size: info.font_size as u32,
-            background_color: info.background_color.to_string(),
-            cursor_style: info.cursor_style.to_string(),
-            color_scheme: info.color_scheme.to_string(),
-            bell_sound: info.bell_sound,
-            scrollback_limit: info.scrollback_limit as usize,
-        };
-
-        self.profiles.borrow_mut().update_general(config);
-
-        // 即时生效：字体 + 背景色
-        self.apply_font_to_ui();
-        let bg = self.profiles.borrow().general().background_color.clone();
-        if let Some(color) = parse_color(&bg) {
-            self.main_window.set_bg_color(color);
-        }
-
-        // 刷新主窗口 Profile 下拉菜单（默认 Profile 可能变化）
-        self.populate_profiles();
-        // 强制全量重绘
-        self.force_full_render();
-        // 隐藏设置窗口
-        if let Some(ref w) = *self.settings_window.borrow() {
-            w.hide().ok();
-        }
-    }
-
-    /// 保存 Profile 修改
-    fn save_profile(self: &Rc<Self>, info: ProfileEditInfo) {
-        let profile = Profile {
-            id: ProfileId::new(info.id.to_string()),
-            name: info.name.to_string(),
-            command: info.command.to_string(),
-            args: info
-                .args
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect(),
-            working_directory: if info.working_directory.is_empty() {
-                None
-            } else {
-                Some(std::path::PathBuf::from(info.working_directory.to_string()))
-            },
-            env_vars: parse_env_vars_text(&info.env_vars),
-            icon: None,
-            color_scheme: None,
-        };
-        self.profiles.borrow_mut().update_profile(profile);
-        self.refresh_settings_ui();
-        self.populate_profiles();
-    }
-
-    /// 添加新 Profile
-    fn add_profile(self: &Rc<Self>) {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let id = format!("profile-{}", ts);
-        let profile = Profile::new(id, "New Profile", "/bin/sh");
-        let idx = self.profiles.borrow_mut().add_profile(profile);
-        self.refresh_settings_ui();
-        // 选中新添加的 Profile
-        if let Some(ref w) = *self.settings_window.borrow() {
-            w.set_selected_index(idx as i32);
-        }
-        self.populate_profiles();
-    }
-
-    /// 删除 Profile
-    fn delete_profile(self: &Rc<Self>, id: slint::SharedString) {
-        let pid = ProfileId::new(id.to_string());
-        self.profiles.borrow_mut().delete_profile(&pid);
-        self.refresh_settings_ui();
-        self.populate_profiles();
-    }
 }
 
-/// 由终端网格（rows/cols）计算窗口逻辑尺寸（与 `compute_grid` 互为逆运算）。
-fn grid_to_logical_size(rows: u16, cols: u16) -> slint::LogicalSize {
-    slint::LogicalSize::new(
-        (cols as i32 * CHAR_W + H_PADDING) as f32,
-        (rows as i32 * CHAR_H + CHROME_H + V_PADDING) as f32,
-    )
+// 发送命令
+pub fn send_command(command_tx: SyncSender<WindowEvent>, command: WindowEvent) {
+    command_tx.send(command).expect("failed to send command");
 }
 
-/// 由窗口当前物理尺寸推导终端网格（rows, cols）。
-fn compute_grid(win: &slint::Window) -> Option<(u16, u16)> {
-    let scale = win.scale_factor();
-    if scale <= 0.0 {
-        return None;
-    }
-    let logical = win.size().to_logical(scale);
-    let term_w = logical.width as i32 - H_PADDING;
-    let term_h = logical.height as i32 - CHROME_H - V_PADDING;
-    if term_w <= 0 || term_h <= 0 {
-        return None;
-    }
-    let cols = (term_w / CHAR_W).clamp(1, MAX_COLS) as u16;
-    let rows = (term_h / CHAR_H).clamp(1, MAX_ROWS) as u16;
-    Some((rows, cols))
+// 异步接收命令
+pub fn async_recv_event(app: &Rc<RefCell<App>>) {
+    let weak_app = Rc::downgrade(app);
+    WEAK_APP.with(|ptr| *ptr.borrow_mut() = Some(weak_app));
+    // 获取管道的接收端
+    let command_rx = app.borrow().event_rx.clone();
+    // 启动事件异步线程
+    let _ = std::thread::Builder::new()
+        .name("terma_event".into())
+        .spawn(move || {
+            let rx = command_rx.lock().unwrap();
+            loop {
+                if let Ok(event) = rx.recv() {
+                    let _ = slint::invoke_from_event_loop(|| {
+                        WEAK_APP.with(|ptr| {
+                            if let Some(app) = ptr.borrow().as_ref().unwrap().upgrade() {
+                                app.borrow_mut().on_event(event)
+                            }
+                        });
+                    });
+                }
+            }
+        });
 }
 
 /// 把 Slint 传回的 id 字符串解析回 SessionId(u64)。
-fn parse_session_id(s: &slint::SharedString) -> Option<SessionId> {
+fn parse_session_id(s: &SharedString) -> Option<SessionId> {
     s.as_str().parse::<u64>().ok().map(SessionId)
 }
 
 /// 把键盘事件编码为写入 PTY 的字节序列
-fn encode_key(
-    text: &slint::SharedString,
-    meta: bool,
-    _cort: bool,
-    _alt: bool,
-    _shift: bool,
-) -> Vec<u8> {
+fn encode_key(text: &SharedString, mods: KeyboardModifiers) -> Vec<u8> {
     let s = text.as_str();
     let c = match s.chars().next() {
         Some(c) => c,
@@ -1043,7 +1035,7 @@ fn encode_key(
     }
 
     // 输入ASCII 控制字符（Ctrl + 字母）
-    if meta {
+    if mods.meta {
         if c.is_ascii_alphabetic() {
             return vec![(c as u8) & 0x1f];
         }

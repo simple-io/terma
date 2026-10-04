@@ -22,7 +22,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-
+use crate::app::events::WindowEvent;
 use crate::profile::Profile;
 use crate::session::active::ActiveSession;
 use crate::session::session::{TerminalSession, TerminalSessionLike};
@@ -56,7 +56,7 @@ impl SessionManager {
     /// `rows` / `cols` 为初始终端网格，调用方需根据当前主窗口实际尺寸计算，
     /// 使新会话与既有会话、渲染层保持尺寸一致。
     /// `wake_tx` 是渲染唤醒通道，透传给 Output Thread 用于事件触发式渲染。
-    pub fn create_session(&mut self, profile: &Profile, title: String, rows: u16, cols: u16, wake_tx: SyncSender<()>) -> Result<SessionId> {
+    pub fn create_session(&mut self, profile: &Profile, title: String, rows: u16, cols: u16, event_tx: SyncSender<WindowEvent>) -> Result<SessionId> {
         let id = self.id_gen.next_session_id();
         let session = TerminalSession::new(
             id,
@@ -64,7 +64,7 @@ impl SessionManager {
             title,
             rows,
             cols,
-            wake_tx,
+            event_tx,
             self.active_tracker.clone(),
         )?;
         self.sessions.insert(id, session);

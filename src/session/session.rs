@@ -35,7 +35,7 @@ use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
 use portable_pty::ChildKiller;
-
+use crate::app::events::{TerminalEvent, WindowEvent};
 use crate::profile::Profile;
 use crate::session::active::ActiveSession;
 use crate::session::session_id::{ProfileId, SessionId};
@@ -88,7 +88,7 @@ impl TerminalSession {
         title: String,
         rows: u16,
         cols: u16,
-        wake_tx: SyncSender<()>,
+        event_tx: SyncSender<WindowEvent>,
         active_tracker: Arc<ActiveSession>,
     ) -> Result<Self> {
         let pty_system = portable_pty::native_pty_system();
@@ -161,7 +161,7 @@ impl TerminalSession {
                             }
                             // 仅激活会话唤醒 UI 线程渲染；非激活会话静默保持状态最新
                             if active_tracker.is_active(id) {
-                                let _ = wake_tx.try_send(());
+                                let _ = event_tx.send(WindowEvent::Pty(TerminalEvent::Data));
                             }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
