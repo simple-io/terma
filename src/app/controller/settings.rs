@@ -23,7 +23,7 @@ impl App {
     }
 
     // 保存通用配置并实时生效
-    pub(super) fn on_save_settings(&self, info: GeneralSettingsInfo) {
+    pub(super) fn on_save_settings(&mut self, info: GeneralSettingsInfo) {
         let config = GeneralConfig {
             default_profile: info.default_profile_id.to_string(),
             font_family: info.font_family.to_string(),
@@ -34,11 +34,11 @@ impl App {
             bell_sound: info.bell_sound,
             scrollback_limit: info.scrollback_limit as usize,
         };
-        self.config.borrow_mut().update_general(config);
+        self.config.update_general(config);
 
         // 即时生效：字体 + 背景色
         self.apply_font();
-        let bg = self.config.borrow().general().background_color.clone();
+        let bg = self.config.general().background_color.clone();
         if let Some(color) = parse_color(&bg) {
             self.main_window.set_bg_color(color);
         }
@@ -50,7 +50,7 @@ impl App {
     }
 
     // 保存 Profile 修改
-    pub(super) fn on_save_profile(&self, info: ProfileEditInfo) {
+    pub(super) fn on_save_profile(&mut self, info: ProfileEditInfo) {
         let profile = Profile {
             id: ProfileId::new(info.id.to_string()),
             name: info.name.to_string(),
@@ -69,7 +69,7 @@ impl App {
             icon: None,
             color_scheme: None,
         };
-        self.config.borrow_mut().update_profile(profile);
+        self.config.update_profile(profile);
     }
 
     // 添加新 Profile
@@ -81,7 +81,7 @@ impl App {
             .unwrap_or(0);
         let id = format!("profile-{}", ts);
         let profile = Profile::new(id, "New Profile", "/bin/sh");
-        let idx = self.config.borrow_mut().add_profile(profile);
+        let idx = self.config.add_profile(profile);
 
         // 选中新添加的 Profile
         if let Some(w) = self.settings_window.as_mut() {
@@ -90,11 +90,9 @@ impl App {
     }
 
     // 删除 Profile
-    pub(super) fn on_delete_profile(&self, id: SharedString) {
+    pub(super) fn on_delete_profile(&mut self, id: SharedString) {
         let pid = ProfileId::new(id.to_string());
-        self.config.borrow_mut().delete_profile(&pid);
-        // self.refresh_settings_ui();
-        // self.populate_profiles();
+        self.config.delete_profile(&pid);
     }
 
     // 按关键词模糊过滤字体候选列表并回填设置窗口（部分匹配、不区分大小写）。
@@ -174,23 +172,24 @@ impl App {
 
     // 把当前配置同步到 SettingsWindow UI
     fn apply_settings(&self, window: &SettingsWindow) {
-        let mgr = self.config.borrow();
+        // let mgr = self.config.borrow();
 
         // 通用配置
-        let g = mgr.general();
+        let general = self.config.general();
         window.set_general_settings(GeneralSettingsInfo {
-            font_family: g.font_family.clone().into(),
-            font_size: g.font_size as i32,
-            background_color: g.background_color.clone().into(),
-            cursor_style: g.cursor_style.clone().into(),
-            color_scheme: g.color_scheme.clone().into(),
-            bell_sound: g.bell_sound,
-            scrollback_limit: g.scrollback_limit as i32,
-            default_profile_id: mgr.default_profile_id().0.clone().into(),
+            font_family: general.font_family.as_str().into(),
+            font_size: general.font_size as i32,
+            background_color: general.background_color.as_str().into(),
+            cursor_style: general.cursor_style.as_str().into(),
+            color_scheme: general.color_scheme.as_str().into(),
+            bell_sound: general.bell_sound,
+            scrollback_limit: general.scrollback_limit as i32,
+            default_profile_id: self.config.default_profile_id().0.clone().into(),
         });
 
         // Profile 列表
-        let profiles: Vec<ProfileEditInfo> = mgr
+        let profiles: Vec<ProfileEditInfo> = self
+            .config
             .profiles()
             .iter()
             .map(|p| ProfileEditInfo {
@@ -229,11 +228,12 @@ impl App {
         *self.font_entries.borrow_mut() = font_entries.clone();
         window.set_font_list(Rc::new(VecModel::from(font_entries.clone())).into());
         window.set_filtered_font_list(Rc::new(VecModel::from(font_entries.clone())).into());
-        window.set_font_current_index(Self::family_index(&font_entries, &g.font_family));
+        window.set_font_current_index(Self::family_index(&font_entries, &general.font_family));
 
         // 默认启动项下拉框：由 default-profile-id 反查列表索引注入
-        let default_id = mgr.default_profile_id().0.clone();
-        let idx = mgr
+        let default_id = self.config.default_profile_id().0.clone();
+        let idx = self
+            .config
             .profiles()
             .iter()
             .position(|p| p.id.0 == default_id)

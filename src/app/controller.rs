@@ -100,7 +100,8 @@ pub struct ScrollState {
 pub struct App {
     main_window: MainWindow,
     sessions: SessionManager,
-    config: RefCell<ConfigManager>,
+    // 配置管理器
+    config: ConfigManager,
     // 设置窗口
     settings_window: Option<SettingsWindow>,
     // 标签页模型
@@ -141,7 +142,7 @@ impl App {
         let app = Rc::new(RefCell::new(Self {
             main_window,
             sessions: SessionManager::new(),
-            config: RefCell::new(ConfigManager::new()),
+            config: ConfigManager::new(),
             settings_window: None,
             tabs_model,
             profiles_model,
@@ -183,7 +184,7 @@ impl App {
 
     // 设置终端字体, 配置为空时回退默认字体（JetBrains Mono）。
     fn apply_font(&self) {
-        let mut family = self.config.borrow().general().font_family.clone();
+        let mut family = self.config.general().font_family.clone();
         if family.is_empty() {
             family = fonts::DEFAULT_FONT_FAMILY.to_string();
         }
@@ -194,7 +195,6 @@ impl App {
     fn apply_profiles(&self) {
         let items: Vec<ProfileInfo> = self
             .config
-            .borrow()
             .profiles()
             .iter()
             .map(|p| ProfileInfo {
@@ -557,13 +557,13 @@ impl App {
 
     // 创建默认会话
     fn on_create_default_session(&mut self) {
-        let default_id = self.config.borrow().default_profile_id().clone();
+        let default_id = self.config.default_profile_id().clone();
         self.on_create_session_for_profile(&default_id);
     }
 
     // 根据 Profile 创建会话
     fn on_create_session_for_profile(&mut self, profile_id: &ProfileId) {
-        let profile = match self.config.borrow().get_profile(profile_id) {
+        let profile = match self.config.get_profile(profile_id) {
             Some(p) => p.clone(),
             None => return,
         };
