@@ -25,8 +25,8 @@
 
 use crate::app::events::{TerminalEvent, WindowEvent};
 use crate::app::fonts;
-use crate::config::loader::{format_env_vars_text, parse_env_vars_text};
-use crate::config::{GeneralConfig, Profile, ConfigManager};
+use crate::config::profile::{format_env_vars_text, parse_env_vars_text};
+use crate::config::{ConfigManager, GeneralConfig, Profile};
 use crate::renderer::buffer::RenderCache;
 use crate::renderer::{build_viewport_runs, runs_to_cell_runs};
 use crate::session::SessionManager;

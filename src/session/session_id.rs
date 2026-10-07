@@ -4,6 +4,7 @@
 //! 已分配的 ID 也不会被复用，避免 Tab 切换时指向错误的 Session。
 
 use std::fmt;
+use serde::{Deserialize, Serialize};
 
 /// 终端会话 ID（稳定、不可复用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -22,18 +23,18 @@ impl SessionId {
 }
 
 /// Profile ID（用于在 ProfileManager 中唯一标识一个终端配置）
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProfileId(pub String);
-
-impl fmt::Display for ProfileId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
 
 impl ProfileId {
     pub fn new(s: impl Into<String>) -> Self {
         Self(s.into())
+    }
+}
+
+impl fmt::Display for ProfileId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 

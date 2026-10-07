@@ -7,13 +7,13 @@
 //!   - 环境变量
 //!   - 图标 / 颜色方案（后续）
 
+use crate::session::session_id::ProfileId;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::session::session_id::ProfileId;
-
 // 启动项配置
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     // 唯一标识
     pub id: ProfileId,
@@ -47,8 +47,74 @@ impl Profile {
         }
     }
 
+    // 按平台生成默认 Profile 列表。
+    pub fn create_default_profiles() -> Vec<Self> {
+        #[cfg(target_os = "windows")]
+        {
+            vec![
+                Profile::new("powershell", "PowerShell", "powershell.exe"),
+                Profile::new("cmd", "Command Prompt", "cmd.exe"),
+                Profile::new("wsl-ubuntu", "WSL Ubuntu", "wsl.exe")
+                    .with_args(vec!["-d".into(), "Ubuntu".into()]),
+            ]
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let mut list = Vec::new();
+            if std::path::Path::new("/bin/bash").exists() {
+                list.push(Profile::new("bash", "Bash", "/bin/bash"));
+            }
+            if std::path::Path::new("/bin/zsh").exists() {
+                list.push(Profile::new("zsh", "Zsh", "/bin/zsh"));
+            }
+            if list.is_empty() {
+                list.push(Profile::new("sh", "Shell", "/bin/sh"));
+            }
+            list
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let mut list = Vec::new();
+            if std::path::Path::new("/bin/bash").exists() {
+                list.push(Profile::new("bash", "Bash", "/bin/bash"));
+            }
+            if std::path::Path::new("/bin/zsh").exists() {
+                list.push(Profile::new("zsh", "Zsh", "/bin/zsh"));
+            }
+            if list.is_empty() {
+                list.push(Profile::new("sh", "Shell", "/bin/sh"));
+            }
+            list
+        }
+    }
+
     pub fn with_args(mut self, args: Vec<String>) -> Self {
         self.args = args;
         self
     }
+}
+
+// 把 env_vars 文本（KEY=VALUE 每行一对）解析为 BTreeMap。
+pub fn parse_env_vars_text(text: &str) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            map.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    map
+}
+
+// 把 BTreeMap 格式化为 env_vars 文本（KEY=VALUE 每行一对）。
+pub fn format_env_vars_text(map: &BTreeMap<String, String>) -> String {
+    map.iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
