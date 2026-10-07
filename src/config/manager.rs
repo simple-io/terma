@@ -3,17 +3,17 @@
 //! 从 <config_dir>/terma/config.toml 加载完整配置（通用配置 + Profile 列表）。
 //! 文件不存在时生成平台默认并落盘。支持 Profile CRUD + 通用配置更新 + 持久化。
 
-use crate::profile::loader::{self, ConfigFile, GeneralConfig, ProfileEntry};
-use crate::profile::profile::Profile;
+use crate::config::loader::{self, ConfigFile, GeneralConfig, ProfileEntry};
+use crate::config::profile::Profile;
 use crate::session::session_id::ProfileId;
 
-pub struct ProfileManager {
+pub struct ConfigManager {
     profiles: Vec<Profile>,
     default_profile_id: ProfileId,
     general: GeneralConfig,
 }
 
-impl ProfileManager {
+impl ConfigManager {
     /// 加载配置：优先读 config.toml；不存在则尝试迁移旧版 profiles.toml；
     /// 两者都不存在时生成平台默认并落盘。
     pub fn new() -> Self {
@@ -217,7 +217,7 @@ impl ProfileManager {
     }
 }
 
-impl Default for ProfileManager {
+impl Default for ConfigManager {
     fn default() -> Self {
         Self::new()
     }

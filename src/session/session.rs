@@ -36,7 +36,7 @@ use std::thread::{self, JoinHandle};
 use anyhow::{Context, Result};
 use portable_pty::ChildKiller;
 use crate::app::events::{TerminalEvent, WindowEvent};
-use crate::profile::Profile;
+use crate::config::Profile;
 use crate::session::active::ActiveSession;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::TerminalState;

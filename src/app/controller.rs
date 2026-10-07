@@ -25,8 +25,8 @@
 
 use crate::app::events::{TerminalEvent, WindowEvent};
 use crate::app::fonts;
-use crate::profile::loader::{format_env_vars_text, parse_env_vars_text};
-use crate::profile::{GeneralConfig, Profile, ProfileManager};
+use crate::config::loader::{format_env_vars_text, parse_env_vars_text};
+use crate::config::{GeneralConfig, Profile, ConfigManager};
 use crate::renderer::buffer::RenderCache;
 use crate::renderer::{build_viewport_runs, runs_to_cell_runs};
 use crate::session::SessionManager;
@@ -98,7 +98,7 @@ pub struct ScrollState {
 pub struct App {
     main_window: MainWindow,
     sessions: SessionManager,
-    profiles: RefCell<ProfileManager>,
+    config: RefCell<ConfigManager>,
     // 设置窗口
     settings_window: Option<SettingsWindow>,
     // 标签页模型
@@ -139,7 +139,7 @@ impl App {
         let app = Rc::new(RefCell::new(Self {
             main_window,
             sessions: SessionManager::new(),
-            profiles: RefCell::new(ProfileManager::new()),
+            config: RefCell::new(ConfigManager::new()),
             settings_window: None,
             tabs_model,
             profiles_model,
@@ -181,7 +181,7 @@ impl App {
 
     // 设置终端字体, 配置为空时回退默认字体（JetBrains Mono）。
     fn apply_font(&self) {
-        let mut family = self.profiles.borrow().general().font_family.clone();
+        let mut family = self.config.borrow().general().font_family.clone();
         if family.is_empty() {
             family = fonts::DEFAULT_FONT_FAMILY.to_string();
         }
@@ -191,7 +191,7 @@ impl App {
     // 设置终端配置
     fn apply_profiles(&self) {
         let items: Vec<ProfileInfo> = self
-            .profiles
+            .config
             .borrow()
             .profiles()
             .iter()
@@ -555,13 +555,13 @@ impl App {
 
     // 创建默认会话
     fn on_create_default_session(&mut self) {
-        let default_id = self.profiles.borrow().default_profile_id().clone();
+        let default_id = self.config.borrow().default_profile_id().clone();
         self.on_create_session_for_profile(&default_id);
     }
 
     // 根据 Profile 创建会话
     fn on_create_session_for_profile(&mut self, profile_id: &ProfileId) {
-        let profile = match self.profiles.borrow().get_profile(profile_id) {
+        let profile = match self.config.borrow().get_profile(profile_id) {
             Some(p) => p.clone(),
             None => return,
         };
@@ -722,11 +722,11 @@ impl App {
             bell_sound: info.bell_sound,
             scrollback_limit: info.scrollback_limit as usize,
         };
-        self.profiles.borrow_mut().update_general(config);
+        self.config.borrow_mut().update_general(config);
 
         // 即时生效：字体 + 背景色
         self.apply_font();
-        let bg = self.profiles.borrow().general().background_color.clone();
+        let bg = self.config.borrow().general().background_color.clone();
         if let Some(color) = parse_color(&bg) {
             self.main_window.set_bg_color(color);
         }
@@ -757,7 +757,7 @@ impl App {
             icon: None,
             color_scheme: None,
         };
-        self.profiles.borrow_mut().update_profile(profile);
+        self.config.borrow_mut().update_profile(profile);
     }
 
     // 添加新 Profile
@@ -769,7 +769,7 @@ impl App {
             .unwrap_or(0);
         let id = format!("profile-{}", ts);
         let profile = Profile::new(id, "New Profile", "/bin/sh");
-        let idx = self.profiles.borrow_mut().add_profile(profile);
+        let idx = self.config.borrow_mut().add_profile(profile);
 
         // 选中新添加的 Profile
         if let Some(w) = self.settings_window.as_mut() {
@@ -780,7 +780,7 @@ impl App {
     // 删除 Profile
     fn on_delete_profile(&self, id: SharedString) {
         let pid = ProfileId::new(id.to_string());
-        self.profiles.borrow_mut().delete_profile(&pid);
+        self.config.borrow_mut().delete_profile(&pid);
         // self.refresh_settings_ui();
         // self.populate_profiles();
     }
@@ -880,7 +880,7 @@ impl App {
 
     // 把当前配置同步到 SettingsWindow UI
     fn apply_settings(&self, window: &SettingsWindow) {
-        let mgr = self.profiles.borrow();
+        let mgr = self.config.borrow();
 
         // 通用配置
         let g = mgr.general();

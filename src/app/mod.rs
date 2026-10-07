@@ -3,7 +3,7 @@
 //! 职责：
 //!   - 持有 SessionManager 与 ProfileManager
 //!   - 作为 Slint MainWindow 与业务层之间的桥梁
-//!   - 处理 UI 回调（new-tab / close-tab / select-tab / select-profile）
+//!   - 处理 UI 回调（new-tab / close-tab / select-tab / select-config）
 //!   - 把 SessionManager 状态同步到 Slint Model
 //!
 //! 分层边界：

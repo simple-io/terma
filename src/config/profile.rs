@@ -1,4 +1,4 @@
-//! profile — Profile 数据结构
+//! config — Profile 数据结构
 //!
 //! 一个 Profile 描述「如何启动一个终端」：
 //!   - 用什么 shell / command

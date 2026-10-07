@@ -1,6 +1,6 @@
 //! session — 会话管理
 //!
-//! Phase 1：每个 Tab 对应一个 mock TerminalSession（仅持有 id / title / profile name）。
+//! Phase 1：每个 Tab 对应一个 mock TerminalSession（仅持有 id / title / config name）。
 //! Phase 2+ 将把 mock 替换为真实 TerminalSession：
 //!   - portable-pty 创建 PTY
 //!   - vte::Parser 解析输出

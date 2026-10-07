@@ -4,7 +4,7 @@
 
 mod app;
 mod platform;
-mod profile;
+mod config;
 mod pty;
 mod renderer;
 mod session;

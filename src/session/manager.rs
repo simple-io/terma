@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use crate::app::events::WindowEvent;
-use crate::profile::Profile;
+use crate::config::Profile;
 use crate::session::active::ActiveSession;
 use crate::session::session::{TerminalSession, TerminalSessionLike};
 use crate::session::session_id::{IdGenerator, ProfileId, SessionId};

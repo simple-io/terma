@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use crate::app::fonts;
-use crate::profile::Profile;
+use crate::config::Profile;
 
 // ─── 默认值函数 ───
 
