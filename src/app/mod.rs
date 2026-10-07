@@ -12,6 +12,5 @@
 
 pub mod controller;
 pub mod events;
-pub mod fonts;
 
 pub use controller::App;

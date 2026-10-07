@@ -8,10 +8,8 @@
 //! 文件不存在时由 ProfileManager 生成平台默认配置并落盘。
 //! 若检测到旧版 profiles.toml，自动迁移为 config.toml 后删除旧文件。
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::app::fonts;
 use crate::config::GeneralConfig;
 use crate::config::Profile;
 use anyhow::{Context, Result};

@@ -7,7 +7,8 @@ pub mod loader;
 pub mod manager;
 pub mod profile;
 pub mod general;
+pub mod fonts;
 
-pub use profile::Profile;
 pub use general::GeneralConfig;
 pub use manager::ConfigManager;
+pub use profile::Profile;

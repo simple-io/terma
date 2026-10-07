@@ -24,8 +24,8 @@
 //!   on_resized()          → 窗口尺寸变化即时同步网格 + PTY + 重绘
 
 use crate::app::events::{TerminalEvent, WindowEvent};
-use crate::app::fonts;
 use crate::config::ConfigManager;
+use crate::config::fonts;
 use crate::renderer::buffer::RenderCache;
 use crate::renderer::{build_viewport_runs, runs_to_cell_runs};
 use crate::session::SessionManager;

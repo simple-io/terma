@@ -1,4 +1,4 @@
-use crate::app::fonts;
+use crate::config::fonts;
 use serde::{Deserialize, Serialize};
 
 fn default_font_family() -> String {
