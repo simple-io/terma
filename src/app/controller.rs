@@ -99,8 +99,11 @@ pub struct App {
     main_window: MainWindow,
     sessions: SessionManager,
     profiles: RefCell<ProfileManager>,
+    // 设置窗口
     settings_window: Option<SettingsWindow>,
+    // 标签页模型
     tabs_model: Rc<VecModel<TabInfo>>,
+    // Profile 模型
     profiles_model: Rc<VecModel<ProfileInfo>>,
     // 终端 Cell 渲染模型（Run 列表）
     cells_model: Rc<VecModel<CellRun>>,
@@ -111,7 +114,6 @@ pub struct App {
     // 每个会话（Tab）独立的滚动视图状态，以 SessionId 索引，互不影响
     scroll_states: RefCell<HashMap<SessionId, ScrollState>>,
     // 字体下拉框完整候选列表缓存（内置 + 系统字体），供搜索过滤时复用，
-    // 避免每次关键词变化都重新枚举系统字体（font-kit 枚举开销较大）
     font_entries: RefCell<Vec<FontEntry>>,
     // 命令通道发送端
     event_tx: SyncSender<WindowEvent>,
@@ -177,19 +179,12 @@ impl App {
         self.bind_callbacks();
     }
 
-    /// 当前生效字体 family：配置为空时回退默认字体（JetBrains Mono）。
-    fn current_font_family(&self) -> String {
-        let family = self.profiles.borrow().general().font_family.clone();
-        if family.is_empty() {
-            fonts::DEFAULT_FONT_FAMILY.to_string()
-        } else {
-            family
-        }
-    }
-
-    // 设置终端字体
+    // 设置终端字体, 配置为空时回退默认字体（JetBrains Mono）。
     fn apply_font(&self) {
-        let family = self.current_font_family();
+        let mut family = self.profiles.borrow().general().font_family.clone();
+        if family.is_empty() {
+            family = fonts::DEFAULT_FONT_FAMILY.to_string();
+        }
         self.main_window.set_font_family(family.into());
     }
 
@@ -223,7 +218,8 @@ impl App {
     // 同步 Tab 列表 + 激活态标题，切/关/建 Tab 后激活会话可能变化，并强制渲染激活会话。
     fn sync_tabs(&self) {
         // let sessions = self.sessions.borrow();
-        let tabs: Vec<TabInfo> = self.sessions
+        let tabs: Vec<TabInfo> = self
+            .sessions
             .sessions_in_order()
             .iter()
             .map(|s| TabInfo {
@@ -483,7 +479,6 @@ impl App {
         let command_tx = self.event_tx.clone();
         self.main_window.on_resized(move || {
             command_tx.send(WindowEvent::Resize).unwrap();
-
         });
 
         // 键盘回调，处理键盘输入转发到激活会话的 PTY
@@ -518,6 +513,7 @@ impl App {
         });
     }
 
+    // 响应窗口回调事件
     fn on_event(&mut self, event: WindowEvent) {
         match event {
             WindowEvent::Pty(TerminalEvent::Data) => self.render(),
@@ -574,7 +570,10 @@ impl App {
         self.last_size.set((rows, cols));
         let title = format!("{} {}", profile.name, self.sessions.len() + 1);
 
-        match self.sessions.create_session(&profile, title, rows, cols, self.event_tx.clone()) {
+        match self
+            .sessions
+            .create_session(&profile, title, rows, cols, self.event_tx.clone())
+        {
             Ok(id) => {
                 // 为新建会话登记独立的滚动状态（每 Tab 互不影响）
                 self.scroll_states
@@ -616,7 +615,7 @@ impl App {
     // 窗口尺寸变化回调处理：由 `changed width/height` 即时触发。
     // 根据窗口尺寸重新计算 cols/rows，变化时同步所有会话的 PTY + ScreenBuffer。
     fn on_resized(&mut self) {
-       let (rows, cols) = self.current_grid();
+        let (rows, cols) = self.current_grid();
 
         let last = self.last_size.get();
         if last != (rows, cols) {
@@ -806,7 +805,7 @@ impl App {
         }
     }
 
-    // 当前主窗口对应的终端网格（rows, cols）。
+    // 获取当前窗终端网格行列数
     fn current_grid(&self) -> (u16, u16) {
         let win = self.main_window.window();
         let scale = win.scale_factor();
@@ -845,7 +844,6 @@ impl App {
         let command_tx = self.event_tx.clone();
         window.on_save_general(move |info| {
             command_tx.send(WindowEvent::SaveSettings(info)).unwrap();
-
         });
 
         let command_tx = self.event_tx.clone();
@@ -866,7 +864,9 @@ impl App {
         // 字体搜索：关键词变化 → 模糊过滤候选列表回填
         let command_tx = self.event_tx.clone();
         window.on_font_search_edited(move |keyword, current| {
-            command_tx.send(WindowEvent::FilterFonts(keyword, current)).unwrap();
+            command_tx
+                .send(WindowEvent::FilterFonts(keyword, current))
+                .unwrap();
         });
 
         // 窗口关闭请求 → 隐藏而非销毁
@@ -948,7 +948,6 @@ impl App {
         window.set_default_index(idx);
     }
 
-
     // 按 family 名精确查找索引，未命中返回 -1（Slint 侧"无高亮"哨兵值）
     fn family_index(entries: &[FontEntry], family: &str) -> i32 {
         entries
@@ -957,11 +956,6 @@ impl App {
             .map(|i| i as i32)
             .unwrap_or(-1)
     }
-}
-
-// 发送命令
-pub fn send_command(command_tx: SyncSender<WindowEvent>, command: WindowEvent) {
-    command_tx.send(command).expect("failed to send command");
 }
 
 // 异步接收命令
