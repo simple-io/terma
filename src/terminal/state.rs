@@ -13,18 +13,18 @@
 
 use vte::{Params, Perform};
 
-use crate::terminal::screen::ScreenBuffer;
 use crate::terminal::cell::{Cell, CellStyle};
 use crate::terminal::color::Color;
 use crate::terminal::cursor::Cursor;
+use crate::terminal::screen::ScreenBuffer;
 
 /// 激活的屏幕类型, 终端有两个屏幕，适用于不同的模式
 /// Primary: 支持 CLI 模式，正常屏幕, 逐行输入命令，逐行输出结果，支持窗口滚动等, 例如：bash、ls、git 等
 /// Alternate: 支持 TUI 模式，全屏文本界面，可在屏幕任意位置定位光标绘制, 例如：top、htop、vim 等
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveScreen {
-    Primary,   // CLI 正常屏幕
-    Alternate, // TUI 全屏文本界面
+    Primary,   // CLI 屏幕
+    Alternate, // TUI 屏幕
 }
 
 /// 终端仿真状态机类型，维护终端网格、光标位置、屏幕缓冲区等状态信息
@@ -77,31 +77,34 @@ impl TerminalState {
         }
     }
 
-    /// 是否有未渲染的变更（解析线程写入，UI 线程渲染后清除）。
+    // 是否有脏标记（解析线程写入，UI 线程渲染后清除）。
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
 
-    /// 清除脏标记（UI 线程渲染完成后调用）。
-    pub fn clear_dirty(&mut self) {
-        self.dirty = false;
-    }
-
-    /// 标记有变更但不确定具体行（解析线程每解析一段输出后调用，
-    /// 覆盖纯光标移动等不触碰 grid 但需要重绘光标的情形）。
+    // 设置脏行标记
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
     }
 
-    /// 强制全量重绘：置脏标记并将两块屏的所有行标为脏。
-    /// 用于 Tab 切换 / 新建 / 关闭会话等需要整屏重建的场景。
+    // 清除脏标记（UI 线程渲染完成后调用）。
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
+    }
+
+    // 强制全量重绘，置脏标记并将两块屏的所有行标为脏。
     pub fn mark_all_dirty(&mut self) {
         self.dirty = true;
         self.primary.mark_all_rows_dirty();
         self.alternate.mark_all_rows_dirty();
     }
 
-    /// 当前激活屏的只读引用
+    // 获取并清除激活屏的脏行索引（供渲染层增量重建使用）
+    pub fn take_dirty_rows(&self) -> Vec<usize> {
+        self.screen().take_dirty_rows()
+    }
+
+    // 当前激活屏的只读引用
     pub fn screen(&self) -> &ScreenBuffer {
         match self.active {
             ActiveScreen::Primary => &self.primary,
@@ -109,7 +112,7 @@ impl TerminalState {
         }
     }
 
-    /// 当前激活屏的可变引用
+    // 当前激活屏的可变引用
     fn screen_mut(&mut self) -> &mut ScreenBuffer {
         match self.active {
             ActiveScreen::Primary => &mut self.primary,
@@ -117,12 +120,7 @@ impl TerminalState {
         }
     }
 
-    /// 获取并清除激活屏的脏行索引（供渲染层增量重建使用）
-    pub fn take_dirty_rows(&self) -> Vec<usize> {
-        self.screen().take_dirty_rows()
-    }
-
-    /// 调整终端尺寸：同步两块屏（含内容 Reflow）+ 光标追踪
+    // 调整终端尺寸：同步两块屏（含内容 Reflow）+ 光标追踪
     pub fn resize(&mut self, rows: usize, cols: usize) {
         let p_cursor = self.primary.resize(rows, cols, &self.cursor);
         let a_cursor = self.alternate.resize(rows, cols, &self.cursor);
@@ -140,7 +138,7 @@ impl TerminalState {
         self.dirty = true;
     }
 
-    /// 防止光标位置越界处理
+    // 防止光标位置越界处理
     fn clamp_cursor(&mut self) {
         if self.cursor.row >= self.rows {
             self.cursor.row = self.rows.saturating_sub(1);
@@ -150,13 +148,7 @@ impl TerminalState {
         }
     }
 
-    /// 在光标位置写入字符，处理延迟换行与行末回绕。
-    ///
-    /// 宽字符（显示宽度=2，如 CJK）支持：
-    ///   - 宽字符写入当前列，并把下一列写为「续列占位」Cell（`continuation: true`），光标相应向右移动 2 列；
-    ///   - 组合/零宽字符（width 0）不占列、不移动光标（简化：忽略）；
-    ///   - 行末仅剩 1 列时无法容纳宽字符，写入空格占位并置延迟换行（截断）；
-    ///   - 覆盖写入会清理被破坏的宽字符占位关系（见 `prepare_cell`）。
+    // 在光标位置写入字符，支持换行和宽字符。
     fn put_char(&mut self, c: char) {
         if self.cols == 0 || self.rows == 0 {
             return;
@@ -197,7 +189,7 @@ impl TerminalState {
         }
     }
 
-    /// 换行，光标移动到下一行，若超出滚动区底部则在区域内向上滚动
+    // 换行，光标移动到下一行，若超出滚动区底部则在区域内向上滚动
     fn linefeed(&mut self) {
         let (top, bottom) = (self.scroll_top, self.scroll_bottom);
         if self.cursor.row == bottom {
@@ -210,7 +202,7 @@ impl TerminalState {
         self.pending_wrap = false;
     }
 
-    /// 反向换行（RI）：光标上移；若在滚动区顶部则区域内向下滚动
+    // 反向换行（RI）：光标上移；若在滚动区顶部则区域内向下滚动
     fn reverse_index(&mut self) {
         let (top, bottom) = (self.scroll_top, self.scroll_bottom);
         if self.cursor.row == top {
@@ -221,19 +213,19 @@ impl TerminalState {
         self.pending_wrap = false;
     }
 
-    /// 设置光标行，行号从 0 开始
+    // 设置光标行，行号从 0 开始
     fn set_cursor_row(&mut self, row: usize) {
         self.cursor.row = row.min(self.rows.saturating_sub(1));
         self.pending_wrap = false;
     }
 
-    /// 设置光标列，列号从 0 开始
+    // 设置光标列，列号从 0 开始
     fn set_cursor_col(&mut self, col: usize) {
         self.cursor.col = col.min(self.cols.saturating_sub(1));
         self.pending_wrap = false;
     }
 
-    /// 设置光标行和列，行号和列号从 0 开始
+    // 设置光标行和列，行号和列号从 0 开始
     fn set_cursor_pos(&mut self, row1: u16, col1: u16) {
         let r = (row1.saturating_sub(1) as usize).min(self.rows.saturating_sub(1));
         let c = (col1.saturating_sub(1) as usize).min(self.cols.saturating_sub(1));
@@ -275,7 +267,7 @@ impl TerminalState {
         }
     }
 
-    /// 处理 SGR 参数, 也就是终端字符颜色
+    // 处理 SGR 参数, 也就是终端字符颜色
     fn handle_sgr(&mut self, p: &[u16]) {
         if p.is_empty() {
             self.cell_style = CellStyle::default();
@@ -320,17 +312,16 @@ impl TerminalState {
             i += 1;
         }
     }
-
 }
 
 /// 伪终端状态机实现 vte::Perform Trait 接口
 impl Perform for TerminalState {
-    /// 普通字符写入光标位置
+    // 普通字符写入光标位置
     fn print(&mut self, c: char) {
         self.put_char(c);
     }
 
-    /// C0 控制字符
+    // C0 控制字符
     fn execute(&mut self, byte: u8) {
         match byte {
             b'\n' | 0x0b | 0x0c => self.linefeed(),
@@ -372,16 +363,16 @@ impl Perform for TerminalState {
         }
     }
 
-    /// OSC 序列：操作系统命令
+    // OSC 序列：操作系统命令
     fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
         // OSC 0/2 设置窗口标题等：Phase 3 暂忽略
     }
 
-    /// CSI 序列：光标移动 / 清屏 / 清行 / 滚动 / SGR / 私有模式
-    ///     params: 参数组，每个参数组内参数用 ; 或 : 分隔
-    ///     intermediates: 中介符，目前只处理 ? 表示私有模式
-    ///     _ignore: 是否忽略该 CSI 序列
-    ///     c: 终端命令
+    // CSI 序列：光标移动 / 清屏 / 清行 / 滚动 / SGR / 私有模式
+    //     params: 参数组，每个参数组内参数用 ; 或 : 分隔
+    //     intermediates: 中介符，目前只处理 ? 表示私有模式
+    //     _ignore: 是否忽略该 CSI 序列
+    //     c: 终端命令
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
         // 把参数扁平化为 u16 序列（同时兼容 ; 与 : 分隔，用于 SGR/定位）
         let p: Vec<u16> = params.iter().flat_map(|g| g.iter().copied()).collect();
@@ -395,7 +386,7 @@ impl Perform for TerminalState {
         }
 
         match c {
-            // 光标控制
+            // --- 光标控制 ---
             // 向上移动光标
             'A' => {
                 let n = param!(0, 1).max(1) as usize;
@@ -451,7 +442,7 @@ impl Perform for TerminalState {
                 self.set_cursor_pos(row1, col1);
             }
 
-            // 内容擦除
+            // --- 内容擦除 ---
             // 清屏
             'J' => {
                 let mode = param!(0, 0);
@@ -482,7 +473,7 @@ impl Perform for TerminalState {
                 }
             }
 
-            // 屏幕滚动
+            // --- 屏幕滚动 ---
             // 向上滚动
             'S' => {
                 let n = param!(0, 1).max(1) as usize;
@@ -508,7 +499,7 @@ impl Perform for TerminalState {
                 }
             }
 
-            // 文本编辑
+            // --- 文本编辑 ---
             // 插入/删除行（区域内）
             'L' => {
                 let n = param!(0, 1).max(1) as usize;
@@ -582,24 +573,24 @@ impl Perform for TerminalState {
                 }
             }
 
-            // 文本样式
+            // --- 文本样式 ---
             // SGR
             'm' => self.handle_sgr(&p),
 
-            // DEC 私有模式
-            // h  → 从 CLI 切换到 Alternate Screen（TUI）模式，如 vim、htop、less等
+            // --- DEC 私有模式 ---
+            // h  → 从 CLI 切换到 TUI 模式，如 vim、htop、less等
             'h' if private => self.set_private_mode(&p, true),
-            // l  → 切换回 Main Screen（TUI）模式, 回到 CLI 模式
+            // l  → 从 TUI 切换到 CLI 模式，如 ls、bash、git 等
             'l' if private => self.set_private_mode(&p, false),
 
             _ => {}
         }
     }
 
-    /// ESC 序列：光标移动 / 保存/恢复光标 / 滚动
-    ///     _intermediates: 中介符，目前只处理 ? 表示私有模式
-    ///     _ignore: 是否忽略该序列
-    ///     byte: 终端命令
+    // ESC 序列：光标移动 / 保存/恢复光标 / 滚动
+    //     _intermediates: 中介符，目前只处理 ? 表示私有模式
+    //     _ignore: 是否忽略该序列
+    //     byte: 终端命令
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
         match byte {
             // RI：Reverse Index，光标上移一行
@@ -626,7 +617,7 @@ impl Perform for TerminalState {
     }
 }
 
-/// 解析 SGR 38/48 后的颜色参数：5;n 或 2;r;g;b
+// 解析 SGR 38/48 后的颜色参数：5;n 或 2;r;g;b
 fn parse_color(p: &[u16]) -> Option<(Color, usize)> {
     let mode = *p.first()?;
     match mode {
@@ -740,7 +731,13 @@ mod tests {
             .unwrap()
             .get_cells()
             .iter()
-            .map(|c| if c.character == '\0' { '·' } else { c.character })
+            .map(|c| {
+                if c.character == '\0' {
+                    '·'
+                } else {
+                    c.character
+                }
+            })
             .collect()
     }
 
@@ -754,7 +751,7 @@ mod tests {
         feed(&mut st, "\r\n");
         feed(&mut st, "xk@xk-mac ~ % ");
 
-        // 拖拽式缩小（多次 1 列步进）再放大
+        // 拖拽式缩小（多次 1 列不进）再放大
         for c in (30..80).rev() {
             st.resize(6, c);
         }
@@ -796,17 +793,19 @@ mod tests {
             .scrollback
             .iter()
             .find(|r| {
-                let t: String = r
-                    .get_cells()
-                    .iter()
-                    .map(|c| c.character)
-                    .collect();
+                let t: String = r.get_cells().iter().map(|c| c.character).collect();
                 t.contains("file_00")
             })
             .map(|r| {
                 r.get_cells()
                     .iter()
-                    .map(|c| if c.character == '\0' { '·' } else { c.character })
+                    .map(|c| {
+                        if c.character == '\0' {
+                            '·'
+                        } else {
+                            c.character
+                        }
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -907,7 +906,10 @@ mod tests {
         assert_eq!(st.screen().cell(0, 4).character, 'o');
         // 渲染单行使用正确行号
         let runs = build_row_runs(&st.screen().visible_rows()[0], 0);
-        assert!(runs.iter().any(|r| r.row == 0 && r.col == 0 && r.text == "h"));
+        assert!(
+            runs.iter()
+                .any(|r| r.row == 0 && r.col == 0 && r.text == "h")
+        );
     }
 
     // ─── 高度变化（仅行数）Resize 测试 ───
@@ -917,7 +919,13 @@ mod tests {
         st.screen().scrollback[i]
             .get_cells()
             .iter()
-            .map(|c| if c.character == '\0' { '·' } else { c.character })
+            .map(|c| {
+                if c.character == '\0' {
+                    '·'
+                } else {
+                    c.character
+                }
+            })
             .collect()
     }
 
@@ -1153,7 +1161,10 @@ mod tests {
         // scrollback 的 "AAAAA" 和 grid 的 "BBBBB" 不应合并（硬换行）
         // 但内容应在 scrollback 和 grid 中正确分布
         assert_eq!(st.screen().scrollback.len(), 1);
-        assert_eq!(st.screen().scrollback[0].get_cell(0).unwrap().character, 'A');
+        assert_eq!(
+            st.screen().scrollback[0].get_cell(0).unwrap().character,
+            'A'
+        );
         assert_eq!(st.screen().cell(0, 0).character, 'B');
         assert_eq!(st.screen().cell(1, 0).character, 'C');
     }
@@ -1164,7 +1175,7 @@ mod tests {
         // 处被写出，否则触发列索引越界 panic。
         let mut st = TerminalState::new(2, 10);
         feed(&mut st, "abc"); // row 0 = "abc"，尾部为默认空 cell（\0）
-        st.resize(3, 3);      // 3 列恰好整除，旧实现会越界 panic
+        st.resize(3, 3); // 3 列恰好整除，旧实现会越界 panic
         assert_eq!(st.screen().cell(0, 0).character, 'a');
         assert_eq!(st.screen().cell(0, 2).character, 'c');
         // 内容只有一行，第二行应为空（默认 cell）
@@ -1276,8 +1287,8 @@ mod tests {
         // 回归：先缩小再放大，内容与空格应完整往返，不丢失、不合并。
         let mut st = TerminalState::new(3, 10);
         feed(&mut st, "hello world");
-        st.resize(4, 5);   // 缩小 → 软换行
-        st.resize(3, 12);  // 放大 → 合并
+        st.resize(4, 5); // 缩小 → 软换行
+        st.resize(3, 12); // 放大 → 合并
         // 第 0 行应还原为 "hello world"
         assert_eq!(st.screen().cell(0, 0).character, 'h');
         assert_eq!(st.screen().cell(0, 5).character, ' ');
@@ -1348,7 +1359,10 @@ mod tests {
         // 回归：逐步缩小后内容必须按原始顺序完整保留，不得出现撕裂
         //（多余空行、单字符独占一行、宽字符丢失）。宽字符行同样覆盖。
         let mut st = TerminalState::new(5, 40);
-        feed(&mut st, "WorkBuddy      Desktop        Movies\r\n中企开发            soft");
+        feed(
+            &mut st,
+            "WorkBuddy      Desktop        Movies\r\n中企开发            soft",
+        );
         for c in (12..40).rev() {
             st.resize(5, c);
         }
@@ -1430,7 +1444,15 @@ mod tests {
         feed(&mut st, prompt_input);
 
         let text = visible_text(&st).concat();
-        assert_eq!(text.matches("user@bogon").count(), 1, "prompt 重复: {text:?}");
-        assert_eq!(text.matches("0123456789").count(), 1, "输入内容重复: {text:?}");
+        assert_eq!(
+            text.matches("user@bogon").count(),
+            1,
+            "prompt 重复: {text:?}"
+        );
+        assert_eq!(
+            text.matches("0123456789").count(),
+            1,
+            "输入内容重复: {text:?}"
+        );
     }
 }

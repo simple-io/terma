@@ -98,17 +98,18 @@ pub struct ScrollState {
 /// 应用控制器：持有窗口、会话管理器、Profile 管理器与 UI Model。
 pub struct App {
     main_window: MainWindow,
-    sessions: SessionManager,
-    // 配置管理器
-    config: ConfigManager,
-    // 设置窗口
-    settings_window: Option<SettingsWindow>,
     // 标签页模型
     tabs_model: Rc<VecModel<TabInfo>>,
     // Profile 模型
     profiles_model: Rc<VecModel<ProfileInfo>>,
     // 终端 Cell 渲染模型（Run 列表）
     cells_model: Rc<VecModel<CellRun>>,
+    // 会话管理器
+    sessions: SessionManager,
+    // 配置管理器
+    config: ConfigManager,
+    // 设置窗口
+    settings_window: Option<SettingsWindow>,
     // 上次同步给 PTY 的 (rows, cols)，用于检测窗口尺寸变化
     last_size: Cell<(u16, u16)>,
     // 渲染缓存：按行缓存渲染项，脏行重建、未变更行复用
