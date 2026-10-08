@@ -29,6 +29,7 @@
 //! 跨线程边界：
 //!   PTY Output Thread ──(on_output → vte 解析)→ Arc<Mutex<TerminalState>>
 //!   PTY Output Thread ──(active? event_tx)──> 渲染分发线程 ──(invoke_from_event_loop)──> UI Thread
+//!   PTY Output Thread ──(on_exit: EOF/错误 → ChildExited(id))──> UI Thread 关闭对应会话
 
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
@@ -80,6 +81,7 @@ impl TerminalSession {
 
         // 输出处理回调：move 进 Pty 的 Output Thread，逐字节 vte 解析进 state。
         let mut parser = vte::Parser::new();
+        let event_tx_output = event_tx.clone();
         let on_output = move |bytes: &[u8]| {
             {
                 let state = &mut *state_for_thread.lock().unwrap();
@@ -91,12 +93,25 @@ impl TerminalSession {
             }
             // 仅激活会话唤醒 UI 线程渲染；非激活会话静默保持状态最新
             if active_tracker.is_active(id) {
-                let _ = event_tx.send(WindowEvent::Pty(TerminalEvent::Data));
+                let _ = event_tx_output.send(WindowEvent::Pty(TerminalEvent::Data));
             }
         };
-
+        
+        // PTY 输出结束（EOF / 不可恢复读取错误）回调，通知 UI 线程关闭本会话。
+        let event_tx_exit = event_tx.clone();
+        let on_exit = move || {
+            let _ = event_tx_exit.send(WindowEvent::Pty(TerminalEvent::ChildExited(id)));
+        };
+        
         // 创建 PTY
-        let pty = Pty::spawn(rows, cols, profile, format!("pty-output-{}", id.0), on_output)?;
+        let pty = Pty::spawn(
+            rows,
+            cols,
+            profile,
+            format!("pty-output-{}", id.0),
+            on_output,
+            on_exit,
+        )?;
 
         Ok(Self {
             id,

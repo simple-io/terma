@@ -124,6 +124,11 @@ impl SessionManager {
         }
     }
 
+    // 会话是否存在（供关闭流程幂等守卫，避免重复关闭已移除的会话）
+    pub fn contains(&self, id: SessionId) -> bool {
+        self.sessions.contains_key(&id)
+    }
+
     // 会话列表是否为空
     pub fn is_empty(&self) -> bool {
         self.sessions.is_empty()

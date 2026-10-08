@@ -8,18 +8,15 @@ use slint::language::KeyboardModifiers;
 use slint::SharedString;
 use crate::app::controller::{GeneralSettingsInfo, ProfileEditInfo};
 use crate::session::session_id::ProfileId;
-#[allow(unused_imports)]
 use crate::session::session_id::SessionId;
 
 
 #[derive(Debug, Clone)]
 pub enum TerminalEvent {
-    // PTY 有数据到达（Phase 2 由 vte 解析后转为 state 更新，而非直接传字节）
+    // PTY 有数据到达
     Data,
-    // 终端状态已更新，需要重绘
-    // Dirty(SessionId),
-    // 子进程退出
-    // ChildExited(SessionId, Option<i32>),
+    // PTY 进程结束
+    ChildExited(SessionId),
 }
 
 // ====== UI 线程回调事件 =======

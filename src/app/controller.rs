@@ -508,7 +508,10 @@ impl App {
     // 响应窗口回调事件
     fn on_event(&mut self, event: WindowEvent) {
         match event {
+            // PTY 输出数据
             WindowEvent::Pty(TerminalEvent::Data) => self.render(),
+            // PTY 输出结束（子进程退出 EOF 或不可恢复读取错误）
+            WindowEvent::Pty(TerminalEvent::ChildExited(sid)) => self.on_close_session(sid),
             // 新建 Tab
             WindowEvent::NewTab => self.on_create_default_session(),
             // 新建 Tab 会话
@@ -589,6 +592,10 @@ impl App {
 
     // 根据 id 关闭会话
     fn on_close_session(&mut self, id: SessionId) {
+        // 幂等守卫，会话已不存在（可能已被主动关闭，或 PTY 退出事件重复到达），
+        if !self.sessions.contains(id) {
+            return;
+        }
         // 关闭会话
         let active_id = self.sessions.close_session(id);
         self.scroll_states.borrow_mut().remove(&id);
