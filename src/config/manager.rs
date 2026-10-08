@@ -42,7 +42,7 @@ impl ConfigManager {
 
             return Self {
                 default_profile_id: default_id,
-                profiles:file.profiles,
+                profiles: file.profiles,
                 general: file.general,
             };
         }
@@ -151,7 +151,7 @@ impl ConfigManager {
             self.default_profile_id = default_id;
             self.general = general;
         } else {
-        // 无效则回退到当前默认或第一个
+            // 无效则回退到当前默认或第一个
             let fallback = self
                 .profiles
                 .first()

@@ -17,4 +17,4 @@ pub mod session_id;
 
 pub use active::ActiveSession;
 pub use manager::SessionManager;
-pub use session::TerminalSession;
+pub use session::{ScrollAction, TerminalSession};

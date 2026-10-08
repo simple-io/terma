@@ -11,18 +11,18 @@
 //!   - state    TerminalState + vte::Perform 实现
 //!   - parser   vte::Parser 封装
 
-pub mod screen;
 pub mod cell;
 pub mod color;
+pub mod control;
 pub mod cursor;
 pub mod parser;
-pub mod state;
-pub mod control;
 pub mod row;
+pub mod screen;
+pub mod state;
 
-pub use row::Row;
-pub use screen::{ScreenBuffer};
 pub use cell::{Cell, CellStyle};
 pub use color::Color;
 pub use cursor::Cursor;
-pub use state::{TerminalState};
+pub use row::Row;
+pub use screen::ScreenBuffer;
+pub use state::TerminalState;

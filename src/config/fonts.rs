@@ -7,14 +7,11 @@
 //!   - 内置字体 family 列表（手动维护，在 main_window.slint 中导入）
 //!   - 操作系统已安装字体 family 列表（font-kit，进程内缓存）
 
-use std::sync::OnceLock;
 use font_kit::source::SystemSource;
+use std::sync::OnceLock;
 
 /// 内置字体，在 main_window.slint 中导入
-static BUNDLED_FONT_FAMILIES: &[&str] = &[
-    "JetBrains Mono",
-    "Cascadia Code",
-];
+static BUNDLED_FONT_FAMILIES: &[&str] = &["JetBrains Mono", "Cascadia Code"];
 
 /// 项目默认字体：未选择其他字体时 UI 使用该值（需与 fonts/ 内嵌字体一致）
 pub const DEFAULT_FONT_FAMILY: &str = "JetBrains Mono";
@@ -62,8 +59,14 @@ mod tests {
     #[test]
     fn bundled_families_default_first() {
         let families = bundled_families();
-        assert_eq!(families.first().map(String::as_str), Some(DEFAULT_FONT_FAMILY));
-        assert!(families.len() >= 2, "应至少包含 JetBrains Mono 与 Cascadia Code");
+        assert_eq!(
+            families.first().map(String::as_str),
+            Some(DEFAULT_FONT_FAMILY)
+        );
+        assert!(
+            families.len() >= 2,
+            "应至少包含 JetBrains Mono 与 Cascadia Code"
+        );
     }
 
     #[test]
@@ -82,7 +85,10 @@ mod tests {
     #[test]
     fn candidates_no_overlap_between_bundled_and_system() {
         let (bundled, system) = candidate_families();
-        assert_eq!(bundled.first().map(String::as_str), Some(DEFAULT_FONT_FAMILY));
+        assert_eq!(
+            bundled.first().map(String::as_str),
+            Some(DEFAULT_FONT_FAMILY)
+        );
         for b in &bundled {
             assert!(
                 !system.iter().any(|s| s.eq_ignore_ascii_case(b)),

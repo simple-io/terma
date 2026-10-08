@@ -3,8 +3,8 @@
 #![allow(dead_code, unused_imports)]
 
 mod app;
-mod platform;
 mod config;
+mod platform;
 mod pty;
 mod renderer;
 mod session;

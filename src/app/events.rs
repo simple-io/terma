@@ -4,12 +4,11 @@
 //! PTY 线程通过 channel 把 TerminalEvent 发送到 UI 线程，
 //! UI 线程据此更新 ScreenBuffer 并触发重渲染。
 
-use slint::language::KeyboardModifiers;
-use slint::SharedString;
 use crate::app::controller::{GeneralSettingsInfo, ProfileEditInfo};
 use crate::session::session_id::ProfileId;
 use crate::session::session_id::SessionId;
-
+use slint::SharedString;
+use slint::language::KeyboardModifiers;
 
 #[derive(Debug, Clone)]
 pub enum TerminalEvent {

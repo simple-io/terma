@@ -3,8 +3,8 @@
 //! SessionId 使用 u64 单调递增，保证即便关闭某个 Session 后，
 //! 已分配的 ID 也不会被复用，避免 Tab 切换时指向错误的 Session。
 
-use std::fmt;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// 终端会话 ID（稳定、不可复用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

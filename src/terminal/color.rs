@@ -87,9 +87,5 @@ fn ansi256_to_rgb(i: u8) -> (u8, u8, u8) {
 
 /// 6 立方体单通道值映射
 fn level(v: u8) -> u8 {
-    if v == 0 {
-        0
-    } else {
-        55 + v * 40
-    }
+    if v == 0 { 0 } else { 55 + v * 40 }
 }

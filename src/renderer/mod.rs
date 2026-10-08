@@ -4,8 +4,8 @@
 //! 配合脏标记机制，仅在 TerminalState 变更时触发 build_runs，
 //! 空闲状态下完全跳过重建，大幅降低 CPU 占用。
 
-pub mod render_model;
 pub mod buffer;
+pub mod render_model;
 
-pub use render_model::{build_runs, build_row_runs, build_viewport_runs, RunRender};
 pub use buffer::runs_to_cell_runs;
+pub use render_model::{RunRender, build_row_runs, build_runs, build_viewport_runs};

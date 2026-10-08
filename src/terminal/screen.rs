@@ -314,10 +314,14 @@ impl ScreenBuffer {
         // 5. 更新尺寸与光标，光标行从物理序列坐标换算回屏幕坐标
         self.rows = new_rows;
         self.cols = new_cols;
-        let remap = |c: Cursor| Cursor::new(
-            c.row.saturating_sub(grid_start).min(new_rows.saturating_sub(1)),
-            c.col.min(new_cols.saturating_sub(1)),
-        );
+        let remap = |c: Cursor| {
+            Cursor::new(
+                c.row
+                    .saturating_sub(grid_start)
+                    .min(new_rows.saturating_sub(1)),
+                c.col.min(new_cols.saturating_sub(1)),
+            )
+        };
         self.saved_cursor = new_saved.map(remap);
         self.mark_all_rows_dirty();
         new_active.map(remap).unwrap_or_else(|| {
@@ -549,7 +553,11 @@ fn cursor_content_index(line: &Row, col: usize) -> usize {
     for (i, cell) in cells.iter().enumerate() {
         if i == idx {
             // 光标在续列占位格 → 归到左侧首格
-            return if cell.continuation { ci.saturating_sub(1) } else { ci };
+            return if cell.continuation {
+                ci.saturating_sub(1)
+            } else {
+                ci
+            };
         }
         if cell.is_content() {
             // 可显示内容格

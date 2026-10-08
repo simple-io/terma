@@ -28,13 +28,12 @@ use crate::config::ConfigManager;
 use crate::config::fonts;
 use crate::renderer::buffer::RenderCache;
 use crate::renderer::{build_viewport_runs, runs_to_cell_runs};
-use crate::session::SessionManager;
 use crate::session::session_id::{ProfileId, SessionId};
+use crate::session::{ScrollAction, SessionManager};
 use crate::terminal::TerminalState;
 use slint::language::KeyboardModifiers;
 use slint::{ComponentHandle, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -81,20 +80,6 @@ thread_local! {
     static WEAK_APP: RefCell<Option<Weak<RefCell<App>>>> = const { RefCell::new(None) };
 }
 
-/// 单个会话（Tab）独立的滚动视图状态。
-///
-/// 滚动状态必须按 Tab 各自维护：滚动偏移量、滚轮累加器、冻结锚点等互不影响，
-/// 切换 Tab 时各自恢复、各自冻结，避免 A 标签页的滚动位置串扰到 B 标签页。
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ScrollState {
-    /// 滚动偏移量：从底部向上滚动的行数（0 = 跟随最新输出）
-    pub offset: usize,
-    /// 上次设置 offset 时 scrollback 的长度，用于滚动状态下冻结视图
-    pub anchor_len: usize,
-    /// 滚轮像素累加器：累积满一个字符行高（CHAR_H）才触发一次整行滚动
-    pub acc: f32,
-}
-
 /// 应用控制器：持有窗口、会话管理器、Profile 管理器与 UI Model。
 pub struct App {
     main_window: MainWindow,
@@ -114,8 +99,6 @@ pub struct App {
     last_size: Cell<(u16, u16)>,
     // 渲染缓存：按行缓存渲染项，脏行重建、未变更行复用
     render_cache: RenderCache,
-    // 每个会话（Tab）独立的滚动视图状态，以 SessionId 索引，互不影响
-    scroll_states: RefCell<HashMap<SessionId, ScrollState>>,
     // 字体下拉框完整候选列表缓存（内置 + 系统字体），供搜索过滤时复用，
     font_entries: RefCell<Vec<FontEntry>>,
     // 命令通道发送端
@@ -149,7 +132,6 @@ impl App {
             cells_model,
             last_size: Cell::new((0, 0)),
             render_cache: RenderCache::new(),
-            scroll_states: RefCell::new(HashMap::new()),
             font_entries: RefCell::new(Vec::new()),
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
@@ -319,9 +301,15 @@ impl App {
         let screen = guard.screen();
         let sb_len = screen.scrollback.len();
 
+        // 激活会话独立维护自己的滚动状态；渲染路径已持有 state 锁，
+        // 故把 sb_len 传入 settle_scroll，避免会话内部重入加锁导致死锁。
+        let Some(session) = self.sessions.active_session() else {
+            return;
+        };
+
         // 冻结内容，滚动状态下新历史行到达时，把偏移量随底部下移，保持用户正在查看的内容不动。
         // 偏移量与锚点按激活会话独立维护，切换 Tab 各自恢复、互不串扰。
-        let offset = self.settle_scroll(sb_len);
+        let offset = session.settle_scroll(sb_len);
 
         if offset == 0 {
             // 跟随模式：仅重建脏行，未变更行复用缓存
@@ -352,11 +340,11 @@ impl App {
         if sb_len > 0 {
             // 滚动条的位置 = offset / sb_len。0 = 底部（最新），1 = 顶部（最老历史）
             self.main_window
-                .set_scroll_ratio(offset as f32 / sb_len as f32);
-            // 滑块大小比例 = 可见行数 / 总行数（scrollback + 可见行），控制滚动条滑块的视觉长度——历史越长，滑块越短。max(1) 防止除零
+                .set_scroll_ratio(session.scroll_ratio(sb_len));
+            // 滑块大小比例 = 可见行数 / 总行数（scrollback + 可见行），历史越长滑块越短
             let rows = screen.rows.max(1);
             self.main_window
-                .set_viewport_ratio(rows as f32 / (sb_len + rows) as f32);
+                .set_viewport_ratio(session.viewport_ratio(sb_len, rows));
         }
     }
 
@@ -367,69 +355,24 @@ impl App {
         self.main_window.set_cursor_visible(false);
     }
 
-    // 冻结滚动视图并返回激活会话最终生效的滚动偏移量。
-    // 滚动状态下（offset > 0）scrollback 增长时，把偏移量随底部同步下移，
-    // 保持用户正在查看的历史内容在视口中不动；跟随模式（offset == 0）直接返回 0。
-    // 同时刷新锚点长度为当前 scrollback 长度，供下一次增长量计算。
-    fn settle_scroll(&self, sb_len: usize) -> usize {
-        let id = match self.sessions.active_id() {
-            Some(id) => id,
-            None => return 0,
-        };
-        let mut states = self.scroll_states.borrow_mut();
-        let st = states.entry(id).or_default();
-        let current = st.offset;
-        let offset = if current > 0 {
-            let grew = sb_len.saturating_sub(st.anchor_len);
-            (current + grew).min(sb_len)
-        } else {
-            0
-        };
-        st.offset = offset;
-        st.anchor_len = sb_len;
-        offset
-    }
-
-    // 设置新的滚动偏移量(scroll_offset)，更新偏移与锚点，并按需重绘
-    //  scroll_offset == 0，跟随模式，查看最新数据
-    //  scroll_offset >  0，滚动模式，查看历史数据
+    // 提交新的滚动偏移量到激活会话，并按会话返回的动作按需重绘。
+    //  offset == 0，跟随模式，查看最新数据；offset > 0，滚动模式，查看历史数据。
+    // 滚动状态（偏移/锚点/累加器）由 TerminalSession 各自维护，App 仅负责触发渲染。
     fn commit_scroll(&self, offset: usize, sb_len: usize) {
-        let id = match self.sessions.active_id() {
-            Some(id) => id,
+        let action = match self.sessions.active_session() {
+            Some(session) => session.commit_scroll(offset, sb_len),
             None => return,
         };
-        let offset = offset.min(sb_len);
-        // 更新激活会话的滚动状态；滚动位置未变则直接跳过，避免无谓重绘。
-        let (prev, changed) = {
-            let mut states = self.scroll_states.borrow_mut();
-            let st = states.entry(id).or_default();
-            let prev = st.offset;
-            if offset == prev {
-                (prev, false)
-            } else {
-                st.offset = offset;
-                st.anchor_len = sb_len;
-                (prev, true)
-            }
-        };
-        if !changed {
-            return;
-        }
-        if prev > 0 && offset == 0 {
-            // 从滚动模式回到了跟随模式，全量重建。
-            self.render_active_force();
-        } else {
-            // 滚动模式，滚动位置变了，仅重建视口
-            self.render_viewport();
-        }
-    }
 
-    // 读取当前激活会话的 scrollback 长度（无会话时为 0）。
-    fn scrollback_len(&self) -> usize {
-        self.sessions
-            .active_state()
-            .map(|s| s.lock().unwrap().screen().scrollback.len())
-            .unwrap_or(0)
+        // 依据会话返回的滚动动作选择重绘方式
+        match action {
+            // 滚动位置未变化，跳过重绘
+            ScrollAction::None => {}
+            // 从滚动模式回到了跟随模式，全量重建
+            ScrollAction::FollowMode => self.render_active_force(),
+            // 滚动模式，滚动位置变了，仅重建视口
+            ScrollAction::Viewport => self.render_viewport(),
+        }
     }
 
     // UI 回调绑定
@@ -557,38 +500,21 @@ impl App {
 
     // 根据 Profile 创建会话，并把新会话设置为激活状态，重新渲染标签和终端
     fn on_create_session_for_profile(&mut self, profile_id: &ProfileId) {
-        let profile = match self.config.get_profile(profile_id) {
-            Some(p) => p.clone(),
-            None => return,
+        let Some(profile) = self.config.get_profile(profile_id) else {
+            return;
         };
 
         let (rows, cols) = self.current_grid();
         let event_tx = self.event_tx.clone();
-        match self.sessions.create_session(&profile, rows, cols, event_tx) {
-            Ok(id) => {
-                self.sync_tabs();
-                self.render_cache.clear();
-                self.render_active_force();
-
-                // 为新建会话登记独立的滚动状态（每 Tab 互不影响）
-                self.scroll_states
-                    .borrow_mut()
-                    .insert(id, ScrollState::default());
-            }
-            Err(e) => eprintln!("[terma] create session failed: {e:#}"),
+        if self
+            .sessions
+            .create_session(&profile, rows, cols, event_tx)
+            .is_ok()
+        {
+            self.sync_tabs();
+            self.render_cache.clear();
+            self.render_active_force();
         }
-
-        // let (rows, cols) = self.current_grid();
-        // let event_tx = self.event_tx.clone();
-        // if self
-        //     .sessions
-        //     .create_session(&profile, rows, cols, event_tx)
-        //     .is_ok()
-        // {
-        //     self.sync_tabs();
-        //     self.render_cache.clear();
-        //     self.render_active_force();
-        // }
     }
 
     // 根据 id 关闭会话
@@ -600,7 +526,6 @@ impl App {
         let active_id = self.sessions.active_id();
         // 关闭会话
         self.sessions.close_session(id);
-        self.scroll_states.borrow_mut().remove(&id);
         // 同步标签
         self.sync_tabs();
         // 如果关闭的是激活终端，则重新渲染
@@ -646,51 +571,37 @@ impl App {
     }
 
     // 滚轮滚动触发执行，按行数滚动：正 = 向上（进入历史），负 = 向下（回到最新）。
-    // 滚动像素级累加，累积满一个字符行高（CHAR_H）触发一次整行滚动。
+    // 滚轮像素累加换算由激活会话独立维护：累积满一个字符行高（CHAR_H）才触发整行滚动，
+    // 未满一行的余量留在本会话累加器中，切换 Tab 后互不影响。
     fn on_scroll_offset_by(&self, dy: f32) {
-        let sb_len = self.scrollback_len();
-        let id = match self.sessions.active_id() {
-            Some(id) => id,
-            None => return,
+        // 先在本会话内完成像素→行数换算，得到需要提交的目标偏移量（不足一行为 None）
+        let target = match self.sessions.active_session() {
+            Some(session) => {
+                let sb_len = session.scrollback_len();
+                session
+                    .scroll_by(dy, CHAR_H as f32, sb_len)
+                    .map(|o| (o, sb_len))
+            }
+            None => None,
         };
-
-        // 滚轮像素累加器按会话独立维护：累积满一个字符行高才换算为整行滚动，
-        // 未满一行的余量留在本会话的累加器中，切换 Tab 后互不影响。
-        let target = {
-            let mut states = self.scroll_states.borrow_mut();
-            let st = states.entry(id).or_default();
-            let mut acc = st.acc + dy;
-            let mut lines: i64 = 0;
-            while acc >= CHAR_H as f32 {
-                // 向上滚动
-                acc -= CHAR_H as f32;
-                lines += 1;
-            }
-            while acc <= -(CHAR_H as f32) {
-                // 向下滚动
-                acc += CHAR_H as f32;
-                lines -= 1;
-            }
-            st.acc = acc;
-            if lines == 0 {
-                None
-            } else {
-                // 当前滚动位置加上要滚动的行数，得到新目标行位置，使用 clamp 确保 offset 在 [0, sb_len] 范围内
-                Some((st.offset as i64 + lines).clamp(0, sb_len as i64) as usize)
-            }
-        };
-
-        // 如果滚动超过一个行高度，就重绘窗口
-        if let Some(offset) = target {
+        // 滚动超过一个行高才提交并重绘窗口
+        if let Some((offset, sb_len)) = target {
             self.commit_scroll(offset, sb_len);
         }
     }
 
     // 滚动条跳转：ratio ∈ [0,1]（0 = 底部，1 = 顶部）。
     fn on_scroll_offset_to(&self, ratio: f32) {
-        let sb_len = self.scrollback_len();
-        let offset = (ratio.clamp(0.0, 1.0) * sb_len as f32).round() as usize;
-        self.commit_scroll(offset, sb_len);
+        let target = match self.sessions.active_session() {
+            Some(session) => {
+                let sb_len = session.scrollback_len();
+                Some((session.scroll_to_offset(ratio, sb_len), sb_len))
+            }
+            None => None,
+        };
+        if let Some((offset, sb_len)) = target {
+            self.commit_scroll(offset, sb_len);
+        }
     }
 
     // 键盘输入

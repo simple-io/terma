@@ -1,7 +1,7 @@
 use crate::app::controller::CellRun;
 use crate::renderer::{RunRender, build_row_runs};
-use std::cell::RefCell;
 use crate::terminal::row::Row;
+use std::cell::RefCell;
 
 /// 把 RunRender 列表转换为 Slint 的 CellRun 列表（供 TerminalView 渲染）。
 /// 供普通增量渲染与滚动视口渲染两条路径复用，避免重复的映射逻辑。
