@@ -46,7 +46,7 @@ impl App {
         // 刷新主窗口 Profile 下拉菜单（默认 Profile 可能变化）
         self.apply_profiles();
         // 强制全量重绘
-        self.force_full_render();
+        self.render_active_force();
     }
 
     // 保存 Profile 修改

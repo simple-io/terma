@@ -219,7 +219,6 @@ impl App {
 
     // 同步 Tab 列表 + 激活态标题，切/关/建 Tab 后激活会话可能变化，并强制渲染激活会话。
     fn sync_tabs(&self) {
-        // let sessions = self.sessions.borrow();
         let tabs: Vec<TabInfo> = self
             .sessions
             .sessions_in_order()
@@ -244,10 +243,8 @@ impl App {
                 self.main_window.set_active_profile_name("".into());
             }
         }
-        // drop(sessions);
         // 标签数变化后重新计算标签宽度
         self.update_tab_width();
-        self.force_full_render();
     }
 
     /// 标签宽度计算并注入（逻辑像素）：
@@ -278,53 +275,40 @@ impl App {
         }
     }
 
-    // 会话变化（建/切/关 Tab）后强制全量重建激活会话整屏，将激活会话状态标为全脏，再走统一 render 路径。
-    fn force_full_render(&self) {
+    // 强制渲染激活会话，先将激活会话状态标为全脏，再走统一渲染路径
+    fn render_active_force(&self) {
         if let Some(state) = self.sessions.active_state() {
             state.lock().unwrap().mark_all_dirty();
         }
         self.render();
     }
 
-    // 脏行渲染，利用 TerminalState 的 dirty 标记有脏行时才触发渲染
+    // 渲染激活会话，利用 TerminalState 的 dirty 标记有脏行时才触发渲染
     fn render(&self) {
-        let state = match self.sessions.active_state() {
-            Some(s) => s,
-            None => {
-                self.clear_view();
+        if let Some(state) = self.sessions.active_state() {
+            let mut state = state.lock().unwrap();
+            if !state.is_dirty() {
+                // 无脏行标记，跳过渲染
                 return;
             }
-        };
-
-        let mut guard = state.lock().unwrap();
-        if !guard.is_dirty() {
-            // 无变更（可能是残余唤醒），直接跳过
-            return;
+            // 渲染终端
+            self.render_locked(&state);
+            // 渲染后清除脏标记
+            state.clear_dirty();
+        } else {
+            self.clear_view();
         }
-        self.render_locked(&guard);
-        // 渲染完成后清除脏标记：否则 dirty 永远为 true，is_dirty 守卫形同虚设
-        guard.clear_dirty();
     }
 
-    // 滚动渲染入口，滚动偏移变化时强制重绘（此时终端状态可能不脏，不能走 is_dirty 守卫）。
+    // 渲染激活会话滚动窗口，滚动偏移变化时强制重绘（此时终端状态可能不脏，不能走 is_dirty 守卫）。
     fn render_viewport(&self) {
-        let state = match self.sessions.active_state() {
-            Some(s) => s,
-            None => {
-                self.clear_view();
-                return;
-            }
-        };
-        let mut guard = state.lock().unwrap();
-        self.render_locked(&guard);
-        guard.clear_dirty();
-    }
-
-    // 无激活会话时清空视图。
-    fn clear_view(&self) {
-        self.render_cache.clear();
-        self.cells_model.set_vec(Vec::new());
-        self.main_window.set_cursor_visible(false);
+        if let Some(state) = self.sessions.active_state() {
+            let mut state = state.lock().unwrap();
+            self.render_locked(&state);
+            state.clear_dirty();
+        } else {
+            self.clear_view();
+        }
     }
 
     // 实际执行渲染
@@ -374,6 +358,13 @@ impl App {
             self.main_window
                 .set_viewport_ratio(rows as f32 / (sb_len + rows) as f32);
         }
+    }
+
+    // 无激活会话时清空视图。
+    fn clear_view(&self) {
+        self.render_cache.clear();
+        self.cells_model.set_vec(Vec::new());
+        self.main_window.set_cursor_visible(false);
     }
 
     // 冻结滚动视图并返回激活会话最终生效的滚动偏移量。
@@ -426,7 +417,7 @@ impl App {
         }
         if prev > 0 && offset == 0 {
             // 从滚动模式回到了跟随模式，全量重建。
-            self.force_full_render();
+            self.render_active_force();
         } else {
             // 滚动模式，滚动位置变了，仅重建视口
             self.render_viewport();
@@ -561,7 +552,7 @@ impl App {
         self.on_create_session_for_profile(&default_id);
     }
 
-    // 根据 Profile 创建会话
+    // 根据 Profile 创建会话，并把新会话设置为激活状态，重新渲染标签和终端
     fn on_create_session_for_profile(&mut self, profile_id: &ProfileId) {
         let profile = match self.config.get_profile(profile_id) {
             Some(p) => p.clone(),
@@ -569,14 +560,13 @@ impl App {
         };
 
         let (rows, cols) = self.current_grid();
-        self.last_size.set((rows, cols));
-        let title = format!("{} {}", profile.name, self.sessions.len() + 1);
-
-        match self
-            .sessions
-            .create_session(&profile, title, rows, cols, self.event_tx.clone())
-        {
+        let event_tx = self.event_tx.clone();
+        match self.sessions.create_session(&profile, rows, cols, event_tx) {
             Ok(id) => {
+                self.sync_tabs();
+                self.render_cache.clear();
+                self.render_active_force();
+
                 // 为新建会话登记独立的滚动状态（每 Tab 互不影响）
                 self.scroll_states
                     .borrow_mut()
@@ -584,20 +574,32 @@ impl App {
             }
             Err(e) => eprintln!("[terma] create session failed: {e:#}"),
         }
-        self.render_cache.clear();
-        self.sync_tabs();
+
+        // let (rows, cols) = self.current_grid();
+        // let event_tx = self.event_tx.clone();
+        // if self
+        //     .sessions
+        //     .create_session(&profile, rows, cols, event_tx)
+        //     .is_ok()
+        // {
+        //     self.sync_tabs();
+        //     self.render_cache.clear();
+        //     self.render_active_force();
+        // }
     }
 
     // 根据 id 关闭会话
     fn on_close_session(&mut self, id: SessionId) {
         // 关闭会话
-        self.sessions.close_session(id);
+        let active_id = self.sessions.close_session(id);
         self.scroll_states.borrow_mut().remove(&id);
-
-        // 清理缓存
-        self.render_cache.clear();
         // 同步标签
         self.sync_tabs();
+        // 如果关闭的是激活终端，则重新渲染
+        if active_id == Some(id) {
+            self.render_cache.clear();
+            self.render_active_force();
+        }
         // 关闭的是最后一个会话，则退出整个应用
         if self.sessions.is_empty() {
             let _ = slint::quit_event_loop();
@@ -606,16 +608,19 @@ impl App {
 
     // 根据 id 切换会话
     fn on_select_tab(&mut self, id: SessionId) {
-        // 设置活动会话
-        self.sessions.set_active_session(id);
-        // 清空缓存
-        self.render_cache.clear();
-        // 刷新标签 UI
-        self.sync_tabs();
+        if self.sessions.active_id() != Some(id) {
+            // 设置活动会话
+            self.sessions.set_active_session(id);
+            // 刷新标签
+            self.sync_tabs();
+            // 清空缓存
+            self.render_cache.clear();
+            // 渲染终端
+            self.render_active_force();
+        }
     }
 
-    // 窗口尺寸变化回调处理：由 `changed width/height` 即时触发。
-    // 根据窗口尺寸重新计算 cols/rows，变化时同步所有会话的 PTY + ScreenBuffer。
+    // 窗口尺寸变化处理，重新计算窗口尺寸，同步所有会话的 PTY
     fn on_resized(&mut self) {
         let (rows, cols) = self.current_grid();
 
@@ -628,7 +633,7 @@ impl App {
             // 清空渲染缓存，避免复用旧尺寸的缓存数据。
             self.render_cache.clear();
             // 强制全量重绘终端
-            self.force_full_render();
+            self.render_active_force();
         }
     }
 
