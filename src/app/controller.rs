@@ -596,8 +596,9 @@ impl App {
         if !self.sessions.contains(id) {
             return;
         }
+        let active_id = self.sessions.active_id();
         // 关闭会话
-        let active_id = self.sessions.close_session(id);
+        self.sessions.close_session(id);
         self.scroll_states.borrow_mut().remove(&id);
         // 同步标签
         self.sync_tabs();
