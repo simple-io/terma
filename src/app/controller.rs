@@ -298,20 +298,14 @@ impl App {
     // 2，增量渲染，只渲染新增的内容
     // 3，全量渲染，全量渲染屏幕的所有内容
     fn render_locked(&self, guard: &std::sync::MutexGuard<'_, TerminalState>) {
-        let screen = guard.screen();
-        let sb_len = screen.scrollback.len();
-
-        // 激活会话独立维护自己的滚动状态；渲染路径已持有 state 锁，
-        // 故把 sb_len 传入 settle_scroll，避免会话内部重入加锁导致死锁。
+        // 激活会话独立维护自己的滚动状态，偏移量与锚点按会话独立保存
         let Some(session) = self.sessions.active_session() else {
             return;
         };
 
-        // 冻结内容，滚动状态下新历史行到达时，把偏移量随底部下移，保持用户正在查看的内容不动。
-        // 偏移量与锚点按激活会话独立维护，切换 Tab 各自恢复、互不串扰。
-        let offset = session.settle_scroll(sb_len);
-
-        if offset == 0 {
+        let scroll_offset = session.scroll_offset();
+        let screen = guard.screen();
+        if scroll_offset == 0 {
             // 跟随模式：仅重建脏行，未变更行复用缓存
             let dirty_rows = guard.take_dirty_rows();
             if dirty_rows.len() > 0 {
@@ -323,28 +317,33 @@ impl App {
             // 滚动模式：全量重建视口（scrollback 历史 + 当前屏拼接），丢弃脏行标记
             let _ = guard.take_dirty_rows();
             self.cells_model
-                .set_vec(runs_to_cell_runs(&build_viewport_runs(screen, offset)));
+                .set_vec(runs_to_cell_runs(&build_viewport_runs(screen, scroll_offset)));
         };
 
-        // 光标：滚动状态下隐藏（实时光标位于视口之外）
-        if offset == 0 {
+        // 光标设置
+        if scroll_offset == 0 {
+            // 跟随模式，显示光标
             self.main_window.set_cursor_row(guard.cursor.row as i32);
             self.main_window.set_cursor_col(guard.cursor.col as i32);
             self.main_window.set_cursor_visible(guard.cursor.visible);
         } else {
+            // 滚动模式，隐藏光标，滚动模式下光标位于视口之外
             self.main_window.set_cursor_visible(false);
         }
 
-        // 滚动条状态（无历史时隐藏滚动条）
-        self.main_window.set_has_scrollback(sb_len > 0);
+        // 渲染路径已持有 state 锁，sb_len / rows 直接从 guard 读取，
+        let sb_len = screen.scrollback.len();
+        let rows = guard.rows;
+        // 终端滚动条设置
         if sb_len > 0 {
+            // 有无历史数据才显示时滚动条
+            self.main_window.set_has_scrollback(true);
             // 滚动条的位置 = offset / sb_len。0 = 底部（最新），1 = 顶部（最老历史）
             self.main_window
-                .set_scroll_ratio(session.scroll_ratio(sb_len));
-            // 滑块大小比例 = 可见行数 / 总行数（scrollback + 可见行），历史越长滑块越短
-            let rows = screen.rows.max(1);
+                .set_scroll_ratio(session.scroll_position(sb_len));
+            // 滑块大小比例 = 可见行数 / 总行数（scrollback + 可见行数），历史越长滑块越短
             self.main_window
-                .set_viewport_ratio(session.viewport_ratio(sb_len, rows));
+                .set_viewport_ratio(session.scroll_ratio(sb_len, rows));
         }
     }
 
@@ -353,26 +352,6 @@ impl App {
         self.render_cache.clear();
         self.cells_model.set_vec(Vec::new());
         self.main_window.set_cursor_visible(false);
-    }
-
-    // 提交新的滚动偏移量到激活会话，并按会话返回的动作按需重绘。
-    //  offset == 0，跟随模式，查看最新数据；offset > 0，滚动模式，查看历史数据。
-    // 滚动状态（偏移/锚点/累加器）由 TerminalSession 各自维护，App 仅负责触发渲染。
-    fn commit_scroll(&self, offset: usize, sb_len: usize) {
-        let action = match self.sessions.active_session() {
-            Some(session) => session.commit_scroll(offset, sb_len),
-            None => return,
-        };
-
-        // 依据会话返回的滚动动作选择重绘方式
-        match action {
-            // 滚动位置未变化，跳过重绘
-            ScrollAction::None => {}
-            // 从滚动模式回到了跟随模式，全量重建
-            ScrollAction::FollowMode => self.render_active_force(),
-            // 滚动模式，滚动位置变了，仅重建视口
-            ScrollAction::Viewport => self.render_viewport(),
-        }
     }
 
     // UI 回调绑定
@@ -570,37 +549,33 @@ impl App {
         }
     }
 
-    // 滚轮滚动触发执行，按行数滚动：正 = 向上（进入历史），负 = 向下（回到最新）。
-    // 滚轮像素累加换算由激活会话独立维护：累积满一个字符行高（CHAR_H）才触发整行滚动，
-    // 未满一行的余量留在本会话累加器中，切换 Tab 后互不影响。
-    fn on_scroll_offset_by(&self, dy: f32) {
-        // 先在本会话内完成像素→行数换算，得到需要提交的目标偏移量（不足一行为 None）
-        let target = match self.sessions.active_session() {
-            Some(session) => {
-                let sb_len = session.scrollback_len();
-                session
-                    .scroll_by(dy, CHAR_H as f32, sb_len)
-                    .map(|o| (o, sb_len))
-            }
-            None => None,
+    // 滚轮滚动触发，按行数滚动：正 = 向上（进入历史），负 = 向下（回到最新）。
+    fn on_scroll_offset_by(&mut self, dy: f32) {
+        let Some(session) = self.sessions.active_session_mut() else {
+            return;
         };
-        // 滚动超过一个行高才提交并重绘窗口
-        if let Some((offset, sb_len)) = target {
-            self.commit_scroll(offset, sb_len);
+        // 设置滚动条偏移量
+        let action = session.scroll_offset_by(dy, CHAR_H as f32);
+        // 依据返回动作选择渲染方式
+        match action {
+            ScrollAction::None => {}
+            ScrollAction::FollowMode => self.render_active_force(),
+            ScrollAction::Viewport => self.render_viewport(),
         }
     }
 
-    // 滚动条跳转：ratio ∈ [0,1]（0 = 底部，1 = 顶部）。
-    fn on_scroll_offset_to(&self, ratio: f32) {
-        let target = match self.sessions.active_session() {
-            Some(session) => {
-                let sb_len = session.scrollback_len();
-                Some((session.scroll_to_offset(ratio, sb_len), sb_len))
-            }
-            None => None,
+    // 滚动条跳转触发：ratio ∈ [0,1]（0 = 底部，1 = 顶部）。
+    fn on_scroll_offset_to(&mut self, ratio: f32) {
+        let Some(session) = self.sessions.active_session_mut() else {
+            return;
         };
-        if let Some((offset, sb_len)) = target {
-            self.commit_scroll(offset, sb_len);
+        // 设置滚动条偏移量
+        let action = session.scroll_offset_to(ratio);
+        // 依据返回动作选择渲染方式
+        match action {
+            ScrollAction::None => {}
+            ScrollAction::FollowMode => self.render_active_force(),
+            ScrollAction::Viewport => self.render_viewport(),
         }
     }
 

@@ -43,21 +43,6 @@ use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::TerminalState;
 use anyhow::Result;
 
-/// 单个会话（Tab）独立的滚动视图状态。
-///
-/// 滚动状态必须按 Tab 各自维护：滚动偏移量、滚轮累加器、冻结锚点等互不影响，
-/// 切换 Tab 时各自恢复、各自冻结，避免 A 标签页的滚动位置串扰到 B 标签页。
-/// 仅 UI 线程访问，故用 `Cell` 通过 `&self` 提供内部可变性。
-#[derive(Debug, Clone, Copy, Default)]
-struct ScrollState {
-    /// 滚动偏移量：从底部向上滚动的行数（0 = 跟随最新输出）
-    offset: usize,
-    /// 上次设置 offset 时 scrollback 的长度，用于滚动状态下冻结视图
-    anchor_len: usize,
-    /// 滚轮像素累加器：累积满一个字符行高（CHAR_H）才触发一次整行滚动
-    acc: f32,
-}
-
 /// 提交滚动偏移后应触发的渲染动作，由 App 据此决定重绘方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollAction {
@@ -84,7 +69,12 @@ pub struct TerminalSession {
     // 状态状态机，解析回调写状态，UI 线程读状态渲染。
     state: Arc<Mutex<TerminalState>>,
     // 本会话独立的滚动视图状态（仅 UI 线程访问，Cell 提供 &self 内部可变性）
-    scroll: Cell<ScrollState>,
+    // 滚动条偏移量, 从底部向上滚动的行数（0 = 在最底部，1 = 最最顶部）
+    scroll_offset: usize,
+    // 滚动条锚点，上次设置 offset 时 scrollback 的长度，用于滚动状态下冻结视图
+    scroll_anchor: usize,
+    // 滚动条累加器，累积满一个字符行高（CHAR_H）才触发一次整行滚动
+    scroll_acc: f32,
 }
 
 impl Drop for TerminalSession {
@@ -149,7 +139,9 @@ impl TerminalSession {
             profile_name: profile.name.clone(),
             pty,
             state,
-            scroll: Cell::new(ScrollState::default()),
+            scroll_offset: 0,
+            scroll_anchor: 0,
+            scroll_acc: 0.0,
         })
     }
 
@@ -173,6 +165,11 @@ impl TerminalSession {
         &self.profile_name
     }
 
+    // 获取滚动偏移量
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
     // 向 PTY 写入用户输入（键盘）
     pub fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
         self.pty.write(data)
@@ -192,61 +189,15 @@ impl TerminalSession {
         &self.state
     }
 
-    // ─── 滚动视图状态（本会话独立维护，仅 UI 线程访问） ───
-
     // 读取本会话当前的 scrollback 历史长度。
     pub fn scrollback_len(&self) -> usize {
         self.state.lock().unwrap().screen().scrollback.len()
     }
 
-    // 冻结滚动视图并返回本会话最终生效的滚动偏移量。
-    // 滚动状态下（offset > 0）scrollback 增长时，把偏移量随底部同步下移，
-    // 保持用户正在查看的历史内容在视口中不动；跟随模式（offset == 0）直接返回 0。
-    // 同时刷新锚点长度为当前 scrollback 长度，供下一次增长量计算。
-    // 注：渲染路径已持有 state 锁，故 sb_len 由调用方传入，避免重入死锁。
-    pub fn settle_scroll(&self, sb_len: usize) -> usize {
-        let mut st = self.scroll.get();
-        let current = st.offset;
-        let offset = if current > 0 {
-            let grew = sb_len.saturating_sub(st.anchor_len);
-            (current + grew).min(sb_len)
-        } else {
-            0
-        };
-        st.offset = offset;
-        st.anchor_len = sb_len;
-        self.scroll.set(st);
-        offset
-    }
-
-    // 提交新的滚动偏移量，更新偏移与锚点，返回应触发的渲染动作。
-    //  offset == 0，跟随模式，查看最新数据；offset > 0，滚动模式，查看历史数据。
-    // 滚动位置未变则返回 ScrollAction::None，避免无谓重绘。
-    pub fn commit_scroll(&self, offset: usize, sb_len: usize) -> ScrollAction {
-        let offset = offset.min(sb_len);
-        let mut st = self.scroll.get();
-        let prev = st.offset;
-        if offset == prev {
-            return ScrollAction::None;
-        }
-        st.offset = offset;
-        st.anchor_len = sb_len;
-        self.scroll.set(st);
-        if prev > 0 && offset == 0 {
-            // 从滚动模式回到了跟随模式，需全量重建。
-            ScrollAction::FollowMode
-        } else {
-            // 滚动模式内偏移变化，仅需重建视口。
-            ScrollAction::Viewport
-        }
-    }
-
-    // 滚轮像素累加换算：正 = 向上（进入历史），负 = 向下（回到最新）。
+    // 鼠标滚动滑轮触发，根据滚轮像素换算行数，正 = 向上（进入历史），负 = 向下（回到最新）。
     // 累积满一个字符行高（char_h）才换算为整行滚动，未满一行的余量留在本会话累加器中。
-    // 返回需要提交的新目标偏移量；不足一行返回 None。
-    pub fn scroll_by(&self, dy: f32, char_h: f32, sb_len: usize) -> Option<usize> {
-        let mut st = self.scroll.get();
-        let mut acc = st.acc + dy;
+    pub fn scroll_offset_by(&mut self, dy: f32, char_h: f32) -> ScrollAction {
+        let mut acc = self.scroll_acc + dy;
         let mut lines: i64 = 0;
         while acc >= char_h {
             // 向上滚动
@@ -258,33 +209,69 @@ impl TerminalSession {
             acc += char_h;
             lines -= 1;
         }
-        st.acc = acc;
-        self.scroll.set(st);
+        self.scroll_acc = acc;
+
         if lines == 0 {
-            None
+            return ScrollAction::None;
+        }
+        let sb_len = self.scrollback_len();
+        let offset = (self.scroll_offset as i64 + lines).clamp(0, sb_len as i64) as usize;
+        self.scroll_update(offset)
+    }
+
+    // 鼠标点击滚动条跳转触发，根据滚动条比例跳转到目标偏移量
+    pub fn scroll_offset_to(&mut self, ratio: f32) -> ScrollAction {
+        let sb_len = self.scrollback_len();
+        let offset = (ratio.clamp(0.0, 1.0) * sb_len as f32).round() as usize;
+        self.scroll_update(offset)
+    }
+
+    // 更新滚动偏移量，返回应触发的渲染动作
+    // 滚动状态下(offset > 0)且同时有内容输出, 把偏移量同步调整，保证正在查看的历史内容在视口中不动
+    // 跟随模式(offset == 0)，不管是否有内容输出，强制渲染全量内容
+    fn scroll_update(&mut self, new_offset: usize) -> ScrollAction {
+        let old_offset = self.scroll_offset;
+        if old_offset == new_offset {
+            return ScrollAction::None;
+        }
+
+        // 计算新的偏移量
+        let sb_len = self.scrollback_len();
+        let new_offset = if new_offset > 0 {
+            // 滚动模式下且同时有内容输出，偏移量要累加变化的行数，确保正在查看的历史内容窗口冻结
+            let grew = sb_len.saturating_sub(self.scroll_anchor);
+            (new_offset + grew).min(sb_len)
         } else {
-            // 当前滚动位置加上要滚动的行数，clamp 确保 offset 落在 [0, sb_len]
-            Some((st.offset as i64 + lines).clamp(0, sb_len as i64) as usize)
+            0
+        };
+
+        // 设置偏移量
+        self.scroll_offset = new_offset;
+        self.scroll_anchor = sb_len;
+
+        if new_offset == 0 {
+            // 跟随模式
+            ScrollAction::FollowMode
+        } else {
+            // 滚动模式
+            ScrollAction::Viewport
         }
     }
 
-    // 滚动条比例跳转：ratio ∈ [0,1]（0 = 底部，1 = 顶部），换算为目标偏移量。
-    pub fn scroll_to_offset(&self, ratio: f32, sb_len: usize) -> usize {
-        (ratio.clamp(0.0, 1.0) * sb_len as f32).round() as usize
-    }
-
-    // 滚动条位置比例 = offset / sb_len。0 = 底部（最新），1 = 顶部（最老历史）。
-    pub fn scroll_ratio(&self, sb_len: usize) -> f32 {
+    // 滚动条位置，即 offset / sb_len（0 = 底部（最新），1 = 顶部（最老历史))。
+    // 注：sb_len 由调用方传入。渲染路径已持有 state 锁，若在此内部再 lock 会重入死锁。
+    pub fn scroll_position(&self, sb_len: usize) -> f32 {
         if sb_len == 0 {
             return 0.0;
         }
-        self.scroll.get().offset as f32 / sb_len as f32
+        self.scroll_offset as f32 / sb_len as f32
     }
 
     // 滑块大小比例 = 可见行数 / 总行数（scrollback + 可见行），历史越长滑块越短。max(1) 防止除零。
-    pub fn viewport_ratio(&self, sb_len: usize, rows: usize) -> f32 {
-        let rows = rows.max(1);
-        rows as f32 / (sb_len + rows) as f32
+    // 注：sb_len / rows 由调用方传入，避免在持锁的渲染路径中重入加锁导致死锁。
+    pub fn scroll_ratio(&self, sb_len: usize, rows: usize) -> f32 {
+        let rows = rows.max(1) as f32;
+        rows / (sb_len as f32 + rows)
     }
 
     // 检查子进程是否已退出（非阻塞）。

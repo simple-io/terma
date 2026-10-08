@@ -109,6 +109,13 @@ impl SessionManager {
             .and_then(|id| self.sessions.get(&id))
     }
 
+    // 返回激活会话可变引用。
+    pub fn active_session_mut(&mut self) -> Option<&mut TerminalSession> {
+        self.active_tracker
+            .get()
+            .and_then(|id| self.sessions.get_mut(&id))
+    }
+    
     // 返回激活会话 ID（只读，供渲染）。
     pub fn active_id(&self) -> Option<SessionId> {
         self.active_tracker.get()
