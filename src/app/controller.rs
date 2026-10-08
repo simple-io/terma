@@ -158,7 +158,7 @@ impl App {
         // 初始化
         app.borrow().app_init();
         // 启动异步事件线程
-        async_recv_event(&app);
+        Self::async_recv_event(&app);
         // 启动默认会话
         app.borrow_mut().on_create_default_session();
 
@@ -717,31 +717,31 @@ impl App {
         let rows = (term_h / CHAR_H).clamp(1, MAX_ROWS) as u16;
         (rows, cols)
     }
-}
 
-// 异步接收命令
-pub fn async_recv_event(app: &Rc<RefCell<App>>) {
-    let weak_app = Rc::downgrade(app);
-    WEAK_APP.with(|ptr| *ptr.borrow_mut() = Some(weak_app));
-    // 获取管道的接收端
-    let command_rx = app.borrow().event_rx.clone();
-    // 启动事件异步线程
-    let _ = std::thread::Builder::new()
-        .name("terma_event".into())
-        .spawn(move || {
-            let rx = command_rx.lock().unwrap();
-            loop {
-                if let Ok(event) = rx.recv() {
-                    let _ = slint::invoke_from_event_loop(|| {
-                        WEAK_APP.with(|ptr| {
-                            if let Some(app) = ptr.borrow().as_ref().unwrap().upgrade() {
-                                app.borrow_mut().on_event(event)
-                            }
+    // 异步接收命令
+    pub fn async_recv_event(app: &Rc<RefCell<App>>) {
+        let weak_app = Rc::downgrade(app);
+        WEAK_APP.with(|ptr| *ptr.borrow_mut() = Some(weak_app));
+        // 获取管道的接收端
+        let command_rx = app.borrow().event_rx.clone();
+        // 启动事件异步线程
+        let _ = std::thread::Builder::new()
+            .name("terma_event".into())
+            .spawn(move || {
+                let rx = command_rx.lock().unwrap();
+                loop {
+                    if let Ok(event) = rx.recv() {
+                        let _ = slint::invoke_from_event_loop(|| {
+                            WEAK_APP.with(|ptr| {
+                                if let Some(app) = ptr.borrow().as_ref().unwrap().upgrade() {
+                                    app.borrow_mut().on_event(event)
+                                }
+                            });
                         });
-                    });
+                    }
                 }
-            }
-        });
+            });
+    }
 }
 
 /// 把 Slint 传回的 id 字符串解析回 SessionId(u64)。
