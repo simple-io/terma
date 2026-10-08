@@ -33,21 +33,13 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use anyhow::{Context, Result};
-use portable_pty::ChildKiller;
 use crate::app::events::{TerminalEvent, WindowEvent};
 use crate::config::Profile;
 use crate::session::active::ActiveSession;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::TerminalState;
-
-/// 一个终端会话对外暴露的最小接口（与具体实现解耦，便于测试与替换）。
-pub trait TerminalSessionLike {
-    fn id(&self) -> SessionId;
-    fn profile_id(&self) -> &ProfileId;
-    fn title(&self) -> &str;
-    fn profile_name(&self) -> &str;
-}
+use anyhow::{Context, Result};
+use portable_pty::ChildKiller;
 
 /// 终端会话，一个会话包括：PTY + 一个子进程 + 一个 Output Thread（内含 vte 解析）。
 /// `TerminalState` 与解析线程通过 `Arc<Mutex<>>` 共享，UI 线程只读并渲染。
@@ -71,7 +63,14 @@ pub struct TerminalSession {
     output_thread: Option<JoinHandle<()>>,
     // 终端状态（含 ScreenBuffer）：与 Output Thread 共享。
     // UI 线程读脏行渲染 / resize，解析线程写状态，二者经 Mutex 串行化。
+    // 状态状态机
     state: Arc<Mutex<TerminalState>>,
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 impl TerminalSession {
@@ -120,20 +119,29 @@ impl TerminalSession {
             if std::env::var_os("LANG").filter(|v| !v.is_empty()).is_none() {
                 cmd.env("LANG", &locale);
             }
-            if std::env::var_os("LC_CTYPE").filter(|v| !v.is_empty()).is_none() {
+            if std::env::var_os("LC_CTYPE")
+                .filter(|v| !v.is_empty())
+                .is_none()
+            {
                 cmd.env("LC_CTYPE", &locale);
             }
         }
 
         // 启动 pty 的 shell
-        let child = pair.slave.spawn_command(cmd).context("spawn_command failed")?;
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .context("spawn_command failed")?;
 
         // 关键：丢弃 slave 端，否则 master 的 reader 永远收不到 EOF（子进程退出时）。
         drop(pair.slave);
 
         // 获取 pty 的 writer 和 reader
         let writer = pair.master.take_writer().context("take_writer failed")?;
-        let mut reader = pair.master.try_clone_reader().context("try_clone_reader failed")?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .context("try_clone_reader failed")?;
 
         // 终端状态对象，用于解析线程写 和 UI 线程读。
         let state = Arc::new(Mutex::new(TerminalState::new(rows as usize, cols as usize)));
@@ -188,6 +196,19 @@ impl TerminalSession {
         })
     }
 
+    pub fn id(&self) -> SessionId {
+        self.id
+    }
+    fn profile_id(&self) -> &ProfileId {
+        &self.profile_id
+    }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn profile_name(&self) -> &str {
+        &self.profile_name
+    }
+
     /// 向 PTY 写入用户输入（键盘）。
     pub fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
         self.writer.write_all(data)?;
@@ -230,27 +251,6 @@ impl TerminalSession {
         if let Some(handle) = self.output_thread.take() {
             let _ = handle.join();
         }
-    }
-}
-
-impl Drop for TerminalSession {
-    fn drop(&mut self) {
-        self.shutdown();
-    }
-}
-
-impl TerminalSessionLike for TerminalSession {
-    fn id(&self) -> SessionId {
-        self.id
-    }
-    fn profile_id(&self) -> &ProfileId {
-        &self.profile_id
-    }
-    fn title(&self) -> &str {
-        &self.title
-    }
-    fn profile_name(&self) -> &str {
-        &self.profile_name
     }
 }
 

@@ -17,4 +17,4 @@ pub mod session_id;
 
 pub use active::ActiveSession;
 pub use manager::SessionManager;
-pub use session::{TerminalSession, TerminalSessionLike};
+pub use session::TerminalSession;

@@ -29,7 +29,6 @@ use crate::config::fonts;
 use crate::renderer::buffer::RenderCache;
 use crate::renderer::{build_viewport_runs, runs_to_cell_runs};
 use crate::session::SessionManager;
-use crate::session::session::TerminalSessionLike;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::TerminalState;
 use slint::language::KeyboardModifiers;

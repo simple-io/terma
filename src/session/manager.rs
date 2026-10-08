@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use crate::app::events::WindowEvent;
 use crate::config::Profile;
 use crate::session::active::ActiveSession;
-use crate::session::session::{TerminalSession, TerminalSessionLike};
+use crate::session::session::TerminalSession;
 use crate::session::session_id::{IdGenerator, ProfileId, SessionId};
 use crate::terminal::TerminalState;
 use anyhow::Result;
