@@ -68,11 +68,10 @@ pub struct TerminalSession {
     pty: Pty,
     // 状态状态机，解析回调写状态，UI 线程读状态渲染。
     state: Arc<Mutex<TerminalState>>,
-    // 本会话独立的滚动视图状态（仅 UI 线程访问，Cell 提供 &self 内部可变性）
-    // 滚动条偏移量, 从底部向上滚动的行数（0 = 在最底部，1 = 最最顶部）
-    scroll_offset: usize,
-    // 滚动条锚点，上次设置 offset 时 scrollback 的长度，用于滚动状态下冻结视图
-    scroll_anchor: usize,
+    // 滚动条偏移量, 从底部向上滚动的行数（0 = 在最底部，越大越靠近最老历史）
+    scroll_offset: Cell<usize>,
+    // 滚动条锚点，上次同步 offset 时的逻辑历史长度（dropped + scrollback.len()）
+    scroll_anchor: Cell<usize>,
     // 滚动条累加器，累积满一个字符行高（CHAR_H）才触发一次整行滚动
     scroll_acc: f32,
 }
@@ -139,8 +138,8 @@ impl TerminalSession {
             profile_name: profile.name.clone(),
             pty,
             state,
-            scroll_offset: 0,
-            scroll_anchor: 0,
+            scroll_offset: Cell::new(0),
+            scroll_anchor: Cell::new(0),
             scroll_acc: 0.0,
         })
     }
@@ -163,11 +162,6 @@ impl TerminalSession {
     // 获取会话启动项名称
     pub fn profile_name(&self) -> &str {
         &self.profile_name
-    }
-
-    // 获取滚动偏移量
-    pub fn scroll_offset(&self) -> usize {
-        self.scroll_offset
     }
 
     // 向 PTY 写入用户输入（键盘）
@@ -215,7 +209,7 @@ impl TerminalSession {
             return ScrollAction::None;
         }
         let sb_len = self.scrollback_len();
-        let offset = (self.scroll_offset as i64 + lines).clamp(0, sb_len as i64) as usize;
+        let offset = (self.scroll_offset.get() as i64 + lines).clamp(0, sb_len as i64) as usize;
         self.scroll_update(offset)
     }
 
@@ -226,36 +220,54 @@ impl TerminalSession {
         self.scroll_update(offset)
     }
 
-    // 更新滚动偏移量，返回应触发的渲染动作
-    // 滚动状态下(offset > 0)且同时有内容输出, 把偏移量同步调整，保证正在查看的历史内容在视口中不动
-    // 跟随模式(offset == 0)，不管是否有内容输出，强制渲染全量内容
-    fn scroll_update(&mut self, new_offset: usize) -> ScrollAction {
-        let old_offset = self.scroll_offset;
-        if old_offset == new_offset {
-            return ScrollAction::None;
-        }
-
-        // 计算新的偏移量
+    // 更新滚动偏移量，target 为调用方按当前 offset 加减行数算出的目标偏移，范围 0 ～ sb_len
+    fn scroll_update(&mut self, target: usize) -> ScrollAction {
+        let old_offset = self.scroll_offset.get();
         let sb_len = self.scrollback_len();
-        let new_offset = if new_offset > 0 {
-            // 滚动模式下且同时有内容输出，偏移量要累加变化的行数，确保正在查看的历史内容窗口冻结
-            let grew = sb_len.saturating_sub(self.scroll_anchor);
-            (new_offset + grew).min(sb_len)
+
+        // 滚动模式时下补偿期间新到达的历史行
+        let grew = if old_offset > 0 {
+            sb_len.saturating_sub(self.scroll_anchor.get())
+        } else {
+            0
+        };
+        let new_offset = if target > 0 {
+            // 滚动模式：累加补偿后钳制到真实历史行数
+            (target + grew).min(sb_len)
         } else {
             0
         };
 
-        // 设置偏移量
-        self.scroll_offset = new_offset;
-        self.scroll_anchor = sb_len;
+        // 设置偏移量并刷新锚点为当前逻辑历史长度
+        self.scroll_offset.set(new_offset);
+        self.scroll_anchor.set(sb_len);
 
+        if old_offset == new_offset {
+            // 滚动位置未变，无需重绘
+            return ScrollAction::None;
+        }
         if new_offset == 0 {
-            // 跟随模式
+            // 从滚动模式回到跟随模式，全量重建
             ScrollAction::FollowMode
         } else {
-            // 滚动模式
+            // 滚动模式内偏移变化，仅重建视口
             ScrollAction::Viewport
         }
+    }
+
+    // 期间 PTY 可能新输出，所以渲染时重新计算滚动条偏移量，补偿 grew 增量，确保在滚动模式下窗口不下移
+    pub fn scroll_settle(&self, sb_len: usize) -> usize {
+        let current = self.scroll_offset.get();
+        let offset = if current > 0 {
+            let grew = sb_len.saturating_sub(self.scroll_anchor.get());
+            // offset 上限为真实 scrollback 行数：无法滚进已被丢弃的历史行
+            (current + grew).min(sb_len)
+        } else {
+            0
+        };
+        self.scroll_offset.set(offset);
+        self.scroll_anchor.set(sb_len);
+        offset
     }
 
     // 滚动条位置，即 offset / sb_len（0 = 底部（最新），1 = 顶部（最老历史))。
@@ -264,7 +276,7 @@ impl TerminalSession {
         if sb_len == 0 {
             return 0.0;
         }
-        self.scroll_offset as f32 / sb_len as f32
+        self.scroll_offset.get() as f32 / sb_len as f32
     }
 
     // 滑块大小比例 = 可见行数 / 总行数（scrollback + 可见行），历史越长滑块越短。max(1) 防止除零。

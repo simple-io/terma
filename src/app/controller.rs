@@ -36,7 +36,7 @@ use slint::{ComponentHandle, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 mod ui_generated {
     slint::include_modules!();
@@ -97,7 +97,7 @@ pub struct App {
     settings_window: Option<SettingsWindow>,
     // 上次同步给 PTY 的 (rows, cols)，用于检测窗口尺寸变化
     last_size: Cell<(u16, u16)>,
-    // 渲染缓存：按行缓存渲染项，脏行重建、未变更行复用
+    // 渲染缓存：视口物理窗口缓存，滚动/新输出时平移复用重叠行，仅重建脏行与新露出行
     render_cache: RenderCache,
     // 字体下拉框完整候选列表缓存（内置 + 系统字体），供搜索过滤时复用，
     font_entries: RefCell<Vec<FontEntry>>,
@@ -297,14 +297,15 @@ impl App {
     // 1，scroll_offset 决定走「跟随模式（增量缓存）」还是「滚动模式（视口拼接）」。
     // 2，增量渲染，只渲染新增的内容
     // 3，全量渲染，全量渲染屏幕的所有内容
-    fn render_locked(&self, guard: &std::sync::MutexGuard<'_, TerminalState>) {
+    fn render_locked(&self, guard: &MutexGuard<TerminalState>) {
         // 激活会话独立维护自己的滚动状态，偏移量与锚点按会话独立保存
         let Some(session) = self.sessions.active_session() else {
             return;
         };
 
-        let scroll_offset = session.scroll_offset();
         let screen = guard.screen();
+        let sb_len = screen.scrollback.len();
+        let scroll_offset = session.scroll_settle(sb_len);
         if scroll_offset == 0 {
             // 跟随模式：仅重建脏行，未变更行复用缓存
             let dirty_rows = guard.take_dirty_rows();
@@ -332,7 +333,6 @@ impl App {
         }
 
         // 渲染路径已持有 state 锁，sb_len / rows 直接从 guard 读取，
-        let sb_len = screen.scrollback.len();
         let rows = guard.rows;
         // 终端滚动条设置
         if sb_len > 0 {
