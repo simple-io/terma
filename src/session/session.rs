@@ -70,7 +70,7 @@ pub struct TerminalSession {
     state: Arc<Mutex<TerminalState>>,
     // 滚动条偏移量, 从底部向上滚动的行数（0 = 在最底部，越大越靠近最老历史）
     scroll_offset: Cell<usize>,
-    // 滚动条锚点，上次同步 offset 时的逻辑历史长度（dropped + scrollback.len()）
+    // 滚动条锚点，上次同步 offset 时的历史长度bscrollback.len()
     scroll_anchor: Cell<usize>,
     // 滚动条累加器，累积满一个字符行高（CHAR_H）才触发一次整行滚动
     scroll_acc: f32,
@@ -188,6 +188,15 @@ impl TerminalSession {
         self.state.lock().unwrap().screen().scrollback.len()
     }
 
+    // 一次加锁读取 scrollback 的物理长度与逻辑累计长度（避免在持锁路径中重入加锁死锁）。
+    //   - 物理长度：当前实际保留的历史行数，用于钳制 offset（无法滚进已被丢弃的行）；
+    //   - 逻辑累计长度：含已丢弃行的总历史行数，用于计算锚点补偿增量 grew。
+    fn scrollback_metrics(&self) -> (usize, usize) {
+        let guard = self.state.lock().unwrap();
+        let screen = guard.screen();
+        (screen.scrollback.len(), screen.scrollback_total)
+    }
+
     // 鼠标滚动滑轮触发，根据滚轮像素换算行数，正 = 向上（进入历史），负 = 向下（回到最新）。
     // 累积满一个字符行高（char_h）才换算为整行滚动，未满一行的余量留在本会话累加器中。
     pub fn scroll_offset_by(&mut self, dy: f32, char_h: f32) -> ScrollAction {
@@ -223,24 +232,25 @@ impl TerminalSession {
     // 更新滚动偏移量，target 为调用方按当前 offset 加减行数算出的目标偏移，范围 0 ～ sb_len
     fn scroll_update(&mut self, target: usize) -> ScrollAction {
         let old_offset = self.scroll_offset.get();
-        let sb_len = self.scrollback_len();
+        let (sb_len, sb_total) = self.scrollback_metrics();
 
-        // 滚动模式时下补偿期间新到达的历史行
+        // 滚动模式下补偿期间新到达的历史行：按逻辑累计长度计算，
+        // 兼容 scrollback 满后物理长度不再增长、旧行被丢弃的情形。
         let grew = if old_offset > 0 {
-            sb_len.saturating_sub(self.scroll_anchor.get())
+            sb_total.saturating_sub(self.scroll_anchor.get())
         } else {
             0
         };
         let new_offset = if target > 0 {
-            // 滚动模式：累加补偿后钳制到真实历史行数
+            // 滚动模式：累加补偿后钳制到真实（物理）历史行数
             (target + grew).min(sb_len)
         } else {
             0
         };
 
-        // 设置偏移量并刷新锚点为当前逻辑历史长度
+        // 设置偏移量并刷新锚点为当前逻辑累计历史长度
         self.scroll_offset.set(new_offset);
-        self.scroll_anchor.set(sb_len);
+        self.scroll_anchor.set(sb_total);
 
         if old_offset == new_offset {
             // 滚动位置未变，无需重绘
@@ -255,18 +265,21 @@ impl TerminalSession {
         }
     }
 
-    // 期间 PTY 可能新输出，所以渲染时重新计算滚动条偏移量，补偿 grew 增量，确保在滚动模式下窗口不下移
-    pub fn scroll_settle(&self, sb_len: usize) -> usize {
+    // 期间 PTY 可能新输出，所以渲染时重新计算滚动条偏移量，补偿 grew 增量，确保在滚动模式下窗口不下移。
+    //   - sb_len：物理历史行数，作为 offset 上限（无法滚进已被丢弃的旧行）；
+    //   - sb_total：逻辑累计历史行数，作为锚点补偿基准。历史满后 sb_len 不再增长，
+    //     但每来一行新历史，锚定内容「距底部行数」就 +1，故按 sb_total 计算 grew 才能冻结视口。
+    pub fn scroll_settle(&self, sb_len: usize, sb_total: usize) -> usize {
         let current = self.scroll_offset.get();
         let offset = if current > 0 {
-            let grew = sb_len.saturating_sub(self.scroll_anchor.get());
+            let grew = sb_total.saturating_sub(self.scroll_anchor.get());
             // offset 上限为真实 scrollback 行数：无法滚进已被丢弃的历史行
             (current + grew).min(sb_len)
         } else {
             0
         };
         self.scroll_offset.set(offset);
-        self.scroll_anchor.set(sb_len);
+        self.scroll_anchor.set(sb_total);
         offset
     }
 

@@ -39,6 +39,10 @@ pub struct ScreenBuffer {
     pub scrollback: Vec<Row>,
     /// scrollback 最大行数
     pub scrollback_limit: usize,
+    /// scrollback 逻辑累计行数：所有曾滚入历史的行总数（含因超过上限被丢弃的旧行）。
+    /// 历史满后物理长度 `scrollback.len()` 不再增长，但逻辑长度持续递增，
+    /// 滚动锚点补偿据此计算「期间新增历史行数」，保证滚动模式下视口冻结不跳动。
+    pub scrollback_total: usize,
     /// DECSC（ESC 7）保存的光标位置，DECRC（ESC 8）恢复到 prompt 起点再整行重绘
     pub saved_cursor: Option<Cursor>,
     /// 脏行索引：记录自上次 take 后被修改的行号（RefCell 支持通过 &self 取出行）
@@ -53,6 +57,7 @@ impl Clone for ScreenBuffer {
             grid: self.grid.clone(),
             scrollback: self.scrollback.clone(),
             scrollback_limit: self.scrollback_limit,
+            scrollback_total: self.scrollback_total,
             saved_cursor: self.saved_cursor,
             dirty_rows: RefCell::new(self.dirty_rows.borrow().clone()),
         }
@@ -67,6 +72,7 @@ impl ScreenBuffer {
             grid: (0..rows).map(|_| Row::new_row(cols)).collect(),
             scrollback: Vec::new(),
             scrollback_limit: rows * 5,
+            scrollback_total: 0,
             saved_cursor: None,
             dirty_rows: RefCell::new(Vec::new()),
         }
@@ -80,6 +86,7 @@ impl ScreenBuffer {
             grid: (0..rows).map(|_| Row::new_row(cols)).collect(),
             scrollback: Vec::new(),
             scrollback_limit: 0,
+            scrollback_total: 0,
             saved_cursor: None,
             dirty_rows: RefCell::new(Vec::new()),
         }
@@ -473,6 +480,9 @@ impl ScreenBuffer {
     fn push_scrollback(&mut self, row: Row) {
         if self.scrollback_limit > 0 {
             self.scrollback.push(row);
+            // 逻辑累计行数递增：无论随后是否因超限丢弃旧行，都算作一行新历史，
+            // 供滚动锚点补偿计算历史满后仍持续增长的「距底部行数」。
+            self.scrollback_total += 1;
             if self.scrollback.len() > self.scrollback_limit {
                 let excess = self.scrollback.len() - self.scrollback_limit;
                 self.scrollback.drain(0..excess);

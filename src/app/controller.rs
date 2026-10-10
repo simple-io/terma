@@ -305,7 +305,9 @@ impl App {
 
         let screen = guard.screen();
         let sb_len = screen.scrollback.len();
-        let scroll_offset = session.scroll_settle(sb_len);
+        // 逻辑累计历史长度：历史满后物理长度不再增长，需据此补偿滚动锚点，冻结滚动视口
+        let sb_total = screen.scrollback_total;
+        let scroll_offset = session.scroll_settle(sb_len, sb_total);
         if scroll_offset == 0 {
             // 跟随模式：仅重建脏行，未变更行复用缓存
             let dirty_rows = guard.take_dirty_rows();
