@@ -35,9 +35,11 @@ use std::cell::Cell;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
+use crate::app::controller::CellRun;
 use crate::app::events::{TerminalEvent, WindowEvent};
 use crate::config::Profile;
 use crate::pty::Pty;
+use crate::renderer::RenderCells;
 use crate::session::active::ActiveSession;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::TerminalState;
@@ -54,6 +56,35 @@ pub enum ScrollAction {
     Viewport,
 }
 
+/// 一帧渲染的光标信息：跟随模式显示真实光标，滚动模式隐藏（光标在视口外）。
+pub struct CursorRender {
+    /// 光标行（网格坐标）
+    pub row: i32,
+    /// 光标列（网格坐标）
+    pub col: i32,
+    /// 是否可见
+    pub visible: bool,
+}
+
+/// 一帧渲染的滚动条信息（无 scrollback 时为 None，App 不更新滚动条）。
+pub struct ScrollRender {
+    /// 滚动条位置比例：0 = 底部（最新），1 = 顶部（最老历史）
+    pub position: f32,
+    /// 滑块大小比例：可见行数 / 总行数（scrollback + 可见行）
+    pub viewport: f32,
+}
+
+/// 会话渲染一帧的完整输出，由 App 写入 Slint model 与窗口属性。
+/// 计算全部在会话侧完成，App 不再触碰 TerminalState，从根本上规避重入加锁死锁。
+pub struct RenderOutput {
+    /// 单元格渲染项列表
+    pub cells: Vec<CellRun>,
+    /// 光标
+    pub cursor: CursorRender,
+    /// 滚动条（None = 无历史）
+    pub scroll: Option<ScrollRender>,
+}
+
 /// 终端会话
 pub struct TerminalSession {
     // 会话 id
@@ -66,14 +97,16 @@ pub struct TerminalSession {
     profile_name: String,
     // PTY 对象
     pty: Pty,
-    // 状态状态机，解析回调写状态，UI 线程读状态渲染。
+    // 状态状态机，Pty 线程和 UI 线程共同持有，PTY 解析回调写状态，UI 线程读状态渲染。
     state: Arc<Mutex<TerminalState>>,
     // 滚动条偏移量, 从底部向上滚动的行数（0 = 在最底部，越大越靠近最老历史）
     scroll_offset: Cell<usize>,
-    // 滚动条锚点，上次同步 offset 时的历史长度bscrollback.len()
+    // 滚动条锚点，上次同步 offset 时的历史长度
     scroll_anchor: Cell<usize>,
-    // 滚动条累加器，累积满一个字符行高（CHAR_H）才触发一次整行滚动
+    // 滚动条累加器，累积满一个字符行高触发一次整行滚动
     scroll_acc: f32,
+    // 会话独立渲染单元：按行缓存 + 独立计算
+    render_cells: RenderCells,
 }
 
 impl Drop for TerminalSession {
@@ -141,6 +174,7 @@ impl TerminalSession {
             scroll_offset: Cell::new(0),
             scroll_anchor: Cell::new(0),
             scroll_acc: 0.0,
+            render_cells: RenderCells::new(),
         })
     }
 
@@ -170,17 +204,16 @@ impl TerminalSession {
     }
 
     // 调整终端尺寸，先同步 PTY 尺寸，再重排 ScreenBuffer。
+    // 尺寸变化后本会话按行缓存失效：清空缓存并全量标脏，确保下次渲染重建所有行
+    // （仅增高时 resize_row 只标脏新增行，若不清缓存会丢失已有行内容）。
     pub fn resize(&mut self, rows: u16, cols: u16) {
         self.pty.resize(rows, cols);
-        self.state
-            .lock()
-            .unwrap()
-            .resize(rows as usize, cols as usize);
-    }
-
-    // 终端状态的共享句柄（供渲染层只读 + 解析回调写）。
-    pub fn state(&self) -> &Arc<Mutex<TerminalState>> {
-        &self.state
+        {
+            let mut guard = self.state.lock().unwrap();
+            guard.resize(rows as usize, cols as usize);
+            guard.mark_all_dirty();
+        }
+        self.render_cells.clear();
     }
 
     // 读取本会话当前的 scrollback 历史长度。
@@ -297,6 +330,74 @@ impl TerminalSession {
     pub fn scroll_ratio(&self, sb_len: usize, rows: usize) -> f32 {
         let rows = rows.max(1) as f32;
         rows / (sb_len as f32 + rows)
+    }
+
+    /// 计算本会话当前一帧的完整渲染结果（cells + 光标 + 滚动条）。
+    ///
+    /// 内部一次性加锁 `state`，完成滚动冻结、脏行增量 / 视口拼接、光标与滚动条计算，
+    /// 返回后由 App 直接写入 Slint。**渲染计算全部下沉至此，App 不再触碰 TerminalState**，
+    /// 从根本上规避「渲染路径重入 state 锁」的死锁。计算完毕清除脏标记。
+    ///
+    /// - `force == false`：仅当 state 有脏标记时才计算，否则返回 `None`（PTY 输出场景）；
+    /// - `force == true`：忽略脏标记守卫强制渲染一帧（Tab 切换 / 滚动 / 新建关闭等交互）。
+    pub fn render_frame(&self, force: bool) -> Option<RenderOutput> {
+        let mut guard = self.state.lock().unwrap();
+        if !force && !guard.is_dirty() {
+            // 无脏标记，跳过渲染
+            return None;
+        }
+
+        let (cells, cursor, scroll) = {
+            let screen = guard.screen();
+            let sb_len = screen.scrollback.len();
+            let sb_total = screen.scrollback_total;
+            // 冻结滚动视口，得到本帧滚动偏移（补偿渲染间隙新到达的历史行）
+            let offset = self.scroll_settle(sb_len, sb_total);
+
+            let cells = if offset == 0 {
+                // 跟随模式：仅重建脏行，未变更行复用本会话缓存
+                let dirty = guard.take_dirty_rows();
+                self.render_cells.render_follow(screen, dirty)
+            } else {
+                // 滚动模式：全量拼接视口显示历史。不清空 dirty_rows，让其累积，
+                // 回到跟随模式时增量重建期间变更的行，缓存始终跟随 grid 最新内容。
+                self.render_cells.render_viewport(screen, offset)
+            };
+
+            // 光标：跟随模式显示真实光标，滚动模式光标在视口外，隐藏
+            let cursor = if offset == 0 {
+                CursorRender {
+                    row: guard.cursor.row as i32,
+                    col: guard.cursor.col as i32,
+                    visible: guard.cursor.visible,
+                }
+            } else {
+                CursorRender {
+                    row: 0,
+                    col: 0,
+                    visible: false,
+                }
+            };
+
+            // 滚动条：有历史才计算（sb_len / rows 直接从 guard 读，避免重入加锁）
+            let scroll = if sb_len > 0 {
+                let rows = guard.rows;
+                Some(ScrollRender {
+                    position: self.scroll_position(sb_len),
+                    viewport: self.scroll_ratio(sb_len, rows),
+                })
+            } else {
+                None
+            };
+            (cells, cursor, scroll)
+        };
+
+        guard.clear_dirty();
+        Some(RenderOutput {
+            cells,
+            cursor,
+            scroll,
+        })
     }
 
     // 检查子进程是否已退出（非阻塞）。

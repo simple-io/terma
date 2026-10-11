@@ -17,4 +17,4 @@ pub mod session_id;
 
 pub use active::ActiveSession;
 pub use manager::SessionManager;
-pub use session::{ScrollAction, TerminalSession};
+pub use session::{CursorRender, RenderOutput, ScrollAction, ScrollRender, TerminalSession};

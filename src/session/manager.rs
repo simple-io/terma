@@ -19,14 +19,13 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::SyncSender;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::app::events::WindowEvent;
 use crate::config::Profile;
 use crate::session::active::ActiveSession;
 use crate::session::session::TerminalSession;
 use crate::session::session_id::{IdGenerator, ProfileId, SessionId};
-use crate::terminal::TerminalState;
 use anyhow::Result;
 
 pub struct SessionManager {
@@ -154,14 +153,6 @@ impl SessionManager {
             }
         }
         Ok(())
-    }
-
-    // 激活会话的终端状态共享句柄（只读，供渲染）。
-    pub fn active_state(&self) -> Option<Arc<Mutex<TerminalState>>> {
-        self.active_tracker
-            .get()
-            .and_then(|id| self.sessions.get(&id))
-            .map(|s| s.state().clone())
     }
 
     // 调整所有会话的 PTY 尺寸 + ScreenBuffer。

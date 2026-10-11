@@ -26,17 +26,14 @@
 use crate::app::events::{TerminalEvent, WindowEvent};
 use crate::config::ConfigManager;
 use crate::config::fonts;
-use crate::renderer::buffer::RenderCache;
-use crate::renderer::{build_viewport_runs, runs_to_cell_runs};
 use crate::session::session_id::{ProfileId, SessionId};
-use crate::session::{ScrollAction, SessionManager};
-use crate::terminal::TerminalState;
+use crate::session::{RenderOutput, ScrollAction, SessionManager};
 use slint::language::KeyboardModifiers;
 use slint::{ComponentHandle, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 mod ui_generated {
     slint::include_modules!();
@@ -97,8 +94,6 @@ pub struct App {
     settings_window: Option<SettingsWindow>,
     // 上次同步给 PTY 的 (rows, cols)，用于检测窗口尺寸变化
     last_size: Cell<(u16, u16)>,
-    // 渲染缓存：视口物理窗口缓存，滚动/新输出时平移复用重叠行，仅重建脏行与新露出行
-    render_cache: RenderCache,
     // 字体下拉框完整候选列表缓存（内置 + 系统字体），供搜索过滤时复用，
     font_entries: RefCell<Vec<FontEntry>>,
     // 命令通道发送端
@@ -131,7 +126,6 @@ impl App {
             profiles_model,
             cells_model,
             last_size: Cell::new((0, 0)),
-            render_cache: RenderCache::new(),
             font_entries: RefCell::new(Vec::new()),
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
@@ -257,101 +251,57 @@ impl App {
         }
     }
 
-    // 强制渲染激活会话，先将激活会话状态标为全脏，再走统一渲染路径
+    // 强制渲染激活会话一帧（Tab 切换 / 新建 / 关闭会话 / 回到跟随模式等交互）：
+    // 忽略脏标记守卫立即刷新，复用目标会话的独立缓存做增量重建，无需清空任何全局缓存。
     fn render_active_force(&self) {
-        if let Some(state) = self.sessions.active_state() {
-            state.lock().unwrap().mark_all_dirty();
-        }
-        self.render();
+        self.render_active(true);
     }
 
-    // 渲染激活会话，利用 TerminalState 的 dirty 标记有脏行时才触发渲染
+    // PTY 输出触发：依赖 state 脏标记守卫，无变更则跳过渲染。
     fn render(&self) {
-        if let Some(state) = self.sessions.active_state() {
-            let mut state = state.lock().unwrap();
-            if !state.is_dirty() {
-                // 无脏行标记，跳过渲染
-                return;
-            }
-            // 渲染终端
-            self.render_locked(&state);
-            // 渲染后清除脏标记
-            state.clear_dirty();
-        } else {
-            self.clear_view();
-        }
+        self.render_active(false);
     }
 
-    // 渲染激活会话滚动窗口，滚动偏移变化时强制重绘（此时终端状态可能不脏，不能走 is_dirty 守卫）。
+    // 滚动视口触发：滚动偏移变化时强制重绘（此时终端状态可能不脏，不能走 is_dirty 守卫）。
     fn render_viewport(&self) {
-        if let Some(state) = self.sessions.active_state() {
-            let mut state = state.lock().unwrap();
-            self.render_locked(&state);
-            state.clear_dirty();
-        } else {
-            self.clear_view();
-        }
+        self.render_active(true);
     }
 
-    // 实际执行渲染
-    // 1，scroll_offset 决定走「跟随模式（增量缓存）」还是「滚动模式（视口拼接）」。
-    // 2，增量渲染，只渲染新增的内容
-    // 3，全量渲染，全量渲染屏幕的所有内容
-    fn render_locked(&self, guard: &MutexGuard<TerminalState>) {
-        // 激活会话独立维护自己的滚动状态，偏移量与锚点按会话独立保存
+    // 渲染激活会话的统一入口：把「计算」下沉到会话的 RenderCells，App 只负责取回一帧
+    // 结果并写入 Slint。force=true 时忽略脏标记强制渲染一帧；无激活会话则清空视图。
+    fn render_active(&self, force: bool) {
         let Some(session) = self.sessions.active_session() else {
+            self.clear_view();
             return;
         };
-
-        let screen = guard.screen();
-        let sb_len = screen.scrollback.len();
-        // 逻辑累计历史长度：历史满后物理长度不再增长，需据此补偿滚动锚点，冻结滚动视口
-        let sb_total = screen.scrollback_total;
-        let scroll_offset = session.scroll_settle(sb_len, sb_total);
-        if scroll_offset == 0 {
-            // 跟随模式：仅重建脏行，未变更行复用缓存
-            let dirty_rows = guard.take_dirty_rows();
-            if dirty_rows.len() > 0 {
-                self.render_cache.update(dirty_rows, screen.visible_rows());
-                self.cells_model
-                    .set_vec(self.render_cache.build_cell_runs());
-            }
-        } else {
-            // 滚动模式：全量重建视口（scrollback 历史 + 当前屏拼接），丢弃脏行标记
-            let _ = guard.take_dirty_rows();
-            self.cells_model
-                .set_vec(runs_to_cell_runs(&build_viewport_runs(screen, scroll_offset)));
-        };
-
-        // 光标设置
-        if scroll_offset == 0 {
-            // 跟随模式，显示光标
-            self.main_window.set_cursor_row(guard.cursor.row as i32);
-            self.main_window.set_cursor_col(guard.cursor.col as i32);
-            self.main_window.set_cursor_visible(guard.cursor.visible);
-        } else {
-            // 滚动模式，隐藏光标，滚动模式下光标位于视口之外
-            self.main_window.set_cursor_visible(false);
+        // 会话内部一次性加锁 state，完成滚动冻结、脏行增量/视口拼接、光标与滚动条计算，
+        // 返回一帧完整结果；None 表示无脏标记、无需渲染。
+        if let Some(output) = session.render_frame(force) {
+            self.apply_render_output(output);
         }
+    }
 
-        // 渲染路径已持有 state 锁，sb_len / rows 直接从 guard 读取，
-        let rows = guard.rows;
-        // 终端滚动条设置
-        if sb_len > 0 {
-            // 有无历史数据才显示时滚动条
+    // 把会话算出的一帧渲染结果写入 Slint：单元格 model + 光标 + 滚动条。
+    // 此处不再做任何终端状态计算，仅做 UI 属性注入。
+    fn apply_render_output(&self, output: RenderOutput) {
+        // 单元格渲染项
+        self.cells_model.set_vec(output.cells);
+        // 光标（滚动模式下 output.cursor.visible 已置 false）
+        self.main_window.set_cursor_row(output.cursor.row);
+        self.main_window.set_cursor_col(output.cursor.col);
+        self.main_window.set_cursor_visible(output.cursor.visible);
+        // 滚动条：仅在有 scrollback 时更新（无历史时保持现状，与原逻辑一致）
+        if let Some(scroll) = output.scroll {
             self.main_window.set_has_scrollback(true);
-            // 滚动条的位置 = offset / sb_len。0 = 底部（最新），1 = 顶部（最老历史）
-            self.main_window
-                .set_scroll_ratio(session.scroll_position(sb_len));
-            // 滑块大小比例 = 可见行数 / 总行数（scrollback + 可见行数），历史越长滑块越短
-            self.main_window
-                .set_viewport_ratio(session.scroll_ratio(sb_len, rows));
+            // 滚动条位置 = offset / sb_len。0 = 底部（最新），1 = 顶部（最老历史）
+            self.main_window.set_scroll_ratio(scroll.position);
+            // 滑块大小比例 = 可见行数 / 总行数，历史越长滑块越短
+            self.main_window.set_viewport_ratio(scroll.viewport);
         }
     }
 
     // 无激活会话时清空视图。
     fn clear_view(&self) {
-        self.render_cache.clear();
         self.cells_model.set_vec(Vec::new());
         self.main_window.set_cursor_visible(false);
     }
@@ -493,7 +443,6 @@ impl App {
             .is_ok()
         {
             self.sync_tabs();
-            self.render_cache.clear();
             self.render_active_force();
         }
     }
@@ -509,9 +458,8 @@ impl App {
         self.sessions.close_session(id);
         // 同步标签
         self.sync_tabs();
-        // 如果关闭的是激活终端，则重新渲染
+        // 如果关闭的是激活终端，则切换到相邻会话并复用其独立缓存重新渲染
         if active_id == Some(id) {
-            self.render_cache.clear();
             self.render_active_force();
         }
         // 关闭的是最后一个会话，则退出整个应用
@@ -523,13 +471,11 @@ impl App {
     // 根据 id 切换会话
     fn on_select_tab(&mut self, id: SessionId) {
         if self.sessions.active_id() != Some(id) {
-            // 设置活动会话
+            // 设置激活会话
             self.sessions.set_active_session(id);
             // 刷新标签
             self.sync_tabs();
-            // 清空缓存
-            self.render_cache.clear();
-            // 渲染终端
+            // 渲染激活终端
             self.render_active_force();
         }
     }
@@ -543,10 +489,9 @@ impl App {
             // 窗口尺寸变，联动调整标签宽度
             self.update_tab_width();
             self.last_size.set((rows, cols));
+            // resize_all 内部同步各会话 PTY + ScreenBuffer，并清空各自缓存、全量标脏
             self.sessions.resize_all(rows, cols);
-            // 清空渲染缓存，避免复用旧尺寸的缓存数据。
-            self.render_cache.clear();
-            // 强制全量重绘终端
+            // 强制重绘激活会话（缓存已随 resize 清空，本次全量重建）
             self.render_active_force();
         }
     }
