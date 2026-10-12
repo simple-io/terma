@@ -1,5 +1,6 @@
 //! cell — 终端单元格
 
+use slint::Brush;
 use crate::terminal::color;
 use crate::terminal::color::Color;
 
@@ -68,6 +69,17 @@ impl Cell {
         } else {
             // 正常：前景取前景色，背景取背景色
             (self.foreground.to_rgb(), self.background.to_rgb())
+        }
+    }
+
+    /// 根据 inverse 设置区分后渲染的颜色
+    pub fn resolved_colors_brush(&self) -> (Brush, Brush) {
+        if self.inverse {
+            // 颜色取反：前景取背景色，背景取前景色
+            (self.background.to_brush(), self.foreground.to_brush())
+        } else {
+            // 正常：前景取前景色，背景取背景色
+            (self.foreground.to_brush(), self.background.to_brush())
         }
     }
 

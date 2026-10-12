@@ -22,10 +22,10 @@
 //!     切换 Tab 即换挂 model —— 内容零拷贝、零重算。
 
 use crate::app::controller::CellRun;
-use crate::renderer::render_model::{RunRender, build_row_runs};
 use crate::terminal::screen::ScreenBuffer;
 use slint::{Model, VecModel};
 use std::cell::{Cell, RefCell};
+use std::env::var;
 use std::rc::Rc;
 
 /// model 当前呈现内容的模式（用于判定增量更新的前置条件是否成立）
@@ -46,42 +46,6 @@ enum Present {
     },
 }
 
-/// 把 `RunRender` 列表转换为 Slint 的 `CellRun` 列表（仅对脏行调用，量小）。
-fn runs_to_cell_runs(runs: &[RunRender]) -> Vec<CellRun> {
-    runs.iter()
-        .map(|r| CellRun {
-            text: r.text.clone().into(),
-            row: r.row,
-            col: r.col,
-            len: r.len,
-            fg: slint::Brush::SolidColor(slint::Color::from_rgb_u8(r.fg.0, r.fg.1, r.fg.2)),
-            bg: slint::Brush::SolidColor(slint::Color::from_rgb_u8(r.bg.0, r.bg.1, r.bg.2)),
-            has_bg: r.has_bg,
-            bold: r.bold,
-            italic: r.italic,
-            underline: r.underline,
-        })
-        .collect()
-}
-
-/// 由单行构建该行的 `CellRun` 列表（行号即网格/视口行号）。
-fn row_cell_runs(row: &crate::terminal::row::Row, row_idx: usize) -> Vec<CellRun> {
-    runs_to_cell_runs(&build_row_runs(row, row_idx))
-}
-
-/// 两个渲染项是否完全一致（逐字段比较，值未变则跳过 model 通知）。
-fn same_run(a: &CellRun, b: &CellRun) -> bool {
-    a.row == b.row
-        && a.col == b.col
-        && a.len == b.len
-        && a.text == b.text
-        && a.fg == b.fg
-        && a.bg == b.bg
-        && a.has_bg == b.has_bg
-        && a.bold == b.bold
-        && a.italic == b.italic
-        && a.underline == b.underline
-}
 
 /// 会话独立的渲染单元：按行缓存渲染项 + 会话私有 Slint model 的增量维护。
 pub struct RenderCells {
@@ -156,7 +120,7 @@ impl RenderCells {
         if full {
             for idx in &dirty_rows {
                 if let Some(row) = visible.get(*idx) {
-                    cache[*idx] = row_cell_runs(row, *idx);
+                    cache[*idx] = row.to_cell_run(*idx);
                 }
             }
             let flat: Vec<CellRun> = cache.iter().flatten().cloned().collect();
@@ -173,8 +137,7 @@ impl RenderCells {
             };
             // 前缀 = 该行之前所有行的渲染项数量之和（升序遍历，增量推进）
             let prefix: usize = cache[..idx].iter().map(|r| r.len()).sum();
-            let new_runs = row_cell_runs(row, idx);
-            // apply_row_segment(&self.model, prefix, &cache[idx], &new_runs);
+            let new_runs = row.to_cell_run(idx);
             self.apply_row_segment(prefix, &cache[idx], &new_runs);
             cache[idx] = new_runs;
         }
@@ -206,7 +169,7 @@ impl RenderCells {
             }
             for &g in &dirty_rows {
                 if let Some(row) = screen.grid.get(g) {
-                    cache[g] = row_cell_runs(row, g);
+                    cache[g] = row.to_cell_run(g);
                 }
             }
         }
@@ -238,7 +201,7 @@ impl RenderCells {
                     prefix += lens[r];
                 }
                 cursor = v;
-                let new_runs = row_cell_runs(source, v);
+                let new_runs = source.to_cell_run(v);
                 let old_len = lens[v];
                 // 逐项应用（无需旧内容做逐项比较——整段以新内容为准）
                 let common = old_len.min(new_runs.len());
@@ -269,7 +232,7 @@ impl RenderCells {
             } else {
                 &screen.grid[v - offset]
             };
-            let runs = row_cell_runs(source, v);
+            let runs = source.to_cell_run(v);
             lens[v] = runs.len();
             flat.extend(runs);
         }
@@ -302,6 +265,21 @@ impl RenderCells {
             }
         }
     }
+}
+
+
+// 两个渲染项是否完全一致（逐字段比较，值未变则跳过 model 通知）。
+fn same_run(a: &CellRun, b: &CellRun) -> bool {
+    a.row == b.row
+        && a.col == b.col
+        && a.len == b.len
+        && a.text == b.text
+        && a.fg == b.fg
+        && a.bg == b.bg
+        && a.has_bg == b.has_bg
+        && a.bold == b.bold
+        && a.italic == b.italic
+        && a.underline == b.underline
 }
 
 #[cfg(test)]

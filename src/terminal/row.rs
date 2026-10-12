@@ -2,7 +2,6 @@ use crate::terminal::{Cell, Color};
 use crate::terminal::cell::cells_content;
 use std::ops::{Deref, DerefMut};
 use crate::app::controller::CellRun;
-use crate::renderer::RunRender;
 
 /// 终端行，表示终端中的一行数据，包含 Cell 字符列表和软换行标志
 #[derive(Debug, Clone, Default)]
@@ -125,24 +124,23 @@ impl Row {
         true
     }
 
-    // 转换为 CellRun 列表
+    // 把内容行转换为 CellRun 列表
     pub fn to_cell_run(&self, row_idx: usize) -> Vec<CellRun> {
         let mut cell_runs: Vec<CellRun> = Vec::new();
         for (col, cell) in self.cells.iter().enumerate() {
             // 非内容字符，跳过
-            if cell.is_content() {
+            if !cell.is_content() {
                 continue;
             }
-            let width = cell.char_width();
-            let has_bg = cell.background != Color::Default || cell.inverse;
+            let (fg, bg) = cell.resolved_colors_brush();
             cell_runs.push(CellRun {
                 text: cell.character.to_string().into(),
                 row: row_idx as i32,
                 col: col as i32,
-                len: width as i32,
-                fg: cell.foreground.to_brush(),
-                bg: cell.background.to_brush(),
-                has_bg,
+                len: cell.char_width() as i32,
+                fg,
+                bg,
+                has_bg: cell.background != Color::Default || cell.inverse,
                 bold: cell.bold,
                 italic: cell.italic,
                 underline: cell.underline,

@@ -8,7 +8,5 @@
 //! 配合脏标记机制，空闲状态完全跳过渲染，大幅降低 CPU 与 UI 更新开销。
 
 pub mod render;
-pub mod render_model;
 
 pub use render::RenderCells;
-pub use render_model::{RunRender, build_row_runs, build_runs};

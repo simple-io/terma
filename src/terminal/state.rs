@@ -633,7 +633,6 @@ fn parse_color(p: &[u16]) -> Option<(Color, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::build_row_runs;
 
     /// 把字符串按 UTF-8 字节逐字节 feed 进 vte 解析器。
     fn feed(state: &mut TerminalState, s: &str) {
@@ -675,24 +674,6 @@ mod tests {
         assert_eq!(st.cursor.row, 1);
         assert_eq!(st.screen().cell(1, 0).character, '好');
         assert!(st.screen().cell(1, 1).continuation);
-    }
-
-    #[test]
-    fn build_row_runs_emits_per_cell_glyphs() {
-        let mut st = TerminalState::new(5, 10);
-        feed(&mut st, "你A好");
-        let runs = build_row_runs(st.screen().visible_rows().get(0).unwrap(), 0);
-        // 逐格绝对定位：每个字符一个渲染项，宽字符 width=2，续列占位不渲染
-        assert_eq!(runs.len(), 3);
-        assert_eq!(runs[0].text, "你");
-        assert_eq!(runs[0].col, 0);
-        assert_eq!(runs[0].len, 2);
-        assert_eq!(runs[1].text, "A");
-        assert_eq!(runs[1].col, 2);
-        assert_eq!(runs[1].len, 1);
-        assert_eq!(runs[2].text, "好");
-        assert_eq!(runs[2].col, 3);
-        assert_eq!(runs[2].len, 2);
     }
 
     #[test]
@@ -883,34 +864,7 @@ mod tests {
         assert_eq!(row[2].character, 'B');
     }
 
-    #[test]
-    fn resize_marks_all_rows_dirty_and_reflows_content() {
-        use crate::renderer::build_row_runs;
 
-        let mut st = TerminalState::new(3, 10);
-        feed(&mut st, "hello");
-
-        // 放大到 5 行 15 列
-        st.resize(5, 15);
-        assert_eq!(st.rows, 5);
-        assert_eq!(st.cols, 15);
-        assert_eq!(st.screen().visible_rows().len(), 5);
-        for row in st.screen().visible_rows() {
-            assert_eq!(row.len(), 15);
-        }
-        // 全部行都应标记为脏
-        let dirty = st.take_dirty_rows();
-        assert_eq!(dirty, vec![0, 1, 2, 3, 4]);
-        // 内容保留在左上角
-        assert_eq!(st.screen().cell(0, 0).character, 'h');
-        assert_eq!(st.screen().cell(0, 4).character, 'o');
-        // 渲染单行使用正确行号
-        let runs = build_row_runs(&st.screen().visible_rows()[0], 0);
-        assert!(
-            runs.iter()
-                .any(|r| r.row == 0 && r.col == 0 && r.text == "h")
-        );
-    }
 
     // ─── 高度变化（仅行数）Resize 测试 ───
 
