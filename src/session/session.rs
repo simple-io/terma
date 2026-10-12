@@ -40,12 +40,12 @@ use crate::app::controller::CellRun;
 use crate::app::events::{TerminalEvent, WindowEvent};
 use crate::config::Profile;
 use crate::pty::Pty;
-use crate::renderer::RenderCells;
+use crate::renderer::Renderer;
 use crate::session::active::ActiveSession;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::TerminalState;
 use anyhow::Result;
-use slint::VecModel;
+use slint::{ModelRc, VecModel};
 
 /// 提交滚动偏移后应触发的渲染动作，由 App 据此决定重绘方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,8 +107,8 @@ pub struct TerminalSession {
     scroll_anchor: Cell<usize>,
     // 滚动条累加器，累积满一个字符行高触发一次整行滚动
     scroll_acc: f32,
-    // 会话独立渲染单元：按行缓存 + 独立计算
-    render_cells: RenderCells,
+    // 会话独立渲染单元：二维 cells 模型（外层为行，内层为 CellRun）+ 按行缓存 + 独立计算
+    renderer: Renderer,
 }
 
 impl Drop for TerminalSession {
@@ -176,7 +176,7 @@ impl TerminalSession {
             scroll_offset: Cell::new(0),
             scroll_anchor: Cell::new(0),
             scroll_acc: 0.0,
-            render_cells: RenderCells::new(),
+            renderer: Renderer::new(),
         })
     }
 
@@ -215,7 +215,7 @@ impl TerminalSession {
             guard.resize(rows as usize, cols as usize);
             guard.mark_all_dirty();
         }
-        self.render_cells.clear();
+        self.renderer.clear();
     }
 
     // 读取本会话当前的 scrollback 历史长度。
@@ -223,10 +223,10 @@ impl TerminalSession {
         self.state.lock().unwrap().screen().scrollback.len()
     }
 
-    // 本会话私有的 cells model（App 在切换/新建会话时挂载到窗口 cells property）。
-    // 随 RenderCells 仅在 UI 线程创建与访问，不跨线程共享。
-    pub fn cells_model(&self) -> Rc<VecModel<CellRun>> {
-        self.render_cells.model()
+    // 本会话私有的二维 cells model（App 在切换/新建会话时挂载到窗口 cells property）。
+    // 随 Renderer 仅在 UI 线程创建与访问，不跨线程共享。
+    pub fn cells_model(&self) -> Rc<VecModel<ModelRc<CellRun>>> {
+        self.renderer.model()
     }
 
     // 一次加锁读取 scrollback 的物理长度与逻辑累计长度（避免在持锁路径中重入加锁死锁）。
@@ -369,9 +369,9 @@ impl TerminalSession {
             // 视口的 grid 行。scrollback 历史行不可变，由视口 key 缓存兜底。
             let dirty = guard.take_dirty_rows();
             if offset == 0 {
-                self.render_cells.render_follow(screen, dirty);
+                self.renderer.render_follow(screen, dirty);
             } else {
-                self.render_cells.render_viewport(screen, offset, dirty);
+                self.renderer.render_viewport(screen, offset, dirty);
             }
 
             // 光标：跟随模式显示真实光标，滚动模式光标在视口外，隐藏

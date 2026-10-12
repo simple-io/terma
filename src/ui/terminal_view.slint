@@ -33,7 +33,8 @@ export struct CellRun {
 }
 
 export component TerminalView inherits Rectangle {
-    in property <[CellRun]> cells;
+    // 终端元素单元格，用于渲染终端内容，使用二维数组，以行和列表示所有内容。
+    in property <[[CellRun]]> cells;
     in property <int> cursor-row;
     in property <int> cursor-col;
     in property <bool> cursor-visible;
@@ -99,33 +100,40 @@ export component TerminalView inherits Rectangle {
         background: #ffffff44;
     }
 
-    // 字符渲染项列表：逐格（逐字符）绝对定位，每个字符独立落在 char-w 的整数倍网格上，
+    // 字符渲染项列表：外层遍历「行 model」，内层遍历该行内的每个 CellRun。
+    // 行容器铺满整个视口且透明，内部仍按 col/row 绝对定位到 char-w/char-h 的整数倍网格，
     // 因此不依赖字体 advance 宽度是否恰好等于 char-w，从根上消除单行内的累积对齐漂移。
-    for cell in root.cells: Rectangle {
-        x: cell.col * root.char-w;
-        y: cell.row * root.char-h;
-        width: cell.len * root.char-w;
-        height: root.char-h;
-        background: cell.has-bg ? cell.bg : transparent;
+    for row in root.cells: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
 
-        Text {
-            text: cell.text;
-            color: cell.fg;
-            font-size: 13px;
-            font-family: root.font-family;
-            font-weight: cell.bold ? 700 : 400;
-            horizontal-alignment: left;
-            vertical-alignment: center;
-            // 裁剪超出格子的部分，防止宽字符在字体度量略大于 char-w 时溢出到相邻格
-            overflow: clip;
-        }
+        for cell in row: Rectangle {
+            x: cell.col * root.char-w;
+            y: cell.row * root.char-h;
+            width: cell.len * root.char-w;
+            height: root.char-h;
+            background: cell.has-bg ? cell.bg : transparent;
 
-        // 下划线
-        if cell.underline: Rectangle {
-            y: parent.height - 2px;
-            width: parent.width;
-            height: 1px;
-            background: cell.fg;
+            Text {
+                text: cell.text;
+                color: cell.fg;
+                font-size: 13px;
+                font-family: root.font-family;
+                font-weight: cell.bold ? 700 : 400;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+                // 裁剪超出格子的部分，防止宽字符在字体度量略大于 char-w 时溢出到相邻格
+                overflow: clip;
+            }
+
+            // 下划线
+            if cell.underline: Rectangle {
+                y: parent.height - 2px;
+                width: parent.width;
+                height: 1px;
+                background: cell.fg;
+            }
         }
     }
 

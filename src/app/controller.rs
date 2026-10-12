@@ -30,7 +30,7 @@ use crate::config::fonts;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::session::{RenderOutput, ScrollAction, SessionManager};
 use slint::language::KeyboardModifiers;
-use slint::{ComponentHandle, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -85,8 +85,8 @@ pub struct App {
     tabs_model: Rc<VecModel<TabInfo>>,
     // Profile 模型
     profiles_model: Rc<VecModel<ProfileInfo>>,
-    // 终端 Cell 渲染模型（Run 列表）
-    cells_model: Rc<VecModel<CellRun>>,
+    // 终端 Cell 渲染模型，二维数组：外层为行，内层为该行 CellRun
+    cells_model: Rc<VecModel<ModelRc<CellRun>>>,
     // 会话切换/新建/关闭时重新挂载对应会话的 model，内容零拷贝零重算。
     attached_cells: Cell<Option<SessionId>>,
     // 会话管理器
@@ -109,7 +109,7 @@ impl App {
     pub fn run() {
         let tabs_model = Rc::new(VecModel::default());
         let profiles_model = Rc::new(VecModel::default());
-        let cells_model = Rc::new(VecModel::default());
+        let cells_model: Rc<VecModel<ModelRc<CellRun>>> = Rc::new(VecModel::default());
 
         // 窗口对象
         let main_window = MainWindow::new().expect("failed to create MainWindow");
@@ -271,7 +271,7 @@ impl App {
         self.render_active(true);
     }
 
-    // 渲染激活会话的口，把「计算」下沉到会话的 RenderCells 对象，App 只负责把挂在激活对象
+    // 渲染激活会话的口，把「计算」下沉到会话的 Renderer 对象，App 只负责把挂在激活对象
     fn render_active(&self, force: bool) {
         let Some(session) = self.sessions.active_session() else {
             self.clear_view();

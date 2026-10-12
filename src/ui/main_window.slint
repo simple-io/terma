@@ -51,8 +51,8 @@ export component MainWindow inherits Window {
     in-out property <[ProfileInfo]> profiles;
     in-out property <string> active-title;
     in-out property <string> active-profile-name;
-    // 终端网格数据
-    in-out property <[CellRun]> cells;
+    // 终端网格数据（二维：外层为行，内层为该行 CellRun）
+    in-out property <[[CellRun]]> cells;
     in-out property <int> cursor-row;
     in-out property <int> cursor-col;
     in-out property <bool> cursor-visible;
