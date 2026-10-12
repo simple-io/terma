@@ -7,10 +7,11 @@
 //!     Slint 的 `'static` 回调闭包通过 `Weak<App>` 回访业务状态。
 //!     彻底移除渲染轮询定时器。Slint 对象绝不跨线程，PTY 线程不接触 Slint。
 //!   - 非激活会话的输出在后台静默解析、不唤醒 UI 线程，避免浪费 UI 线程资源。
-//!   - 渲染采用脏标记（Dirty）+ 脏行标记（Dirty Rows）+ 按行缓存（Per-Row Cache）：
-//!     UI 线程锁 `Arc<Mutex<TerminalState>>` 快照脏行，仅对脏行调用 build_row_runs，
-//!     未变更行复用上一帧的缓存结果，大幅降低 CPU 占用（尤其对少量字符输出场景）。
-//!   - Tab 切换、窗口 resize、新建/关闭会话等交互事件立即强制全量渲染。
+//!   - 渲染采用脏标记（Dirty）+ 脏行标记（Dirty Rows）+ 按行缓存（Per-Row Cache）+
+//!     会话私有 cells model 增量更新：每个会话持有独立的 `VecModel<CellRun>`，
+//!     仅对脏行做 set_row_data/insert/remove 级别的增量更新，未变更行零转换零触碰；
+//!     切换 Tab 仅换挂 model（零拷贝），彻底移除每帧全量转换 + 全量 set_vec 的开销。
+//!     Tab 切换、窗口 resize、新建/关闭会话等交互事件立即强制全量渲染。
 //!   - Tab 切换、窗口 resize、新建/关闭会话等交互事件立即触发渲染。
 //!   - 键盘：TerminalView 的 FocusScope 接 key-pressed → encode_key（完整键盘映射）→ PTY。
 //!   - 尺寸：窗口 width/height 属性变更（changed 回调）即时触发，同步 PTY + ScreenBuffer。
@@ -86,6 +87,8 @@ pub struct App {
     profiles_model: Rc<VecModel<ProfileInfo>>,
     // 终端 Cell 渲染模型（Run 列表）
     cells_model: Rc<VecModel<CellRun>>,
+    // 会话切换/新建/关闭时重新挂载对应会话的 model，内容零拷贝零重算。
+    attached_cells: Cell<Option<SessionId>>,
     // 会话管理器
     sessions: SessionManager,
     // 配置管理器
@@ -125,6 +128,7 @@ impl App {
             tabs_model,
             profiles_model,
             cells_model,
+            attached_cells: Cell::new(None),
             last_size: Cell::new((0, 0)),
             font_entries: RefCell::new(Vec::new()),
             event_tx,
@@ -267,42 +271,42 @@ impl App {
         self.render_active(true);
     }
 
-    // 渲染激活会话的统一入口：把「计算」下沉到会话的 RenderCells，App 只负责取回一帧
-    // 结果并写入 Slint。force=true 时忽略脏标记强制渲染一帧；无激活会话则清空视图。
+    // 渲染激活会话的口，把「计算」下沉到会话的 RenderCells 对象，App 只负责把挂在激活对象
     fn render_active(&self, force: bool) {
         let Some(session) = self.sessions.active_session() else {
             self.clear_view();
             return;
         };
-        // 会话内部一次性加锁 state，完成滚动冻结、脏行增量/视口拼接、光标与滚动条计算，
-        // 返回一帧完整结果；None 表示无脏标记、无需渲染。
+
+        // 首次渲染 / 会话切换，把窗口 cells 挂载到该会话私有的 model。
+        if self.attached_cells.get() != Some(session.id()) {
+            self.main_window.set_cells(session.cells_model().into());
+            self.attached_cells.set(Some(session.id()));
+        }
+
+        // 会话内部一次性加锁 state，完成滚动冻结、终端渲染、光标与滚动条计算，
         if let Some(output) = session.render_frame(force) {
-            self.apply_render_output(output);
+            // 光标（滚动模式下 output.cursor.visible 已置 false）
+            self.main_window.set_cursor_row(output.cursor.row);
+            self.main_window.set_cursor_col(output.cursor.col);
+            self.main_window.set_cursor_visible(output.cursor.visible);
+            // 滚动条：仅在有 scrollback 时更新（无历史时保持现状，与原逻辑一致）
+            if let Some(scroll) = output.scroll {
+                self.main_window.set_has_scrollback(true);
+                // 滚动条位置 = offset / sb_len。0 = 底部（最新），1 = 顶部（最老历史）
+                self.main_window.set_scroll_ratio(scroll.position);
+                // 滑块大小比例 = 可见行数 / 总行数，历史越长滑块越短
+                self.main_window.set_viewport_ratio(scroll.viewport);
+            }
         }
     }
 
-    // 把会话算出的一帧渲染结果写入 Slint：单元格 model + 光标 + 滚动条。
-    // 此处不再做任何终端状态计算，仅做 UI 属性注入。
-    fn apply_render_output(&self, output: RenderOutput) {
-        // 单元格渲染项
-        self.cells_model.set_vec(output.cells);
-        // 光标（滚动模式下 output.cursor.visible 已置 false）
-        self.main_window.set_cursor_row(output.cursor.row);
-        self.main_window.set_cursor_col(output.cursor.col);
-        self.main_window.set_cursor_visible(output.cursor.visible);
-        // 滚动条：仅在有 scrollback 时更新（无历史时保持现状，与原逻辑一致）
-        if let Some(scroll) = output.scroll {
-            self.main_window.set_has_scrollback(true);
-            // 滚动条位置 = offset / sb_len。0 = 底部（最新），1 = 顶部（最老历史）
-            self.main_window.set_scroll_ratio(scroll.position);
-            // 滑块大小比例 = 可见行数 / 总行数，历史越长滑块越短
-            self.main_window.set_viewport_ratio(scroll.viewport);
-        }
-    }
-
-    // 无激活会话时清空视图。
+    // 无激活会话时清空视图：挂载占位空 model 并隐藏光标。
     fn clear_view(&self) {
-        self.cells_model.set_vec(Vec::new());
+        if self.attached_cells.get().is_some() {
+            self.main_window.set_cells(self.cells_model.clone().into());
+            self.attached_cells.set(None);
+        }
         self.main_window.set_cursor_visible(false);
     }
 

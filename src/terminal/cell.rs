@@ -59,20 +59,15 @@ impl Cell {
             ..Default::default()
         }
     }
+
     /// 应用 inverse 后用于渲染的实际颜色对
     pub fn resolved_colors(&self) -> ((u8, u8, u8), (u8, u8, u8)) {
         if self.inverse {
             // 颜色取反：前景取背景色，背景取前景色
-            (
-                color::bg_rgb(self.background),
-                color::fg_rgb(self.foreground),
-            )
+            (self.background.to_rgb(), self.foreground.to_rgb())
         } else {
             // 正常：前景取前景色，背景取背景色
-            (
-                color::fg_rgb(self.foreground),
-                color::bg_rgb(self.background),
-            )
+            (self.foreground.to_rgb(), self.background.to_rgb())
         }
     }
 

@@ -3,6 +3,8 @@
 //! 支持 ANSI 16 色 / 256 色 / TrueColor。
 //! `Color::Default` 表示使用终端默认前景/背景（由渲染层决定）。
 
+use slint::Brush;
+
 /// 终端默认前景色（渲染层也会用到）
 pub const DEFAULT_FG: (u8, u8, u8) = (230, 230, 230);
 /// 终端默认背景色（渲染层也会用到）
@@ -29,25 +31,40 @@ impl Color {
     pub fn rgb(r: u8, g: u8, b: u8) -> Self {
         Color::Rgb(r, g, b)
     }
-}
 
-/// 前景色 → RGB（Default 用 default_fg）
-pub fn fg_rgb(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Default => DEFAULT_FG,
-        Color::Index(i) => ansi256_to_rgb(i),
-        Color::Rgb(r, g, b) => (r, g, b),
+    // 转换为 RGB
+    pub fn to_rgb(&self) -> (u8, u8, u8) {
+        match self {
+            Color::Default => DEFAULT_FG,
+            Color::Index(i) => ansi256_to_rgb(*i),
+            Color::Rgb(r, g, b) => (*r, *g, *b),
+        }
+    }
+
+    // 转换为 Brush
+    pub fn to_brush(&self) -> Brush {
+        let rgb = self.to_rgb();
+        Brush::SolidColor(slint::Color::from_rgb_u8(rgb.0, rgb.1, rgb.2))
     }
 }
 
-/// 背景色 → RGB（Default 用 default_bg）
-pub fn bg_rgb(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Default => DEFAULT_BG,
-        Color::Index(i) => ansi256_to_rgb(i),
-        Color::Rgb(r, g, b) => (r, g, b),
-    }
-}
+// /// 前景色 → RGB（Default 用 default_fg）
+// pub fn fg_rgb(color: Color) -> (u8, u8, u8) {
+//     match color {
+//         Color::Default => DEFAULT_FG,
+//         Color::Index(i) => ansi256_to_rgb(i),
+//         Color::Rgb(r, g, b) => (r, g, b),
+//     }
+// }
+//
+// /// 背景色 → RGB（Default 用 default_bg）
+// pub fn bg_rgb(color: Color) -> (u8, u8, u8) {
+//     match color {
+//         Color::Default => DEFAULT_BG,
+//         Color::Index(i) => ansi256_to_rgb(i),
+//         Color::Rgb(r, g, b) => (r, g, b),
+//     }
+// }
 
 /// 256 色调色板 → RGB
 fn ansi256_to_rgb(i: u8) -> (u8, u8, u8) {

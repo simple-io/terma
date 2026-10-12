@@ -34,6 +34,7 @@
 use std::cell::Cell;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 use crate::app::controller::CellRun;
 use crate::app::events::{TerminalEvent, WindowEvent};
@@ -44,6 +45,7 @@ use crate::session::active::ActiveSession;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::TerminalState;
 use anyhow::Result;
+use slint::VecModel;
 
 /// 提交滚动偏移后应触发的渲染动作，由 App 据此决定重绘方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,11 +76,11 @@ pub struct ScrollRender {
     pub viewport: f32,
 }
 
-/// 会话渲染一帧的完整输出，由 App 写入 Slint model 与窗口属性。
-/// 计算全部在会话侧完成，App 不再触碰 TerminalState，从根本上规避重入加锁死锁。
+/// 会话渲染一帧的输出，由 App 写入窗口属性。
+/// 单元格渲染项由会话私有的 `VecModel`（RenderCells）**就地增量更新**，
+/// 不再每帧全量搬运 —— App 只负责取回光标/滚动条等标量属性注入窗口，
+/// 不再触碰 TerminalState 与 cells model，从根本上规避重入加锁死锁。
 pub struct RenderOutput {
-    /// 单元格渲染项列表
-    pub cells: Vec<CellRun>,
     /// 光标
     pub cursor: CursorRender,
     /// 滚动条（None = 无历史）
@@ -221,6 +223,12 @@ impl TerminalSession {
         self.state.lock().unwrap().screen().scrollback.len()
     }
 
+    // 本会话私有的 cells model（App 在切换/新建会话时挂载到窗口 cells property）。
+    // 随 RenderCells 仅在 UI 线程创建与访问，不跨线程共享。
+    pub fn cells_model(&self) -> Rc<VecModel<CellRun>> {
+        self.render_cells.model()
+    }
+
     // 一次加锁读取 scrollback 的物理长度与逻辑累计长度（避免在持锁路径中重入加锁死锁）。
     //   - 物理长度：当前实际保留的历史行数，用于钳制 offset（无法滚进已被丢弃的行）；
     //   - 逻辑累计长度：含已丢弃行的总历史行数，用于计算锚点补偿增量 grew。
@@ -332,11 +340,13 @@ impl TerminalSession {
         rows / (sb_len as f32 + rows)
     }
 
-    /// 计算本会话当前一帧的完整渲染结果（cells + 光标 + 滚动条）。
+    /// 计算本会话当前一帧的渲染结果（光标 + 滚动条），单元格渲染项由本会话私有的
+    /// cells model 就地增量更新（脏行级 set_row_data/insert/remove 或视口快照缓存）。
     ///
     /// 内部一次性加锁 `state`，完成滚动冻结、脏行增量 / 视口拼接、光标与滚动条计算，
-    /// 返回后由 App 直接写入 Slint。**渲染计算全部下沉至此，App 不再触碰 TerminalState**，
-    /// 从根本上规避「渲染路径重入 state 锁」的死锁。计算完毕清除脏标记。
+    /// 返回后由 App 注入窗口标量属性。**渲染计算全部下沉至此，App 不再触碰
+    /// TerminalState 与 cells model**，从根本上规避「渲染路径重入 state 锁」的死锁。
+    /// 计算完毕清除脏标记。
     ///
     /// - `force == false`：仅当 state 有脏标记时才计算，否则返回 `None`（PTY 输出场景）；
     /// - `force == true`：忽略脏标记守卫强制渲染一帧（Tab 切换 / 滚动 / 新建关闭等交互）。
@@ -347,22 +357,22 @@ impl TerminalSession {
             return None;
         }
 
-        let (cells, cursor, scroll) = {
+        let (cursor, scroll) = {
             let screen = guard.screen();
             let sb_len = screen.scrollback.len();
             let sb_total = screen.scrollback_total;
             // 冻结滚动视口，得到本帧滚动偏移（补偿渲染间隙新到达的历史行）
             let offset = self.scroll_settle(sb_len, sb_total);
 
-            let cells = if offset == 0 {
-                // 跟随模式：仅重建脏行，未变更行复用本会话缓存
-                let dirty = guard.take_dirty_rows();
-                self.render_cells.render_follow(screen, dirty)
+            // 两条路径均取出脏行：跟随模式只重建脏行；滚动模式用脏行同步跟随缓存
+            // （保持其与 grid 最新内容一致，回到跟随模式免重算），并增量更新落入
+            // 视口的 grid 行。scrollback 历史行不可变，由视口 key 缓存兜底。
+            let dirty = guard.take_dirty_rows();
+            if offset == 0 {
+                self.render_cells.render_follow(screen, dirty);
             } else {
-                // 滚动模式：全量拼接视口显示历史。不清空 dirty_rows，让其累积，
-                // 回到跟随模式时增量重建期间变更的行，缓存始终跟随 grid 最新内容。
-                self.render_cells.render_viewport(screen, offset)
-            };
+                self.render_cells.render_viewport(screen, offset, dirty);
+            }
 
             // 光标：跟随模式显示真实光标，滚动模式光标在视口外，隐藏
             let cursor = if offset == 0 {
@@ -389,15 +399,11 @@ impl TerminalSession {
             } else {
                 None
             };
-            (cells, cursor, scroll)
+            (cursor, scroll)
         };
 
         guard.clear_dirty();
-        Some(RenderOutput {
-            cells,
-            cursor,
-            scroll,
-        })
+        Some(RenderOutput { cursor, scroll })
     }
 
     // 检查子进程是否已退出（非阻塞）。
