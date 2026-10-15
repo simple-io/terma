@@ -15,7 +15,7 @@
 [general]
 default_profile = "zsh"
 font_family = "Monaco"
-font_size = 13
+font_size = 12
 background_color = "#000000"
 cursor_style = "block"
 color_scheme = "default"

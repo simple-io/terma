@@ -26,21 +26,28 @@ import "../../fonts/CascadiaCode.ttf";
 export { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry }
 
 export component MainWindow inherits Window {
+    // ─── 基本设置 ───
+    // 主窗口标题
     title: "terma";
-    // 初始窗口尺寸（逻辑像素），与 Rust 侧 `grid_to_logical_size(DEFAULT_ROWS=36, DEFAULT_COLS=120)` 一致：
-    //   宽 = 120 * 8(char-w) + 16(水平留白) = 976
-    //   高 = 36 * 16(char-h) + 37(Tab栏) + 8(底部留白) = 621
-    // 运行时 Rust 侧会按此网格再次显式设置，并随窗口缩放动态联动 PTY。
+    // 窗口最小尺寸
     min-width: 20px;
-    preferred-width: 976px;
+    // 窗口初始宽度
+    preferred-width: 880px;
+    // 窗口初始高度
     preferred-height: 621px;
-    // 背景色：通过 in-out 属性暴露给 Rust 侧，支持运行时修改
+    // 终端初始背景色
     in-out property <color> bg-color: #000000;
     background: root.bg-color;
 
-    // 终端字体（Rust 侧注入）, 只对终端内容生效，菜单、标签等采用系统默认字体
+    // ─── 终端字体设置 ───
+    // 终端字体类型
     in-out property <string> font-family: "JetBrains Mono";
-//    default-font-family: root.font-family;
+    // 终端字号（逻辑像素，Rust 侧注入，由设置项 font-size 驱动）
+    in-out property <length> font-size: 12px;
+    // 字体宽度
+    in-out property <length> char-w: 8px;
+    // 字体高度
+    in-out property <length> char-h: 16px;
 
     // ─── 对外暴露的数据属性（Rust 侧写入） ───
     // 会话标签
@@ -110,6 +117,9 @@ export component MainWindow inherits Window {
         terminal-area := TerminalView {
             cells: root.cells;
             font-family: root.font-family;
+            font-size: root.font-size;
+            char-w: root.char-w;
+            char-h: root.char-h;
             cursor-row: root.cursor-row;
             cursor-col: root.cursor-col;
             cursor-visible: root.cursor-visible;

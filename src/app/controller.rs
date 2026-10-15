@@ -48,9 +48,6 @@ pub use ui_generated::{
     SettingsWindow, TabInfo,
 };
 
-/// 等宽字体度量（与 terminal_view.slint 中 char-w/char-h 保持一致）
-const CHAR_W: i32 = 8;
-const CHAR_H: i32 = 16;
 /// Tab 栏 + 分隔线高度（逻辑像素）
 const CHROME_H: i32 = 37;
 /// 默认终端网格（启动目标尺寸，也作为无窗口尺寸可参考时的回退值）
@@ -97,6 +94,10 @@ pub struct App {
     settings_window: Option<SettingsWindow>,
     // 上次同步给 PTY 的 (rows, cols)，用于检测窗口尺寸变化
     last_size: Cell<(u16, u16)>,
+    // 终端字体宽度
+    char_w: Cell<f32>,
+    // 终端字体高度
+    char_h: Cell<f32>,
     // 字体下拉框完整候选列表缓存（内置 + 系统字体），供搜索过滤时复用，
     font_entries: RefCell<Vec<FontEntry>>,
     // 命令通道发送端
@@ -130,6 +131,8 @@ impl App {
             cells_model,
             attached_cells: Cell::new(None),
             last_size: Cell::new((0, 0)),
+            char_w: Cell::new(8.0),
+            char_h: Cell::new(16.0),
             font_entries: RefCell::new(Vec::new()),
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
@@ -162,13 +165,22 @@ impl App {
         self.bind_callbacks();
     }
 
-    // 设置终端字体, 配置为空时回退默认字体（JetBrains Mono）。
+    // 终端字体设置, 配置为空时回退默认字体（JetBrains Mono）。
     fn apply_font(&self) {
-        let mut family = self.config.general().font_family.clone();
+        let general = self.config.general();
+        let mut family = general.font_family.clone();
         if family.is_empty() {
             family = fonts::DEFAULT_FONT_FAMILY.to_string();
         }
+        let size = general.font_size.clamp(1, 100);
+        let metrics = fonts::measure_monospace(&family, size);
+
+        self.char_w.set(metrics.char_w);
+        self.char_h.set(metrics.char_h);
         self.main_window.set_font_family(family.into());
+        self.main_window.set_font_size(size as f32);
+        self.main_window.set_char_w(metrics.char_w);
+        self.main_window.set_char_h(metrics.char_h);
     }
 
     // 设置终端配置
@@ -188,9 +200,11 @@ impl App {
 
     // 设置终端窗口初始尺寸
     fn apply_initial_window_size(&self) {
+        let char_w = self.char_w.get();
+        let char_h = self.char_h.get();
         let logical = slint::LogicalSize::new(
-            (DEFAULT_COLS as i32 * CHAR_W + H_PADDING) as f32,
-            (DEFAULT_ROWS as i32 * CHAR_H + CHROME_H + V_PADDING) as f32,
+            DEFAULT_COLS as f32 * char_w + H_PADDING as f32,
+            DEFAULT_ROWS as f32 * char_h + CHROME_H as f32 + V_PADDING as f32,
         );
         self.main_window
             .window()
@@ -506,7 +520,7 @@ impl App {
             return;
         };
         // 设置滚动条偏移量
-        let action = session.scroll_offset_by(dy, CHAR_H as f32);
+        let action = session.scroll_offset_by(dy, self.char_h.get());
         // 依据返回动作选择渲染方式
         match action {
             ScrollAction::None => {}
@@ -563,8 +577,10 @@ impl App {
         if term_w <= 0 || term_h <= 0 {
             return (DEFAULT_ROWS, DEFAULT_COLS);
         }
-        let cols = (term_w / CHAR_W).clamp(1, MAX_COLS) as u16;
-        let rows = (term_h / CHAR_H).clamp(1, MAX_ROWS) as u16;
+        let char_w = self.char_w.get().max(1.0);
+        let char_h = self.char_h.get().max(1.0);
+        let cols = (term_w as f32 / char_w).floor().clamp(1.0, MAX_COLS as f32) as u16;
+        let rows = (term_h as f32 / char_h).floor().clamp(1.0, MAX_ROWS as f32) as u16;
         (rows, cols)
     }
 

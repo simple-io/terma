@@ -36,7 +36,7 @@ impl App {
         };
         self.config.update_general(config);
 
-        // 即时生效：字体 + 背景色
+        // 即时生效：字体 + 字号（重新计算字符度量并注入 UI）
         self.apply_font();
         let bg = self.config.general().background_color.clone();
         if let Some(color) = parse_color(&bg) {
@@ -45,7 +45,9 @@ impl App {
 
         // 刷新主窗口 Profile 下拉菜单（默认 Profile 可能变化）
         self.apply_profiles();
-        // 强制全量重绘
+        // 字号变化，重排窗口
+        self.on_resized();
+        // 强制全量重绘（网格未变时 on_resized 会跳过，此处兜底）
         self.render_active_force();
     }
 

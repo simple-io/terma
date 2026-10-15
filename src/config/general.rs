@@ -5,7 +5,7 @@ fn default_font_family() -> String {
     fonts::DEFAULT_FONT_FAMILY.into()
 }
 fn default_font_size() -> u32 {
-    13
+    12
 }
 fn default_bg_color() -> String {
     "#000000".into()
