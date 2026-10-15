@@ -103,6 +103,8 @@ export component SettingsWindow inherits Window {
     // 列表项度量（ensure-visible 滚动计算与弹层高度公式共享，避免双处硬编码漂移）
     property <length> font-item-h: 30px;
     property <length> font-item-step: 32px; // 项高 + 2px 间距
+    // 字号下拉候选（固定整数档位，选中即应用，无单位）
+    in property <[int]> font-size-options: [ 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 28];
     // 搜索词变更（关键词, 当前字体）：Rust 侧做模糊过滤（部分匹配、不区分大小写）
     // 回填 filtered-font-list；空关键词时同时回填 font-current-index
     callback font-search-edited(string, string);
@@ -572,21 +574,89 @@ export component SettingsWindow inherits Window {
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
-                                TextInput {
-                                    font-size: 14px;
-                                    width: 60px;
-                                    text: root.general-draft.font-size;
-                                    edited => {
-                                        if self.text.to-float() > 0 {
-                                            root.general-draft.font-size = self.text.to-float();
+                                // 字号（下拉选择：固定整数档位，选中即应用，不显示 px 单位）
+                                size-dd := Rectangle {
+                                    width: 120px;
+                                    height: 34px;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: size-dd-touch.has-hover ? root.c-primary : root.c-border;
+                                    background: #ffffff;
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 10px;
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: root.general-draft.font-size;
+                                            color: root.c-text;
+                                            font-size: 14px;
+                                            vertical-alignment: center;
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        // 下拉箭头
+                                        Text {
+                                            text: "\u{25BE}";
+                                            color: root.c-text-secondary;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
                                         }
                                     }
-                                }
-                                Text {
-                                    text: "px";
-                                    color: root.c-text-hint;
-                                    font-size: 13px;
-                                    vertical-alignment: center;
+
+                                    size-dd-touch := TouchArea {
+                                        clicked => { size-pop.show(); }
+                                    }
+
+                                    // 字号下拉浮层：整数档位列表，点选即写入草稿
+                                    size-pop := PopupWindow {
+                                        y: 38px;
+                                        width: size-dd.width;
+                                        height: min(240px, 8px + root.font-size-options.length * 30px);
+
+                                        Rectangle {
+                                            background: #ffffff;
+                                            border-radius: 6px;
+                                            border-width: 1px;
+                                            border-color: root.c-border;
+                                            clip: true;
+
+                                            ScrollView {
+                                                VerticalLayout {
+                                                    padding: 4px;
+                                                    spacing: 2px;
+
+                                                    for sz in root.font-size-options : Rectangle {
+                                                        height: 28px;
+                                                        border-radius: 4px;
+                                                        background: sz == root.general-draft.font-size
+                                                            ? root.c-selected-soft
+                                                            : (sz-touch.has-hover ? root.c-hover : transparent);
+
+                                                        HorizontalLayout {
+                                                            padding-left: 10px;
+                                                            padding-right: 10px;
+
+                                                            Text {
+                                                                text: sz;
+                                                                color: sz == root.general-draft.font-size
+                                                                    ? root.c-primary : root.c-text;
+                                                                font-size: 13px;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+
+                                                        sz-touch := TouchArea {
+                                                            clicked => {
+                                                                root.general-draft.font-size = sz;
+                                                                size-pop.close();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
