@@ -36,8 +36,13 @@ impl App {
         };
         self.config.update_general(config);
 
-        // 即时生效：字体 + 字号（重新计算字符度量并注入 UI）
-        self.apply_font();
+        // 如果字体或字号发生变化，则即时生效，重新计算字符度量并注入 UI
+        if self.config.general().font_size != self.main_window.get_font_size() as u32
+            || self.config.general().font_family != self.main_window.get_font_family().to_string()
+        {
+            self.apply_font();
+        }
+
         let bg = self.config.general().background_color.clone();
         if let Some(color) = parse_color(&bg) {
             self.main_window.set_bg_color(color);
