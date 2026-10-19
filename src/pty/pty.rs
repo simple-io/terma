@@ -95,6 +95,9 @@ impl Pty {
                 cmd.env("LC_CTYPE", &locale);
             }
         }
+        // 设置 TERM 与 COLORTERM 环境变量，支持终端颜色渲染
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
 
         // 创建 PTY 主从端对
         let pair = portable_pty::native_pty_system()

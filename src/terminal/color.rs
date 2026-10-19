@@ -6,9 +6,9 @@
 use slint::Brush;
 
 /// 终端默认前景色（渲染层也会用到）
-pub const DEFAULT_FG: (u8, u8, u8) = (230, 230, 230);
+pub const DEFAULT_FG: (u8, u8, u8) = (195, 195, 195);
 /// 终端默认背景色（渲染层也会用到）
-pub const DEFAULT_BG: (u8, u8, u8) = (12, 12, 12);
+pub const DEFAULT_BG: (u8, u8, u8) = (0, 0, 0);
 
 /// 一个 Cell 的颜色，通常表示一个可见字符的颜色
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +86,7 @@ fn ansi256_to_rgb(i: u8) -> (u8, u8, u8) {
         13 => (255, 0, 255),
         14 => (0, 255, 255),
         15 => (255, 255, 255),
-        // 6x6x6 立方体（16..=231）
+        // 6x6x6 立方体（16..=231），color_id = 16 + R*36 + G*6 + B
         16..=231 => {
             let i = i - 16;
             let r = (i / 36) % 6;

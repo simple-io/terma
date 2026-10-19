@@ -372,7 +372,7 @@ impl Perform for TerminalState {
     //     params: 参数组，每个参数组内参数用 ; 或 : 分隔
     //     intermediates: 中介符，目前只处理 ? 表示私有模式
     //     _ignore: 是否忽略该 CSI 序列
-    //     c: 终端命令
+    //     c: CSI指令终结符，也就是终端命令
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
         // 把参数扁平化为 u16 序列（同时兼容 ; 与 : 分隔，用于 SGR/定位）
         let p: Vec<u16> = params.iter().flat_map(|g| g.iter().copied()).collect();
@@ -863,8 +863,6 @@ mod tests {
         assert!(row[1].continuation);
         assert_eq!(row[2].character, 'B');
     }
-
-
 
     // ─── 高度变化（仅行数）Resize 测试 ───
 
