@@ -32,9 +32,9 @@
 //!   PTY Output Thread ──(on_exit: EOF/错误 → ChildExited(id))──> UI Thread 关闭对应会话
 
 use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
-use std::rc::Rc;
 
 use crate::app::controller::CellRun;
 use crate::app::events::{TerminalEvent, WindowEvent};
@@ -44,6 +44,7 @@ use crate::renderer::Renderer;
 use crate::session::active::ActiveSession;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::TerminalState;
+use crate::terminal::color::Palette;
 use anyhow::Result;
 use slint::{ModelRc, VecModel};
 
@@ -125,6 +126,7 @@ impl TerminalSession {
         title: String,
         rows: u16,
         cols: u16,
+        palette: Palette,
         event_tx: SyncSender<WindowEvent>,
         active_tracker: Arc<ActiveSession>,
     ) -> Result<Self> {
@@ -166,6 +168,9 @@ impl TerminalSession {
             on_exit,
         )?;
 
+        let renderer = Renderer::new();
+        renderer.set_palette(palette);
+
         Ok(Self {
             id,
             profile_id: profile.id.clone(),
@@ -176,7 +181,7 @@ impl TerminalSession {
             scroll_offset: Cell::new(0),
             scroll_anchor: Cell::new(0),
             scroll_acc: 0.0,
-            renderer: Renderer::new(),
+            renderer,
         })
     }
 
@@ -216,6 +221,12 @@ impl TerminalSession {
             guard.mark_all_dirty();
         }
         self.renderer.clear();
+    }
+
+    // 切换配色方案调色板：更新渲染器并整屏标脏，下次渲染全量按新配色重算。
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.renderer.set_palette(palette);
+        self.state.lock().unwrap().mark_all_dirty();
     }
 
     // 读取本会话当前的 scrollback 历史长度。

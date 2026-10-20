@@ -22,6 +22,7 @@
 //!     切换 Tab 即换挂 model —— 内容零拷贝、零重算。
 
 use crate::app::controller::CellRun;
+use crate::terminal::color::Palette;
 use crate::terminal::screen::ScreenBuffer;
 use slint::{Model, VecModel};
 use std::cell::{Cell, RefCell};
@@ -59,6 +60,8 @@ pub struct RenderCells {
     present: Cell<Present>,
     /// 强制下次全量重建（resize 等缓存失效场景）
     force_full: Cell<bool>,
+    /// 配色方案调色板（颜色解析用）
+    palette: Cell<Palette>,
 }
 
 impl Default for RenderCells {
@@ -75,6 +78,7 @@ impl RenderCells {
             viewport_lens: RefCell::new(Vec::new()),
             present: Cell::new(Present::Follow),
             force_full: Cell::new(true),
+            palette: Cell::new(Palette::default()),
         }
     }
 
@@ -98,6 +102,7 @@ impl RenderCells {
     ///   - 脏行数 ≥ 总行数一半。
     pub fn render_follow(&self, screen: &ScreenBuffer, mut dirty_rows: Vec<usize>) {
         let visible = screen.visible_rows();
+        let palette = self.palette.get();
         dirty_rows.sort_unstable();
         dirty_rows.dedup();
 
@@ -120,7 +125,7 @@ impl RenderCells {
         if full {
             for idx in &dirty_rows {
                 if let Some(row) = visible.get(*idx) {
-                    cache[*idx] = row.to_cell_run(*idx);
+                    cache[*idx] = row.to_cell_run(*idx, &palette);
                 }
             }
             let flat: Vec<CellRun> = cache.iter().flatten().cloned().collect();
@@ -137,7 +142,7 @@ impl RenderCells {
             };
             // 前缀 = 该行之前所有行的渲染项数量之和（升序遍历，增量推进）
             let prefix: usize = cache[..idx].iter().map(|r| r.len()).sum();
-            let new_runs = row.to_cell_run(idx);
+            let new_runs = row.to_cell_run(idx, &palette);
             self.apply_row_segment(prefix, &cache[idx], &new_runs);
             cache[idx] = new_runs;
         }
@@ -153,6 +158,7 @@ impl RenderCells {
     /// 回到跟随模式时直接从缓存全量 set_vec，无需重算任何行。
     pub fn render_viewport(&self, screen: &ScreenBuffer, offset: usize, mut dirty_rows: Vec<usize>) {
         let rows = screen.rows;
+        let palette = self.palette.get();
         let sb_len = screen.scrollback.len();
         let sb_total = screen.scrollback_total;
         // 防御性 clamp：与旧 build_viewport_runs 一致，offset 不越过物理历史行数
@@ -169,7 +175,7 @@ impl RenderCells {
             }
             for &g in &dirty_rows {
                 if let Some(row) = screen.grid.get(g) {
-                    cache[g] = row.to_cell_run(g);
+                    cache[g] = row.to_cell_run(g, &palette);
                 }
             }
         }
@@ -201,7 +207,7 @@ impl RenderCells {
                     prefix += lens[r];
                 }
                 cursor = v;
-                let new_runs = source.to_cell_run(v);
+                let new_runs = source.to_cell_run(v, &palette);
                 let old_len = lens[v];
                 // 逐项应用（无需旧内容做逐项比较——整段以新内容为准）
                 let common = old_len.min(new_runs.len());
@@ -232,7 +238,7 @@ impl RenderCells {
             } else {
                 &screen.grid[v - offset]
             };
-            let runs = source.to_cell_run(v);
+            let runs = source.to_cell_run(v, &palette);
             lens[v] = runs.len();
             flat.extend(runs);
         }

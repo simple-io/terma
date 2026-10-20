@@ -6,6 +6,7 @@
 //! 保存设置后回写主窗口（字体、背景色、Profile 下拉、强制重绘）。
 
 use super::*;
+use crate::config::color_scheme::{self, ColorScheme};
 use crate::config::profile::{format_env_vars_text, parse_env_vars_text};
 use crate::config::{GeneralConfig, Profile};
 
@@ -28,24 +29,23 @@ impl App {
             default_profile: info.default_profile_id.to_string(),
             font_family: info.font_family.to_string(),
             font_size: info.font_size as u32,
-            background_color: info.background_color.to_string(),
             cursor_style: info.cursor_style.to_string(),
             color_scheme: info.color_scheme.to_string(),
+            color_schemes: self.config.general().color_schemes.clone(),
             bell_sound: info.bell_sound,
             scrollback_limit: info.scrollback_limit as usize,
         };
         self.config.update_general(config);
+
+        // 配色方案即时生效：窗口背景/光标色 + 各会话调色板
+        self.apply_window_colors();
+        self.sessions.apply_palette(self.config.active_palette());
 
         // 如果字体或字号发生变化，则即时生效，重新计算字符度量并注入 UI
         if self.config.general().font_size != self.main_window.get_font_size() as u32
             || self.config.general().font_family != self.main_window.get_font_family().to_string()
         {
             self.apply_font();
-        }
-
-        let bg = self.config.general().background_color.clone();
-        if let Some(color) = parse_color(&bg) {
-            self.main_window.set_bg_color(color);
         }
 
         // 刷新主窗口 Profile 下拉菜单（默认 Profile 可能变化）
@@ -122,6 +122,43 @@ impl App {
         }
     }
 
+    // 配色方案选中：回填编辑器草稿 + 预览色板（不影响主窗口，保存时才生效）。
+    pub(super) fn on_scheme_selected(&mut self, name: SharedString) {
+        let customs = self.config.general().color_schemes.clone();
+        if let Some(w) = self.settings_window.as_mut() {
+            let scheme = ColorScheme::new_from_schemes(&name, &customs);
+            w.set_scheme_colors(ui_scheme_colors(&scheme));
+            w.set_scheme_preview(Rc::new(VecModel::from(preview_brushes(&scheme))).into());
+        }
+    }
+
+    // 另存为自定义配色方案：持久化 + 设为当前生效 + 回填列表 + 立即应用到终端。
+    pub(super) fn on_save_custom_scheme(&mut self, colors: SchemeColors) {
+        let scheme = scheme_from_ui(&colors);
+        if scheme.name.trim().is_empty() {
+            return;
+        }
+        if self.config.save_custom_scheme(scheme) {
+            self.apply_window_colors();
+            self.sessions.apply_palette(self.config.active_palette());
+            if let Some(w) = self.settings_window.as_ref() {
+                self.sync_schemes_to_ui(w);
+            }
+            self.render_active_force();
+        }
+    }
+
+    // 删除自定义配色方案：回退到内置默认并立即应用。
+    pub(super) fn on_delete_custom_scheme(&mut self, name: SharedString) {
+        self.config.delete_custom_scheme(&name.to_string());
+        self.apply_window_colors();
+        self.sessions.apply_palette(self.config.active_palette());
+        if let Some(w) = self.settings_window.as_ref() {
+            self.sync_schemes_to_ui(w);
+        }
+        self.render_active_force();
+    }
+
     // 打开设置窗口（懒创建：首次打开时创建，后续仅激活）
     fn open_settings_window(&mut self) {
         if let Some(w) = self.settings_window.as_ref() {
@@ -168,6 +205,28 @@ impl App {
                 .unwrap();
         });
 
+        // 配色方案选中 → 回填编辑器与预览
+        let command_tx = self.event_tx.clone();
+        window.on_scheme_selected(move |name| {
+            command_tx.send(WindowEvent::SchemeSelected(name)).unwrap();
+        });
+
+        // 另存为自定义配色方案
+        let command_tx = self.event_tx.clone();
+        window.on_save_custom_scheme(move |colors| {
+            command_tx
+                .send(WindowEvent::SaveCustomScheme(colors))
+                .unwrap();
+        });
+
+        // 删除自定义配色方案
+        let command_tx = self.event_tx.clone();
+        window.on_delete_custom_scheme(move |name| {
+            command_tx
+                .send(WindowEvent::DeleteCustomScheme(name))
+                .unwrap();
+        });
+
         // 窗口关闭请求 → 隐藏而非销毁
         window
             .window()
@@ -186,7 +245,6 @@ impl App {
         window.set_general_settings(GeneralSettingsInfo {
             font_family: general.font_family.as_str().into(),
             font_size: general.font_size as i32,
-            background_color: general.background_color.as_str().into(),
             cursor_style: general.cursor_style.as_str().into(),
             color_scheme: general.color_scheme.as_str().into(),
             bell_sound: general.bell_sound,
@@ -247,6 +305,44 @@ impl App {
             .map(|i| i as i32)
             .unwrap_or(-1);
         window.set_default_index(idx);
+
+        // 配色方案：列表 + 当前生效方案编辑器草稿 + 预览色板
+        self.sync_schemes_to_ui(window);
+    }
+
+    // 把配色方案列表 / 当前生效方案 / 预览色板同步到设置窗口。
+    fn sync_schemes_to_ui(&self, window: &SettingsWindow) {
+        let schemes = self.config.all_schemes();
+        let list: Vec<ColorSchemeEntry> = schemes
+            .iter()
+            .map(|s| {
+                let p = s.resolve();
+                ColorSchemeEntry {
+                    name: s.name.as_str().into(),
+                    is_custom: self
+                        .config
+                        .general()
+                        .color_schemes
+                        .iter()
+                        .any(|c| c.name == s.name),
+                    fg: rgb_to_brush(p.foreground),
+                    bg: rgb_to_brush(p.background),
+                }
+            })
+            .collect();
+        window.set_color_scheme_list(Rc::new(VecModel::from(list)).into());
+
+        let general = self.config.general();
+        let scheme = ColorScheme::new_from_schemes(&general.color_scheme, &general.color_schemes);
+        window.set_scheme_colors(ui_scheme_colors(&scheme));
+        window.set_scheme_preview(Rc::new(VecModel::from(preview_brushes(&scheme))).into());
+
+        let idx = schemes
+            .iter()
+            .position(|s| s.name.eq_ignore_ascii_case(&general.color_scheme))
+            .map(|i| i as i32)
+            .unwrap_or(0);
+        window.set_scheme_index(idx);
     }
 
     // 按 family 名精确查找索引，未命中返回 -1（Slint 侧"无高亮"哨兵值）
@@ -259,16 +355,75 @@ impl App {
     }
 }
 
-/// 解析十六进制颜色字符串（如 "#000000"）为 Slint Color
-fn parse_color(s: &str) -> Option<slint::Color> {
-    let s = s.strip_prefix('#')?;
-    match s.len() {
-        6 => {
-            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-            Some(slint::Color::from_rgb_u8(r, g, b))
-        }
-        _ => None,
+/// 配置层 ColorScheme → 设置窗口编辑器草稿（色值规范化为 `#rrggbb`）。
+fn ui_scheme_colors(s: &ColorScheme) -> SchemeColors {
+    let p = s.resolve();
+    let ansi = |i: usize| color_scheme::to_hex(p.ansi[i]).into();
+    SchemeColors {
+        name: s.name.as_str().into(),
+        foreground: color_scheme::to_hex(p.foreground).into(),
+        background: color_scheme::to_hex(p.background).into(),
+        cursor: color_scheme::to_hex(p.cursor).into(),
+        selection: color_scheme::to_hex(p.selection).into(),
+        ansi0: ansi(0),
+        ansi1: ansi(1),
+        ansi2: ansi(2),
+        ansi3: ansi(3),
+        ansi4: ansi(4),
+        ansi5: ansi(5),
+        ansi6: ansi(6),
+        ansi7: ansi(7),
+        ansi8: ansi(8),
+        ansi9: ansi(9),
+        ansi10: ansi(10),
+        ansi11: ansi(11),
+        ansi12: ansi(12),
+        ansi13: ansi(13),
+        ansi14: ansi(14),
+        ansi15: ansi(15),
     }
+}
+
+/// 设置窗口编辑器草稿 → 配置层 ColorScheme。
+fn scheme_from_ui(c: &SchemeColors) -> ColorScheme {
+    let palette = vec![
+        c.ansi0.to_string(),
+        c.ansi1.to_string(),
+        c.ansi2.to_string(),
+        c.ansi3.to_string(),
+        c.ansi4.to_string(),
+        c.ansi5.to_string(),
+        c.ansi6.to_string(),
+        c.ansi7.to_string(),
+        c.ansi8.to_string(),
+        c.ansi9.to_string(),
+        c.ansi10.to_string(),
+        c.ansi11.to_string(),
+        c.ansi12.to_string(),
+        c.ansi13.to_string(),
+        c.ansi14.to_string(),
+        c.ansi15.to_string(),
+    ];
+    ColorScheme {
+        name: c.name.to_string(),
+        foreground: c.foreground.to_string(),
+        background: c.background.to_string(),
+        cursor: c.cursor.to_string(),
+        selection: c.selection.to_string(),
+        palette,
+    }
+}
+
+/// 方案解析后的 20 个 brush：前景/背景/光标/选区 + 16 色 ANSI（供预览色板）。
+fn preview_brushes(s: &ColorScheme) -> Vec<slint::Brush> {
+    let p = s.resolve();
+    let mut v = Vec::with_capacity(20);
+    v.push(rgb_to_brush(p.foreground));
+    v.push(rgb_to_brush(p.background));
+    v.push(rgb_to_brush(p.cursor));
+    v.push(rgb_to_brush(p.selection));
+    for c in p.ansi {
+        v.push(rgb_to_brush(c));
+    }
+    v
 }

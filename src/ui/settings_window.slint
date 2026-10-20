@@ -27,8 +27,6 @@ export struct GeneralSettingsInfo {
     font-family: string,
     // 字号
     font-size: int,
-    // 背景
-    background-color: string,
     // 光标
     cursor-style: string,
     // 配色方案
@@ -39,6 +37,39 @@ export struct GeneralSettingsInfo {
     scrollback-limit: int,
     // 默认启动项
     default-profile-id: string,
+}
+
+// 配色方案列表项（下拉框用）：名称 + 自定义标记 + 前景/背景色块
+export struct ColorSchemeEntry {
+    name: string,
+    is-custom: bool,
+    fg: brush,
+    bg: brush,
+}
+
+// 单个配色方案的完整颜色（编辑器草稿 + 另存为自定义用）
+export struct SchemeColors {
+    name: string,
+    foreground: string,
+    background: string,
+    cursor: string,
+    selection: string,
+    ansi0: string,
+    ansi1: string,
+    ansi2: string,
+    ansi3: string,
+    ansi4: string,
+    ansi5: string,
+    ansi6: string,
+    ansi7: string,
+    ansi8: string,
+    ansi9: string,
+    ansi10: string,
+    ansi11: string,
+    ansi12: string,
+    ansi13: string,
+    ansi14: string,
+    ansi15: string,
 }
 
 // 字体下拉框候选项：is-bundled 区分项目自带字体（置顶）与系统字体
@@ -55,6 +86,53 @@ export struct ProfileEditInfo {
     args: string,
     working-directory: string,
     env-vars: string,
+}
+
+// 配色预览色块（色块 + 下方标签）
+component ColorChip {
+    in property <brush> swatch;
+    in property <string> label;
+    VerticalLayout {
+        spacing: 3px;
+        Rectangle {
+            width: 22px;
+            height: 22px;
+            border-radius: 3px;
+            border-width: 1px;
+            border-color: #dadce0;
+            background: swatch;
+        }
+        Text {
+            text: label;
+            color: #5f6368;
+            font-size: 10px;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+// 颜色编辑字段（标签 + 十六进制输入框，编辑结果经 changed 回写父级）
+component ColorField {
+    in property <string> label;
+    in property <string> value;
+    callback changed(string);
+    HorizontalLayout {
+        spacing: 6px;
+        Text {
+            text: label;
+            width: 44px;
+            color: #5f6368;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+        TextInput {
+            width: 82px;
+            font-size: 13px;
+            color: #1f1f1f;
+            text: value;
+            edited => { changed(self.text); }
+        }
+    }
 }
 
 export component SettingsWindow inherits Window {
@@ -108,6 +186,28 @@ export component SettingsWindow inherits Window {
     // 搜索词变更（关键词, 当前字体）：Rust 侧做模糊过滤（部分匹配、不区分大小写）
     // 回填 filtered-font-list；空关键词时同时回填 font-current-index
     callback font-search-edited(string, string);
+
+    // ─── 配色方案 ───
+    // 方案列表（内置在前，自定义在后）
+    in property <[ColorSchemeEntry]> color-scheme-list;
+    // 预览色板：20 个 brush（前景/背景/光标/选区 + 16 色 ANSI），Rust 侧解析注入
+    in property <[brush]> scheme-preview;
+    // 编辑器草稿（当前方案的颜色，编辑后另存为自定义）
+    in-out property <SchemeColors> scheme-colors;
+    // 下拉框当前选中索引
+    in-out property <int> scheme-index: -1;
+    // ANSI 色块标签（0..15）
+    property <[string]> ansi-labels: ["0","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"];
+    // 当前选中方案是否为自定义（决定是否显示删除按钮）
+    property <bool> selected-is-custom:
+        (root.scheme-index >= 0 && root.scheme-index < root.color-scheme-list.length)
+        ? root.color-scheme-list[root.scheme-index].is-custom : false;
+    // 选中方案回调（回填编辑器与预览）
+    callback scheme-selected(string);
+    // 另存为自定义方案
+    callback save-custom-scheme(SchemeColors);
+    // 删除自定义方案
+    callback delete-custom-scheme(string);
 
     // ─── 回调 ───
     callback save-general(GeneralSettingsInfo);
@@ -660,31 +760,138 @@ export component SettingsWindow inherits Window {
                                 }
                             }
 
-                            // 背景色
+                            // 配色方案（下拉选择：内置 + 自定义）
                             HorizontalLayout {
                                 spacing: 10px;
                                 Text {
-                                    text: "背景色";
+                                    text: "配色方案";
                                     color: root.c-text-secondary;
                                     font-size: 14px;
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
-                                TextInput {
-                                    font-size: 14px;
-                                    width: 120px;
-                                    text: root.general-draft.background-color;
-                                    edited => { root.general-draft.background-color = self.text; }
-                                }
-                                // 背景色预览块
-                                Rectangle {
-                                    width: 20px;
-                                    height: 20px;
-                                    y: (parent.height - self.height) / 2;
-                                    border-radius: 3px;
+
+                                scheme-dd := Rectangle {
+                                    width: 280px;
+                                    height: 34px;
+                                    border-radius: 6px;
                                     border-width: 1px;
-                                    border-color: root.c-border;
-                                    background: #2d2d2d;
+                                    border-color: scheme-dd-touch.has-hover ? root.c-primary : root.c-border;
+                                    background: #ffffff;
+
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 8px;
+
+                                        // 当前方案背景色块
+                                        Rectangle {
+                                            width: 16px;
+                                            height: 16px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 3px;
+                                            border-width: 1px;
+                                            border-color: root.c-border;
+                                            background: root.scheme-preview[1];
+                                        }
+
+                                        Text {
+                                            text: root.general-draft.color-scheme == "" ? "请选择配色方案" : root.general-draft.color-scheme;
+                                            color: root.general-draft.color-scheme == "" ? root.c-text-hint : root.c-text;
+                                            font-size: 14px;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        Text {
+                                            text: "\u{25BE}";
+                                            color: root.c-text-secondary;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    scheme-dd-touch := TouchArea {
+                                        clicked => { scheme-pop.show(); }
+                                    }
+
+                                    scheme-pop := PopupWindow {
+                                        y: 38px;
+                                        width: scheme-dd.width;
+                                        height: min(320px, 8px + root.color-scheme-list.length * 34px);
+
+                                        Rectangle {
+                                            background: #ffffff;
+                                            border-radius: 6px;
+                                            border-width: 1px;
+                                            border-color: root.c-border;
+                                            clip: true;
+
+                                            ScrollView {
+                                                VerticalLayout {
+                                                    padding: 4px;
+                                                    spacing: 2px;
+
+                                                    for s[i] in root.color-scheme-list : Rectangle {
+                                                        height: 32px;
+                                                        border-radius: 4px;
+                                                        background: (i == root.scheme-index || scheme-opt-touch.has-hover)
+                                                            ? root.c-hover : transparent;
+
+                                                        HorizontalLayout {
+                                                            padding-left: 10px;
+                                                            padding-right: 10px;
+                                                            spacing: 8px;
+
+                                                            // 方案色块：背景 + 前景文本（迷你预览）
+                                                            Rectangle {
+                                                                width: 18px;
+                                                                height: 16px;
+                                                                y: (parent.height - self.height) / 2;
+                                                                border-radius: 3px;
+                                                                border-width: 1px;
+                                                                border-color: root.c-border;
+                                                                background: s.bg;
+                                                                Text {
+                                                                    width: parent.width;
+                                                                    height: parent.height;
+                                                                    text: "Aa";
+                                                                    color: s.fg;
+                                                                    font-size: 8px;
+                                                                    horizontal-alignment: center;
+                                                                    vertical-alignment: center;
+                                                                }
+                                                            }
+
+                                                            Text {
+                                                                text: s.name;
+                                                                color: i == root.scheme-index ? root.c-primary : root.c-text;
+                                                                font-size: 13px;
+                                                                vertical-alignment: center;
+                                                                overflow: elide;
+                                                            }
+                                                            Rectangle { horizontal-stretch: 1; }
+                                                            Text {
+                                                                text: s.is-custom ? "自定义" : "";
+                                                                color: root.c-text-hint;
+                                                                font-size: 11px;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+
+                                                        scheme-opt-touch := TouchArea {
+                                                            clicked => {
+                                                                root.scheme-index = i;
+                                                                root.general-draft.color-scheme = s.name;
+                                                                root.scheme-selected(s.name);
+                                                                scheme-pop.close();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
@@ -712,27 +919,158 @@ export component SettingsWindow inherits Window {
                                 }
                             }
 
-                            // 配色方案
+                            // 配色预览：核心色 + 16 色 ANSI
+                            VerticalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "配色预览";
+                                    color: root.c-text-secondary;
+                                    font-size: 12px;
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    ColorChip { swatch: root.scheme-preview[0]; label: "前景"; }
+                                    ColorChip { swatch: root.scheme-preview[1]; label: "背景"; }
+                                    ColorChip { swatch: root.scheme-preview[2]; label: "光标"; }
+                                    ColorChip { swatch: root.scheme-preview[3]; label: "选区"; }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    for l[i] in root.ansi-labels: ColorChip {
+                                        swatch: root.scheme-preview[4 + i];
+                                        label: l;
+                                    }
+                                }
+                            }
+
+                            Rectangle { height: 6px; }
+
+                            // 自定义配色编辑器
+                            Text {
+                                text: "自定义配色";
+                                color: root.c-text-secondary;
+                                font-size: 12px;
+                            }
+                            Text {
+                                text: "修改颜色后点「另存为新方案」；同名保存将优先生效于内置方案。";
+                                color: root.c-text-hint;
+                                font-size: 12px;
+                            }
+
+                            // 名称
                             HorizontalLayout {
                                 spacing: 10px;
                                 Text {
-                                    text: "配色方案";
+                                    text: "名称";
                                     color: root.c-text-secondary;
                                     font-size: 14px;
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
                                 TextInput {
+                                    width: 200px;
                                     font-size: 14px;
-                                    width: 120px;
-                                    text: root.general-draft.color-scheme;
-                                    edited => { root.general-draft.color-scheme = self.text; }
+                                    text: root.scheme-colors.name;
+                                    edited => { root.scheme-colors.name = self.text; }
                                 }
-                                Text {
-                                    text: "(default / solarized-dark / dracula)";
-                                    color: root.c-text-hint;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
+                            }
+
+                            // 前景 / 背景 / 光标 / 选区
+                            HorizontalLayout {
+                                spacing: 14px;
+                                ColorField { label: "前景色"; value: root.scheme-colors.foreground; changed(v) => { root.scheme-colors.foreground = v; } }
+                                ColorField { label: "背景色"; value: root.scheme-colors.background; changed(v) => { root.scheme-colors.background = v; } }
+                            }
+                            HorizontalLayout {
+                                spacing: 14px;
+                                ColorField { label: "光标色"; value: root.scheme-colors.cursor; changed(v) => { root.scheme-colors.cursor = v; } }
+                                ColorField { label: "选区色"; value: root.scheme-colors.selection; changed(v) => { root.scheme-colors.selection = v; } }
+                            }
+
+                            // 标准色 0-7
+                            Text {
+                                text: "标准色（ANSI 0-7）";
+                                color: root.c-text-hint;
+                                font-size: 12px;
+                            }
+                            HorizontalLayout {
+                                spacing: 14px;
+                                ColorField { label: "黑"; value: root.scheme-colors.ansi0; changed(v) => { root.scheme-colors.ansi0 = v; } }
+                                ColorField { label: "红"; value: root.scheme-colors.ansi1; changed(v) => { root.scheme-colors.ansi1 = v; } }
+                                ColorField { label: "绿"; value: root.scheme-colors.ansi2; changed(v) => { root.scheme-colors.ansi2 = v; } }
+                                ColorField { label: "黄"; value: root.scheme-colors.ansi3; changed(v) => { root.scheme-colors.ansi3 = v; } }
+                            }
+                            HorizontalLayout {
+                                spacing: 14px;
+                                ColorField { label: "蓝"; value: root.scheme-colors.ansi4; changed(v) => { root.scheme-colors.ansi4 = v; } }
+                                ColorField { label: "品红"; value: root.scheme-colors.ansi5; changed(v) => { root.scheme-colors.ansi5 = v; } }
+                                ColorField { label: "青"; value: root.scheme-colors.ansi6; changed(v) => { root.scheme-colors.ansi6 = v; } }
+                                ColorField { label: "白"; value: root.scheme-colors.ansi7; changed(v) => { root.scheme-colors.ansi7 = v; } }
+                            }
+
+                            // 亮色 8-15
+                            Text {
+                                text: "亮色（ANSI 8-15）";
+                                color: root.c-text-hint;
+                                font-size: 12px;
+                            }
+                            HorizontalLayout {
+                                spacing: 14px;
+                                ColorField { label: "亮黑"; value: root.scheme-colors.ansi8; changed(v) => { root.scheme-colors.ansi8 = v; } }
+                                ColorField { label: "亮红"; value: root.scheme-colors.ansi9; changed(v) => { root.scheme-colors.ansi9 = v; } }
+                                ColorField { label: "亮绿"; value: root.scheme-colors.ansi10; changed(v) => { root.scheme-colors.ansi10 = v; } }
+                                ColorField { label: "亮黄"; value: root.scheme-colors.ansi11; changed(v) => { root.scheme-colors.ansi11 = v; } }
+                            }
+                            HorizontalLayout {
+                                spacing: 14px;
+                                ColorField { label: "亮蓝"; value: root.scheme-colors.ansi12; changed(v) => { root.scheme-colors.ansi12 = v; } }
+                                ColorField { label: "亮品红"; value: root.scheme-colors.ansi13; changed(v) => { root.scheme-colors.ansi13 = v; } }
+                                ColorField { label: "亮青"; value: root.scheme-colors.ansi14; changed(v) => { root.scheme-colors.ansi14 = v; } }
+                                ColorField { label: "亮白"; value: root.scheme-colors.ansi15; changed(v) => { root.scheme-colors.ansi15 = v; } }
+                            }
+
+                            // 操作按钮
+                            HorizontalLayout {
+                                spacing: 10px;
+                                // 另存为新方案
+                                Rectangle {
+                                    width: 120px;
+                                    height: 32px;
+                                    background: save-scheme.has-hover ? root.c-primary-hover : root.c-primary;
+                                    border-radius: 4px;
+                                    Text {
+                                        text: "另存为新方案";
+                                        color: #ffffff;
+                                        font-size: 14px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    save-scheme := TouchArea {
+                                        clicked => {
+                                            root.save-custom-scheme(root.scheme-colors);
+                                        }
+                                    }
+                                }
+                                // 删除（仅自定义方案显示）
+                                if root.selected-is-custom: Rectangle {
+                                    width: 100px;
+                                    height: 32px;
+                                    background: del-scheme.has-hover ? #fdecec : #ffffff;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: root.c-danger;
+                                    Text {
+                                        text: "删除方案";
+                                        color: root.c-danger;
+                                        font-size: 14px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    del-scheme := TouchArea {
+                                        clicked => {
+                                            root.delete-custom-scheme(root.scheme-colors.name);
+                                        }
+                                    }
                                 }
                             }
 

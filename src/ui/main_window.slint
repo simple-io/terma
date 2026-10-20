@@ -15,7 +15,7 @@
 import { TabBar, TabInfo } from "tab_bar.slint";
 import { TerminalView, CellRun } from "terminal_view.slint";
 import { ProfileMenu, ProfileInfo } from "profile_menu.slint";
-import { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry } from "settings_window.slint";
+import { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry, ColorSchemeEntry, SchemeColors } from "settings_window.slint";
 
 // 导入内置字体
 import "../../fonts/JetBrainsMono-Regular.ttf";
@@ -23,7 +23,7 @@ import "../../fonts/JetBrainsMono-Bold.ttf";
 import "../../fonts/CascadiaCode.ttf";
 
 
-export { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry }
+export { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry, ColorSchemeEntry, SchemeColors }
 
 export component MainWindow inherits Window {
     // ─── 基本设置 ───
@@ -37,6 +37,8 @@ export component MainWindow inherits Window {
     preferred-height: 621px;
     // 终端初始背景色
     in-out property <color> bg-color: #000000;
+    // 光标色（配色方案光标，半透明）
+    in-out property <color> cursor-color: #ffffff44;
     background: root.bg-color;
 
     // ─── 终端字体设置 ───
@@ -120,6 +122,8 @@ export component MainWindow inherits Window {
             font-size: root.font-size;
             char-w: root.char-w;
             char-h: root.char-h;
+            bg-color: root.bg-color;
+            cursor-color: root.cursor-color;
             cursor-row: root.cursor-row;
             cursor-col: root.cursor-col;
             cursor-visible: root.cursor-visible;

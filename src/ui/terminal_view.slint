@@ -44,6 +44,10 @@ export component TerminalView inherits Rectangle {
     in property <length> font-size: 12px;
     // 终端字体（从 Rust 注入）
     in property <string> font-family: "JetBrains Mono";
+    // 终端背景色（配色方案背景，Rust 注入）
+    in property <color> bg-color: #000000;
+    // 光标色（配色方案光标，Rust 注入为半透明）
+    in property <color> cursor-color: #ffffff44;
 
     // ─── 滚动（scrollback 历史查看） ───
     // 是否显示滚动条
@@ -73,7 +77,7 @@ export component TerminalView inherits Rectangle {
     // 在获得焦点时会请求启用系统 IME，普通 FocusScope 不会。
     forward-focus: ime-input;
 
-    background: #000000;
+    background: root.bg-color;
 
     // 显示滚动条并重置 3 秒自动隐藏计时（滚动交互时调用）
     function show-scrollbar() {
@@ -99,7 +103,7 @@ export component TerminalView inherits Rectangle {
         y: root.cursor-row * root.char-h;
         width: root.char-w;
         height: root.char-h;
-        background: #ffffff44;
+        background: root.cursor-color;
     }
 
     // 字符渲染项列表：外层遍历「行 model」，内层遍历该行内的每个 CellRun。

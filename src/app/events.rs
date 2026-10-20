@@ -4,7 +4,7 @@
 //! PTY 线程通过 channel 把 TerminalEvent 发送到 UI 线程，
 //! UI 线程据此更新 ScreenBuffer 并触发重渲染。
 
-use crate::app::controller::{GeneralSettingsInfo, ProfileEditInfo};
+use crate::app::controller::{GeneralSettingsInfo, ProfileEditInfo, SchemeColors};
 use crate::session::session_id::ProfileId;
 use crate::session::session_id::SessionId;
 use slint::SharedString;
@@ -57,4 +57,10 @@ pub enum WindowEvent {
     DelProfile(SharedString),
     // 模糊搜索字体
     FilterFonts(SharedString, SharedString),
+    // 配色方案选中（回填编辑器与预览）
+    SchemeSelected(SharedString),
+    // 另存为自定义配色方案
+    SaveCustomScheme(SchemeColors),
+    // 删除自定义配色方案
+    DeleteCustomScheme(SharedString),
 }

@@ -3,10 +3,12 @@
 //! 从 <config_dir>/terma/config.toml 加载完整配置（通用配置 + Profile 列表）。
 //! 文件不存在时生成平台默认并落盘。支持 Profile CRUD + 通用配置更新 + 持久化。
 
+use crate::config::color_scheme::{self, ColorScheme};
 use crate::config::general::GeneralConfig;
 use crate::config::loader::{self, ConfigFile};
 use crate::config::profile::Profile;
 use crate::session::session_id::ProfileId;
+use crate::terminal::color::Palette;
 
 // 配置管理对象
 pub struct ConfigManager {
@@ -141,6 +143,48 @@ impl ConfigManager {
     // 获取通用配置
     pub fn general(&self) -> &GeneralConfig {
         &self.general
+    }
+
+    // 当前生效配色方案的解析调色板（自定义优先，内置兜底，最终回退首个内置方案）。
+    pub fn active_palette(&self) -> Palette {
+        let color_scheme =
+            ColorScheme::new_from_schemes(&self.general.color_scheme, &self.general.color_schemes);
+        color_scheme.resolve()
+    }
+
+    // 内置 + 自定义合并后的完整配色方案列表。
+    pub fn all_schemes(&self) -> Vec<ColorScheme> {
+        color_scheme::all_schemes(&self.general.color_schemes)
+    }
+
+    // 保存（新增或按名覆盖）一个自定义配色方案，并设为当前生效方案。
+    // 名称为空时返回 false 且不落盘。
+    pub fn save_custom_scheme(&mut self, scheme: ColorScheme) -> bool {
+        if scheme.name.trim().is_empty() {
+            return false;
+        }
+        if let Some(existing) = self
+            .general
+            .color_schemes
+            .iter_mut()
+            .find(|s| s.name == scheme.name)
+        {
+            *existing = scheme.clone();
+        } else {
+            self.general.color_schemes.push(scheme.clone());
+        }
+        self.general.color_scheme = scheme.name;
+        let _ = self.save();
+        true
+    }
+
+    // 删除指定名称的自定义配色方案；若删除的是当前生效方案，回退到首个内置方案。
+    pub fn delete_custom_scheme(&mut self, name: &str) {
+        self.general.color_schemes.retain(|s| s.name != name);
+        if self.general.color_scheme == name {
+            self.general.color_scheme = color_scheme::builtins()[0].name.clone();
+        }
+        let _ = self.save();
     }
 
     // 更新通用配置并持久化。

@@ -26,6 +26,7 @@ use crate::config::Profile;
 use crate::session::active::ActiveSession;
 use crate::session::session::TerminalSession;
 use crate::session::session_id::{IdGenerator, ProfileId, SessionId};
+use crate::terminal::color::Palette;
 use anyhow::Result;
 
 pub struct SessionManager {
@@ -61,6 +62,7 @@ impl SessionManager {
         profile: &Profile,
         rows: u16,
         cols: u16,
+        palette: Palette,
         event_tx: SyncSender<WindowEvent>,
     ) -> Result<SessionId> {
         let id = self.id_gen.next_session_id();
@@ -71,6 +73,7 @@ impl SessionManager {
             title,
             rows,
             cols,
+            palette,
             event_tx,
             self.active_tracker.clone(),
         )?;
@@ -159,6 +162,13 @@ impl SessionManager {
     pub fn resize_all(&mut self, rows: u16, cols: u16) {
         for s in self.sessions.values_mut() {
             s.resize(rows, cols);
+        }
+    }
+
+    // 把新配色方案调色板应用到所有会话（配色切换时调用）。
+    pub fn apply_palette(&mut self, palette: Palette) {
+        for s in self.sessions.values_mut() {
+            s.set_palette(palette);
         }
     }
 }

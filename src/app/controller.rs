@@ -29,6 +29,7 @@ use crate::config::ConfigManager;
 use crate::config::fonts;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::session::{RenderOutput, ScrollAction, SessionManager};
+use crate::terminal::color::Palette;
 use slint::language::KeyboardModifiers;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
@@ -44,8 +45,8 @@ mod ui_generated {
 mod settings;
 
 pub use ui_generated::{
-    CellRun, FontEntry, GeneralSettingsInfo, MainWindow, ProfileEditInfo, ProfileInfo,
-    SettingsWindow, TabInfo,
+    CellRun, ColorSchemeEntry, FontEntry, GeneralSettingsInfo, MainWindow, ProfileEditInfo,
+    ProfileInfo, SchemeColors, SettingsWindow, TabInfo,
 };
 
 /// Tab 栏 + 分隔线高度（逻辑像素）
@@ -159,6 +160,8 @@ impl App {
         self.apply_profiles();
         // 应用字体
         self.apply_font();
+        // 应用配色方案（窗口背景/光标色）
+        self.apply_window_colors();
         // 应用初始窗口尺寸
         self.apply_initial_window_size();
         // 设置 UI 回调函数
@@ -181,6 +184,22 @@ impl App {
         self.main_window.set_font_size(size as f32);
         self.main_window.set_char_w(metrics.char_w);
         self.main_window.set_char_h(metrics.char_h);
+    }
+
+    // 当前生效配色方案（供窗口颜色注入与会话创建使用）。
+    fn active_palette(&self) -> Palette {
+        self.config.active_palette()
+    }
+
+    // 把当前配色方案的背景/光标色注入主窗口（终端区背景 + 光标色）。
+    // 选区色当前仅存于方案数据中（尚无选区渲染，预留）。
+    fn apply_window_colors(&self) {
+        let p = self.active_palette();
+        self.main_window.set_bg_color(rgb_to_color(p.background));
+        self.main_window
+            .set_cursor_color(slint::Color::from_argb_u8(
+                0x44, p.cursor.0, p.cursor.1, p.cursor.2,
+            ));
     }
 
     // 设置终端配置
@@ -438,6 +457,12 @@ impl App {
             WindowEvent::DelProfile(id) => self.on_delete_profile(id),
             // 模糊搜索字体
             WindowEvent::FilterFonts(keyword, current) => self.on_filter_fonts(&keyword, &current),
+            // 配色方案选中（回填编辑器与预览）
+            WindowEvent::SchemeSelected(name) => self.on_scheme_selected(name),
+            // 另存为自定义配色方案
+            WindowEvent::SaveCustomScheme(colors) => self.on_save_custom_scheme(colors),
+            // 删除自定义配色方案
+            WindowEvent::DeleteCustomScheme(name) => self.on_delete_custom_scheme(name),
         }
     }
 
@@ -455,9 +480,10 @@ impl App {
 
         let (rows, cols) = self.current_grid();
         let event_tx = self.event_tx.clone();
+        let palette = self.active_palette();
         if self
             .sessions
-            .create_session(&profile, rows, cols, event_tx)
+            .create_session(&profile, rows, cols, palette, event_tx)
             .is_ok()
         {
             self.sync_tabs();
@@ -613,6 +639,16 @@ impl App {
 /// 把 Slint 传回的 id 字符串解析回 SessionId(u64)。
 fn parse_session_id(s: &SharedString) -> Option<SessionId> {
     s.as_str().parse::<u64>().ok().map(SessionId)
+}
+
+/// RGB 元组 → Slint Color。
+pub(super) fn rgb_to_color(rgb: (u8, u8, u8)) -> slint::Color {
+    slint::Color::from_rgb_u8(rgb.0, rgb.1, rgb.2)
+}
+
+/// RGB 元组 → Slint Brush（不透明）。
+pub(super) fn rgb_to_brush(rgb: (u8, u8, u8)) -> slint::Brush {
+    slint::Brush::SolidColor(rgb_to_color(rgb))
 }
 
 /// 把键盘事件编码为写入 PTY 的字节序列

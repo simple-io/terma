@@ -2,7 +2,7 @@
 
 use slint::Brush;
 use crate::terminal::color;
-use crate::terminal::color::Color;
+use crate::terminal::color::{Color, Palette};
 
 /// 单个字符单元：字符 + 前景/背景色 + 文本样式（加粗、斜体、下划线）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,25 +61,25 @@ impl Cell {
         }
     }
 
-    /// 应用 inverse 后用于渲染的实际颜色对
-    pub fn resolved_colors(&self) -> ((u8, u8, u8), (u8, u8, u8)) {
+    /// 应用 inverse 后用于渲染的实际颜色对（按调色板解析 Default/Index）。
+    pub fn resolved_colors(&self, p: &Palette) -> ((u8, u8, u8), (u8, u8, u8)) {
         if self.inverse {
             // 颜色取反：前景取背景色，背景取前景色
-            (self.background.to_rgb(), self.foreground.to_rgb())
+            (self.background.bg_rgb(p), self.foreground.fg_rgb(p))
         } else {
             // 正常：前景取前景色，背景取背景色
-            (self.foreground.to_rgb(), self.background.to_rgb())
+            (self.foreground.fg_rgb(p), self.background.bg_rgb(p))
         }
     }
 
-    /// 根据 inverse 设置区分后渲染的颜色
-    pub fn resolved_colors_brush(&self) -> (Brush, Brush) {
+    /// 根据 inverse 设置区分后渲染的颜色（按调色板解析 Default/Index）。
+    pub fn resolved_colors_brush(&self, p: &Palette) -> (Brush, Brush) {
         if self.inverse {
             // 颜色取反：前景取背景色，背景取前景色
-            (self.background.to_brush(), self.foreground.to_brush())
+            (self.background.bg_brush(p), self.foreground.fg_brush(p))
         } else {
             // 正常：前景取前景色，背景取背景色
-            (self.foreground.to_brush(), self.background.to_brush())
+            (self.foreground.fg_brush(p), self.background.bg_brush(p))
         }
     }
 
