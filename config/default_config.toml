@@ -17,6 +17,8 @@ default_profile = "zsh"
 font_family = "Monaco"
 font_size = 12
 cursor_style = "block"
+# 光标颜色（全局外观项，独立于配色方案，格式 #RRGGBB）
+cursor_color = "#ffffff"
 # 配色方案名（内置：Default / Solarized Dark / Dracula / Gruvbox Dark / Nord /
 # One Dark / Tokyo Night / Catppuccin Mocha / Solarized Light / GitHub Light）
 # 用户自定义方案保存在 [[general.color_schemes]]，同名优先于内置。
@@ -24,12 +26,11 @@ color_scheme = "Default"
 bell_sound = false
 scrollback_limit = 10000
 
-# 自定义配色方案示例（前景/背景/光标/选区 + 16 色 ANSI 调色板）：
+# 自定义配色方案示例（前景/背景/选区 + 16 色 ANSI 调色板）：
 # [[general.color_schemes]]
 # name = "My Scheme"
 # foreground = "#c3c3c3"
 # background = "#000000"
-# cursor = "#ffffff"
 # selection = "#3f3f46"
 # palette = [
 #   "#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",

@@ -22,11 +22,10 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
 use crate::app::events::WindowEvent;
-use crate::config::Profile;
+use crate::config::{ColorScheme, Profile};
 use crate::session::active::ActiveSession;
 use crate::session::session::TerminalSession;
 use crate::session::session_id::{IdGenerator, ProfileId, SessionId};
-use crate::terminal::color::Palette;
 use anyhow::Result;
 
 pub struct SessionManager {
@@ -62,7 +61,7 @@ impl SessionManager {
         profile: &Profile,
         rows: u16,
         cols: u16,
-        palette: Palette,
+        color_scheme: ColorScheme,
         event_tx: SyncSender<WindowEvent>,
     ) -> Result<SessionId> {
         let id = self.id_gen.next_session_id();
@@ -73,7 +72,7 @@ impl SessionManager {
             title,
             rows,
             cols,
-            palette,
+            color_scheme,
             event_tx,
             self.active_tracker.clone(),
         )?;
@@ -165,10 +164,10 @@ impl SessionManager {
         }
     }
 
-    // 把新配色方案调色板应用到所有会话（配色切换时调用）。
-    pub fn apply_palette(&mut self, palette: Palette) {
+    // 把新配色方案应用到所有会话（配色切换时调用）。
+    pub fn apply_color_scheme(&mut self, scheme: ColorScheme) {
         for s in self.sessions.values_mut() {
-            s.set_palette(palette);
+            s.set_color_scheme(scheme.clone());
         }
     }
 }

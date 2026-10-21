@@ -27,9 +27,9 @@
 use crate::app::events::{TerminalEvent, WindowEvent};
 use crate::config::ConfigManager;
 use crate::config::fonts;
+use crate::config::ColorScheme;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::session::{RenderOutput, ScrollAction, SessionManager};
-use crate::terminal::color::Palette;
 use slint::language::KeyboardModifiers;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
@@ -187,18 +187,19 @@ impl App {
     }
 
     // 当前生效配色方案（供窗口颜色注入与会话创建使用）。
-    fn active_palette(&self) -> Palette {
-        self.config.active_palette()
+    fn active_color_scheme(&self) -> ColorScheme {
+        self.config.active_color_scheme()
     }
 
-    // 把当前配色方案的背景/光标色注入主窗口（终端区背景 + 光标色）。
+    // 把当前配色方案的背景色 + 全局光标色注入主窗口（终端区背景 + 光标色）。
     // 选区色当前仅存于方案数据中（尚无选区渲染，预留）。
     fn apply_window_colors(&self) {
-        let p = self.active_palette();
+        let p = self.active_color_scheme();
         self.main_window.set_bg_color(rgb_to_color(p.background));
+        let cursor = self.config.general().cursor_color.color;
         self.main_window
             .set_cursor_color(slint::Color::from_argb_u8(
-                0x44, p.cursor.0, p.cursor.1, p.cursor.2,
+                0x44, cursor.0, cursor.1, cursor.2,
             ));
     }
 
@@ -480,10 +481,10 @@ impl App {
 
         let (rows, cols) = self.current_grid();
         let event_tx = self.event_tx.clone();
-        let palette = self.active_palette();
+        let color_scheme = self.active_color_scheme();
         if self
             .sessions
-            .create_session(&profile, rows, cols, palette, event_tx)
+            .create_session(&profile, rows, cols, color_scheme, event_tx)
             .is_ok()
         {
             self.sync_tabs();

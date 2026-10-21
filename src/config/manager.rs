@@ -8,7 +8,6 @@ use crate::config::general::GeneralConfig;
 use crate::config::loader::{self, ConfigFile};
 use crate::config::profile::Profile;
 use crate::session::session_id::ProfileId;
-use crate::terminal::color::Palette;
 
 // 配置管理对象
 pub struct ConfigManager {
@@ -145,11 +144,9 @@ impl ConfigManager {
         &self.general
     }
 
-    // 当前生效配色方案的解析调色板（自定义优先，内置兜底，最终回退首个内置方案）。
-    pub fn active_palette(&self) -> Palette {
-        let color_scheme =
-            ColorScheme::new_from_schemes(&self.general.color_scheme, &self.general.color_schemes);
-        color_scheme.resolve()
+    // 当前生效配色方案（自定义优先，内置兜底，最终回退首个内置方案）。
+    pub fn active_color_scheme(&self) -> ColorScheme {
+        ColorScheme::new_from_schemes(&self.general.color_scheme, &self.general.color_schemes)
     }
 
     // 内置 + 自定义合并后的完整配色方案列表。

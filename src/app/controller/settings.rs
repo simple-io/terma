@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::config::color_scheme::{self, ColorScheme};
+use crate::config::cursor_color::{CursorColor, DEFAULT_CURSOR};
 use crate::config::profile::{format_env_vars_text, parse_env_vars_text};
 use crate::config::{GeneralConfig, Profile};
 
@@ -30,6 +31,9 @@ impl App {
             font_family: info.font_family.to_string(),
             font_size: info.font_size as u32,
             cursor_style: info.cursor_style.to_string(),
+            cursor_color: CursorColor {
+                color: color_scheme::parse_hex(&info.cursor_color).unwrap_or(DEFAULT_CURSOR),
+            },
             color_scheme: info.color_scheme.to_string(),
             color_schemes: self.config.general().color_schemes.clone(),
             bell_sound: info.bell_sound,
@@ -37,9 +41,10 @@ impl App {
         };
         self.config.update_general(config);
 
-        // 配色方案即时生效：窗口背景/光标色 + 各会话调色板
+        // 配色方案即时生效：窗口背景/光标色 + 各会话配色
         self.apply_window_colors();
-        self.sessions.apply_palette(self.config.active_palette());
+        self.sessions
+            .apply_color_scheme(self.config.active_color_scheme());
 
         // 如果字体或字号发生变化，则即时生效，重新计算字符度量并注入 UI
         if self.config.general().font_size != self.main_window.get_font_size() as u32
@@ -140,7 +145,8 @@ impl App {
         }
         if self.config.save_custom_scheme(scheme) {
             self.apply_window_colors();
-            self.sessions.apply_palette(self.config.active_palette());
+            self.sessions
+                .apply_color_scheme(self.config.active_color_scheme());
             if let Some(w) = self.settings_window.as_ref() {
                 self.sync_schemes_to_ui(w);
             }
@@ -152,7 +158,8 @@ impl App {
     pub(super) fn on_delete_custom_scheme(&mut self, name: SharedString) {
         self.config.delete_custom_scheme(&name.to_string());
         self.apply_window_colors();
-        self.sessions.apply_palette(self.config.active_palette());
+        self.sessions
+            .apply_color_scheme(self.config.active_color_scheme());
         if let Some(w) = self.settings_window.as_ref() {
             self.sync_schemes_to_ui(w);
         }
@@ -246,6 +253,9 @@ impl App {
             font_family: general.font_family.as_str().into(),
             font_size: general.font_size as i32,
             cursor_style: general.cursor_style.as_str().into(),
+            cursor_color: color_scheme::to_hex(general.cursor_color.color)
+                .as_str()
+                .into(),
             color_scheme: general.color_scheme.as_str().into(),
             bell_sound: general.bell_sound,
             scrollback_limit: general.scrollback_limit as i32,
@@ -315,19 +325,16 @@ impl App {
         let schemes = self.config.all_schemes();
         let list: Vec<ColorSchemeEntry> = schemes
             .iter()
-            .map(|s| {
-                let p = s.resolve();
-                ColorSchemeEntry {
-                    name: s.name.as_str().into(),
-                    is_custom: self
-                        .config
-                        .general()
-                        .color_schemes
-                        .iter()
-                        .any(|c| c.name == s.name),
-                    fg: rgb_to_brush(p.foreground),
-                    bg: rgb_to_brush(p.background),
-                }
+            .map(|s| ColorSchemeEntry {
+                name: s.name.as_str().into(),
+                is_custom: self
+                    .config
+                    .general()
+                    .color_schemes
+                    .iter()
+                    .any(|c| c.name == s.name),
+                fg: rgb_to_brush(s.foreground),
+                bg: rgb_to_brush(s.background),
             })
             .collect();
         window.set_color_scheme_list(Rc::new(VecModel::from(list)).into());
@@ -357,14 +364,12 @@ impl App {
 
 /// 配置层 ColorScheme → 设置窗口编辑器草稿（色值规范化为 `#rrggbb`）。
 fn ui_scheme_colors(s: &ColorScheme) -> SchemeColors {
-    let p = s.resolve();
-    let ansi = |i: usize| color_scheme::to_hex(p.ansi[i]).into();
+    let ansi = |i: usize| color_scheme::to_hex(s.ansi[i]).into();
     SchemeColors {
         name: s.name.as_str().into(),
-        foreground: color_scheme::to_hex(p.foreground).into(),
-        background: color_scheme::to_hex(p.background).into(),
-        cursor: color_scheme::to_hex(p.cursor).into(),
-        selection: color_scheme::to_hex(p.selection).into(),
+        foreground: color_scheme::to_hex(s.foreground).into(),
+        background: color_scheme::to_hex(s.background).into(),
+        selection: color_scheme::to_hex(s.selection).into(),
         ansi0: ansi(0),
         ansi1: ansi(1),
         ansi2: ansi(2),
@@ -384,9 +389,9 @@ fn ui_scheme_colors(s: &ColorScheme) -> SchemeColors {
     }
 }
 
-/// 设置窗口编辑器草稿 → 配置层 ColorScheme。
+/// 设置窗口编辑器草稿 → 配置层 ColorScheme（非法色值逐项回退默认）。
 fn scheme_from_ui(c: &SchemeColors) -> ColorScheme {
-    let palette = vec![
+    let palette = [
         c.ansi0.to_string(),
         c.ansi1.to_string(),
         c.ansi2.to_string(),
@@ -404,25 +409,28 @@ fn scheme_from_ui(c: &SchemeColors) -> ColorScheme {
         c.ansi14.to_string(),
         c.ansi15.to_string(),
     ];
+    let mut ansi = color_scheme::XTERM_16;
+    for (i, s) in palette.iter().enumerate() {
+        if let Some(c) = color_scheme::parse_hex(s) {
+            ansi[i] = c;
+        }
+    }
     ColorScheme {
         name: c.name.to_string(),
-        foreground: c.foreground.to_string(),
-        background: c.background.to_string(),
-        cursor: c.cursor.to_string(),
-        selection: c.selection.to_string(),
-        palette,
+        foreground: color_scheme::parse_hex(&c.foreground).unwrap_or(color_scheme::DEFAULT_FG),
+        background: color_scheme::parse_hex(&c.background).unwrap_or(color_scheme::DEFAULT_BG),
+        selection: color_scheme::parse_hex(&c.selection).unwrap_or(color_scheme::DEFAULT_FG),
+        ansi,
     }
 }
 
-/// 方案解析后的 20 个 brush：前景/背景/光标/选区 + 16 色 ANSI（供预览色板）。
+/// 方案解析后的 19 个 brush：前景/背景/选区 + 16 色 ANSI（供预览色板）。
 fn preview_brushes(s: &ColorScheme) -> Vec<slint::Brush> {
-    let p = s.resolve();
-    let mut v = Vec::with_capacity(20);
-    v.push(rgb_to_brush(p.foreground));
-    v.push(rgb_to_brush(p.background));
-    v.push(rgb_to_brush(p.cursor));
-    v.push(rgb_to_brush(p.selection));
-    for c in p.ansi {
+    let mut v = Vec::with_capacity(19);
+    v.push(rgb_to_brush(s.foreground));
+    v.push(rgb_to_brush(s.background));
+    v.push(rgb_to_brush(s.selection));
+    for c in s.ansi {
         v.push(rgb_to_brush(c));
     }
     v

@@ -1,8 +1,8 @@
 //! cell — 终端单元格
 
 use slint::Brush;
-use crate::terminal::color;
-use crate::terminal::color::{Color, Palette};
+use crate::config::ColorScheme;
+use crate::terminal::color::Color;
 
 /// 单个字符单元：字符 + 前景/背景色 + 文本样式（加粗、斜体、下划线）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,25 +61,25 @@ impl Cell {
         }
     }
 
-    /// 应用 inverse 后用于渲染的实际颜色对（按调色板解析 Default/Index）。
-    pub fn resolved_colors(&self, p: &Palette) -> ((u8, u8, u8), (u8, u8, u8)) {
+    /// 应用 inverse 后用于渲染的实际颜色对（按配色方案解析 Default/Index）。
+    pub fn resolved_colors(&self, s: &ColorScheme) -> ((u8, u8, u8), (u8, u8, u8)) {
         if self.inverse {
             // 颜色取反：前景取背景色，背景取前景色
-            (self.background.bg_rgb(p), self.foreground.fg_rgb(p))
+            (self.background.bg_rgb(s), self.foreground.fg_rgb(s))
         } else {
             // 正常：前景取前景色，背景取背景色
-            (self.foreground.fg_rgb(p), self.background.bg_rgb(p))
+            (self.foreground.fg_rgb(s), self.background.bg_rgb(s))
         }
     }
 
-    /// 根据 inverse 设置区分后渲染的颜色（按调色板解析 Default/Index）。
-    pub fn resolved_colors_brush(&self, p: &Palette) -> (Brush, Brush) {
+    /// 根据 inverse 设置区分后渲染的颜色（按配色方案解析 Default/Index）。
+    pub fn resolved_colors_brush(&self, s: &ColorScheme) -> (Brush, Brush) {
         if self.inverse {
             // 颜色取反：前景取背景色，背景取前景色
-            (self.background.bg_brush(p), self.foreground.fg_brush(p))
+            (self.background.bg_brush(s), self.foreground.fg_brush(s))
         } else {
             // 正常：前景取前景色，背景取背景色
-            (self.foreground.fg_brush(p), self.background.bg_brush(p))
+            (self.foreground.fg_brush(s), self.background.bg_brush(s))
         }
     }
 

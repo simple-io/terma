@@ -1,4 +1,5 @@
 use crate::config::color_scheme::ColorScheme;
+use crate::config::cursor_color::CursorColor;
 use crate::config::fonts;
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +38,10 @@ pub struct GeneralConfig {
     #[serde(default = "default_cursor_style")]
     pub cursor_style: String,
 
+    // 终端光标颜色（全局外观项，独立于配色方案）
+    #[serde(default)]
+    pub cursor_color: CursorColor,
+
     // 终端配色方案
     #[serde(default = "default_color_scheme")]
     pub color_scheme: String,
@@ -61,6 +66,7 @@ impl Default for GeneralConfig {
             font_family: default_font_family(),
             font_size: default_font_size(),
             cursor_style: default_cursor_style(),
+            cursor_color: CursorColor::default(),
             color_scheme: default_color_scheme(),
             color_schemes: Vec::new(),
             scrollback_limit: default_scrollback_limit(),

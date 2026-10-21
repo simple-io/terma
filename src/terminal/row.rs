@@ -1,6 +1,6 @@
 use crate::terminal::{Cell, Color};
 use crate::terminal::cell::cells_content;
-use crate::terminal::color::Palette;
+use crate::config::ColorScheme;
 use std::ops::{Deref, DerefMut};
 use crate::app::controller::CellRun;
 
@@ -125,15 +125,15 @@ impl Row {
         true
     }
 
-    // 把内容行转换为 CellRun 列表（颜色按调色板解析）
-    pub fn to_cell_run(&self, row_idx: usize, palette: &Palette) -> Vec<CellRun> {
+    // 把内容行转换为 CellRun 列表（颜色按配色方案解析）
+    pub fn to_cell_run(&self, row_idx: usize, scheme: &ColorScheme) -> Vec<CellRun> {
         let mut cell_runs: Vec<CellRun> = Vec::new();
         for (col, cell) in self.cells.iter().enumerate() {
             // 非内容字符，跳过
             if !cell.is_content() {
                 continue;
             }
-            let (fg, bg) = cell.resolved_colors_brush(palette);
+            let (fg, bg) = cell.resolved_colors_brush(scheme);
             cell_runs.push(CellRun {
                 text: cell.character.to_string().into(),
                 row: row_idx as i32,

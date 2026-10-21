@@ -29,6 +29,8 @@ export struct GeneralSettingsInfo {
     font-size: int,
     // 光标
     cursor-style: string,
+    // 光标颜色（全局外观项）
+    cursor-color: string,
     // 配色方案
     color-scheme: string,
     // 响铃
@@ -52,7 +54,6 @@ export struct SchemeColors {
     name: string,
     foreground: string,
     background: string,
-    cursor: string,
     selection: string,
     ansi0: string,
     ansi1: string,
@@ -190,7 +191,7 @@ export component SettingsWindow inherits Window {
     // ─── 配色方案 ───
     // 方案列表（内置在前，自定义在后）
     in property <[ColorSchemeEntry]> color-scheme-list;
-    // 预览色板：20 个 brush（前景/背景/光标/选区 + 16 色 ANSI），Rust 侧解析注入
+    // 预览色板：19 个 brush（前景/背景/选区 + 16 色 ANSI），Rust 侧解析注入
     in property <[brush]> scheme-preview;
     // 编辑器草稿（当前方案的颜色，编辑后另存为自定义）
     in-out property <SchemeColors> scheme-colors;
@@ -919,6 +920,30 @@ export component SettingsWindow inherits Window {
                                 }
                             }
 
+                            // 光标颜色（全局外观项，独立于配色方案）
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text {
+                                    text: "光标色";
+                                    color: root.c-text-secondary;
+                                    font-size: 14px;
+                                    vertical-alignment: center;
+                                    width: 100px;
+                                }
+                                TextInput {
+                                    font-size: 14px;
+                                    width: 120px;
+                                    text: root.general-draft.cursor-color;
+                                    edited => { root.general-draft.cursor-color = self.text; }
+                                }
+                                Text {
+                                    text: "(#RRGGBB)";
+                                    color: root.c-text-hint;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+
                             // 配色预览：核心色 + 16 色 ANSI
                             VerticalLayout {
                                 spacing: 8px;
@@ -931,13 +956,12 @@ export component SettingsWindow inherits Window {
                                     spacing: 6px;
                                     ColorChip { swatch: root.scheme-preview[0]; label: "前景"; }
                                     ColorChip { swatch: root.scheme-preview[1]; label: "背景"; }
-                                    ColorChip { swatch: root.scheme-preview[2]; label: "光标"; }
-                                    ColorChip { swatch: root.scheme-preview[3]; label: "选区"; }
+                                    ColorChip { swatch: root.scheme-preview[2]; label: "选区"; }
                                 }
                                 HorizontalLayout {
                                     spacing: 6px;
                                     for l[i] in root.ansi-labels: ColorChip {
-                                        swatch: root.scheme-preview[4 + i];
+                                        swatch: root.scheme-preview[3 + i];
                                         label: l;
                                     }
                                 }
@@ -983,7 +1007,6 @@ export component SettingsWindow inherits Window {
                             }
                             HorizontalLayout {
                                 spacing: 14px;
-                                ColorField { label: "光标色"; value: root.scheme-colors.cursor; changed(v) => { root.scheme-colors.cursor = v; } }
                                 ColorField { label: "选区色"; value: root.scheme-colors.selection; changed(v) => { root.scheme-colors.selection = v; } }
                             }
 

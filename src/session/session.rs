@@ -38,13 +38,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::controller::CellRun;
 use crate::app::events::{TerminalEvent, WindowEvent};
-use crate::config::Profile;
+use crate::config::{ColorScheme, Profile};
 use crate::pty::Pty;
 use crate::renderer::Renderer;
 use crate::session::active::ActiveSession;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::terminal::TerminalState;
-use crate::terminal::color::Palette;
 use anyhow::Result;
 use slint::{ModelRc, VecModel};
 
@@ -126,7 +125,7 @@ impl TerminalSession {
         title: String,
         rows: u16,
         cols: u16,
-        palette: Palette,
+        color_scheme: ColorScheme,
         event_tx: SyncSender<WindowEvent>,
         active_tracker: Arc<ActiveSession>,
     ) -> Result<Self> {
@@ -169,7 +168,7 @@ impl TerminalSession {
         )?;
 
         let renderer = Renderer::new();
-        renderer.set_palette(palette);
+        renderer.set_color_scheme(color_scheme);
 
         Ok(Self {
             id,
@@ -223,9 +222,9 @@ impl TerminalSession {
         self.renderer.clear();
     }
 
-    // 切换配色方案调色板：更新渲染器并整屏标脏，下次渲染全量按新配色重算。
-    pub fn set_palette(&mut self, palette: Palette) {
-        self.renderer.set_palette(palette);
+    // 切换配色方案：更新渲染器并整屏标脏，下次渲染全量按新配色重算。
+    pub fn set_color_scheme(&mut self, scheme: ColorScheme) {
+        self.renderer.set_color_scheme(scheme);
         self.state.lock().unwrap().mark_all_dirty();
     }
 

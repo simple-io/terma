@@ -25,7 +25,7 @@
 //!     `cells` property，切换 Tab 即换挂 model —— 内容零拷贝、零重算。
 
 use crate::app::controller::CellRun;
-use crate::terminal::color::Palette;
+use crate::config::ColorScheme;
 use crate::terminal::screen::ScreenBuffer;
 use slint::{Model, ModelRc, VecModel};
 use std::cell::{Cell, RefCell};
@@ -61,8 +61,8 @@ pub struct Renderer {
     present: Cell<Present>,
     // 强制下次全量重建（resize 等缓存失效场景）
     force_full: Cell<bool>,
-    // 当前配色方案调色板（颜色解析用；切换方案时置空缓存强制全量重算）
-    palette: Cell<Palette>,
+    // 当前配色方案（颜色解析用；切换方案时置空缓存强制全量重算）
+    color_scheme: RefCell<ColorScheme>,
 }
 
 impl Default for Renderer {
@@ -79,13 +79,13 @@ impl Renderer {
             follow_cache: RefCell::new(Vec::new()),
             present: Cell::new(Present::Follow),
             force_full: Cell::new(true),
-            palette: Cell::new(Palette::default()),
+            color_scheme: RefCell::new(ColorScheme::default()),
         }
     }
 
-    /// 切换配色方案调色板：更新后清空缓存并强制下次全量重建（颜色需整体重算）。
-    pub fn set_palette(&self, palette: Palette) {
-        self.palette.set(palette);
+    /// 切换配色方案：更新后清空缓存并强制下次全量重建（颜色需整体重算）。
+    pub fn set_color_scheme(&self, scheme: ColorScheme) {
+        *self.color_scheme.borrow_mut() = scheme;
         self.clear();
     }
 
@@ -108,7 +108,7 @@ impl Renderer {
     //   - 脏行数 ≥ 总行数一半。
     pub fn render_follow(&self, screen: &ScreenBuffer, mut dirty_rows: Vec<usize>) {
         let visible = screen.visible_rows();
-        let palette = self.palette.get();
+        let scheme = self.color_scheme.borrow();
         dirty_rows.sort_unstable();
         dirty_rows.dedup();
 
@@ -131,7 +131,7 @@ impl Renderer {
         if full {
             for idx in &dirty_rows {
                 if let Some(row) = visible.get(*idx) {
-                    cache[*idx] = row.to_cell_run(*idx, &palette);
+                    cache[*idx] = row.to_cell_run(*idx, &scheme);
                 }
             }
             self.rebuild_rows(&cache);
@@ -146,7 +146,7 @@ impl Renderer {
             let Some(row) = visible.get(idx) else {
                 continue;
             };
-            let new_runs = row.to_cell_run(idx, &palette);
+            let new_runs = row.to_cell_run(idx, &scheme);
             if let Some(inner) = rows.get(idx) {
                 apply_row(inner, &new_runs);
             }
@@ -164,7 +164,7 @@ impl Renderer {
     // 回到跟随模式时直接从缓存全量重建，无需重算任何行。
     pub fn render_viewport(&self, screen: &ScreenBuffer, offset: usize, mut dirty_rows: Vec<usize>) {
         let rows_count = screen.rows;
-        let palette = self.palette.get();
+        let scheme = self.color_scheme.borrow();
         let sb_len = screen.scrollback.len();
         let sb_total = screen.scrollback_total;
         // 防御性 clamp：offset 不越过物理历史行数
@@ -181,7 +181,7 @@ impl Renderer {
             }
             for &g in &dirty_rows {
                 if let Some(row) = screen.grid.get(g) {
-                    cache[g] = row.to_cell_run(g, &palette);
+                    cache[g] = row.to_cell_run(g, &scheme);
                 }
             }
         }
@@ -206,7 +206,7 @@ impl Renderer {
                 let Some(source) = screen.grid.get(g) else {
                     continue;
                 };
-                let new_runs = source.to_cell_run(v, &palette);
+                let new_runs = source.to_cell_run(v, &scheme);
                 if let Some(inner) = rows.get(v) {
                     apply_row(inner, &new_runs);
                 }
@@ -222,7 +222,7 @@ impl Renderer {
             } else {
                 &screen.grid[v - offset]
             };
-            viewport_rows.push(source.to_cell_run(v, &palette));
+            viewport_rows.push(source.to_cell_run(v, &scheme));
         }
         self.rebuild_rows(&viewport_rows);
         self.present.set(key);
