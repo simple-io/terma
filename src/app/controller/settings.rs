@@ -127,13 +127,76 @@ impl App {
         }
     }
 
-    // 配色方案选中：回填编辑器草稿 + 预览色板（不影响主窗口，保存时才生效）。
+    // 配色方案选中：回填编辑器草稿 + 基线 + 预览色板（不影响主窗口，保存时才生效）。
     pub(super) fn on_scheme_selected(&mut self, name: SharedString) {
         let customs = self.config.general().color_schemes.clone();
         if let Some(w) = self.settings_window.as_mut() {
             let scheme = ColorScheme::new_from_schemes(&name, &customs);
-            w.set_scheme_colors(ui_scheme_colors(&scheme));
+            let ui = ui_scheme_colors(&scheme);
+            w.set_scheme_colors(ui.clone());
+            w.set_scheme_baseline(ui);
             w.set_scheme_preview(Rc::new(VecModel::from(preview_brushes(&scheme))).into());
+        }
+    }
+
+    // 配色编辑器草稿变化：解析回填预览色板（编辑即时预览）。
+    pub(super) fn on_scheme_colors_changed(&mut self, colors: SchemeColors) {
+        let scheme = scheme_from_ui(&colors);
+        if let Some(w) = self.settings_window.as_ref() {
+            w.set_scheme_preview(Rc::new(VecModel::from(preview_brushes(&scheme))).into());
+        }
+    }
+
+    // 光标色草稿变化：解析回填光标色预览色块（非法值回退默认）。
+    pub(super) fn on_cursor_color_changed(&mut self, hex: SharedString) {
+        let c = color_scheme::parse_hex(&hex).unwrap_or(DEFAULT_CURSOR);
+        if let Some(w) = self.settings_window.as_ref() {
+            w.set_cursor_color_preview(rgb_to_brush(c));
+        }
+    }
+
+    // 「另存为」弹窗名称输入：实时校验并回填结果（空值 / 非法字符 / 重名）。
+    pub(super) fn on_check_scheme_name(&mut self, name: SharedString) {
+        let validation = self.validate_save_as_name(&name);
+        if let Some(w) = self.settings_window.as_ref() {
+            w.set_save_as_validation(validation);
+        }
+    }
+
+    // 校验「另存为」新名称。规则：
+    //   1) 去首尾空白后非空；
+    //   2) 仅允许中英文/数字/空格及 `- _ .`，其余为非法字符；
+    //   3) 忽略大小写与现有方案（内置 + 自定义）重名则冲突。
+    fn validate_save_as_name(&self, name: &str) -> SaveAsValidation {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return SaveAsValidation {
+                ok: false,
+                message: "名称不能为空".into(),
+            };
+        }
+        for ch in trimmed.chars() {
+            if !(ch.is_alphanumeric() || ch == ' ' || ch == '-' || ch == '_' || ch == '.') {
+                return SaveAsValidation {
+                    ok: false,
+                    message: "名称含非法字符（仅允许中英文、数字、空格及 - _ .）".into(),
+                };
+            }
+        }
+        if self
+            .config
+            .all_schemes()
+            .iter()
+            .any(|s| s.name.eq_ignore_ascii_case(trimmed))
+        {
+            return SaveAsValidation {
+                ok: false,
+                message: "已存在同名配色方案，请换一个名称".into(),
+            };
+        }
+        SaveAsValidation {
+            ok: true,
+            message: "".into(),
         }
     }
 
@@ -218,6 +281,14 @@ impl App {
             command_tx.send(WindowEvent::SchemeSelected(name)).unwrap();
         });
 
+        // 配色草稿变化 → 解析回填预览色板
+        let command_tx = self.event_tx.clone();
+        window.on_scheme_colors_changed(move |colors| {
+            command_tx
+                .send(WindowEvent::SchemeColorsChanged(colors))
+                .unwrap();
+        });
+
         // 另存为自定义配色方案
         let command_tx = self.event_tx.clone();
         window.on_save_custom_scheme(move |colors| {
@@ -231,6 +302,22 @@ impl App {
         window.on_delete_custom_scheme(move |name| {
             command_tx
                 .send(WindowEvent::DeleteCustomScheme(name))
+                .unwrap();
+        });
+
+        // 光标色草稿变化 → 解析回填光标色预览
+        let command_tx = self.event_tx.clone();
+        window.on_cursor_color_changed(move |hex| {
+            command_tx
+                .send(WindowEvent::CursorColorChanged(hex))
+                .unwrap();
+        });
+
+        // 「另存为」弹窗名称输入 → 实时校验回填
+        let command_tx = self.event_tx.clone();
+        window.on_save_as_name_edited(move |name| {
+            command_tx
+                .send(WindowEvent::CheckSchemeName(name))
                 .unwrap();
         });
 
@@ -261,6 +348,8 @@ impl App {
             scrollback_limit: general.scrollback_limit as i32,
             default_profile_id: self.config.default_profile_id().0.clone().into(),
         });
+        // 光标色预览色块初值
+        window.set_cursor_color_preview(rgb_to_brush(general.cursor_color.color));
 
         // Profile 列表
         let profiles: Vec<ProfileEditInfo> = self
@@ -341,7 +430,9 @@ impl App {
 
         let general = self.config.general();
         let scheme = ColorScheme::new_from_schemes(&general.color_scheme, &general.color_schemes);
-        window.set_scheme_colors(ui_scheme_colors(&scheme));
+        let ui = ui_scheme_colors(&scheme);
+        window.set_scheme_colors(ui.clone());
+        window.set_scheme_baseline(ui);
         window.set_scheme_preview(Rc::new(VecModel::from(preview_brushes(&scheme))).into());
 
         let idx = schemes

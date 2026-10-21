@@ -59,8 +59,14 @@ pub enum WindowEvent {
     FilterFonts(SharedString, SharedString),
     // 配色方案选中（回填编辑器与预览）
     SchemeSelected(SharedString),
+    // 配色编辑器草稿变化（解析回填预览色板，实现即时预览）
+    SchemeColorsChanged(SchemeColors),
     // 另存为自定义配色方案
     SaveCustomScheme(SchemeColors),
     // 删除自定义配色方案
     DeleteCustomScheme(SharedString),
+    // 光标色草稿变化（解析回填光标色预览色块）
+    CursorColorChanged(SharedString),
+    // 「另存为」弹窗名称输入（校验空值/非法字符/重名后回填校验结果）
+    CheckSchemeName(SharedString),
 }

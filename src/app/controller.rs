@@ -46,7 +46,7 @@ mod settings;
 
 pub use ui_generated::{
     CellRun, ColorSchemeEntry, FontEntry, GeneralSettingsInfo, MainWindow, ProfileEditInfo,
-    ProfileInfo, SchemeColors, SettingsWindow, TabInfo,
+    ProfileInfo, SaveAsValidation, SchemeColors, SettingsWindow, TabInfo,
 };
 
 /// Tab 栏 + 分隔线高度（逻辑像素）
@@ -460,10 +460,16 @@ impl App {
             WindowEvent::FilterFonts(keyword, current) => self.on_filter_fonts(&keyword, &current),
             // 配色方案选中（回填编辑器与预览）
             WindowEvent::SchemeSelected(name) => self.on_scheme_selected(name),
+            // 配色草稿变化（解析回填预览色板）
+            WindowEvent::SchemeColorsChanged(colors) => self.on_scheme_colors_changed(colors),
             // 另存为自定义配色方案
             WindowEvent::SaveCustomScheme(colors) => self.on_save_custom_scheme(colors),
             // 删除自定义配色方案
             WindowEvent::DeleteCustomScheme(name) => self.on_delete_custom_scheme(name),
+            // 光标色草稿变化（解析回填光标色预览）
+            WindowEvent::CursorColorChanged(hex) => self.on_cursor_color_changed(hex),
+            // 「另存为」名称校验
+            WindowEvent::CheckSchemeName(name) => self.on_check_scheme_name(name),
         }
     }
 

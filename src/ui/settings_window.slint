@@ -79,6 +79,12 @@ export struct FontEntry {
     is-bundled: bool,
 }
 
+// 「另存为」弹窗的输入校验结果（Rust 侧实时校验回填：ok=false 时 message 为提示文案）
+struct SaveAsValidation {
+    ok: bool,
+    message: string,
+}
+
 // Profile 编辑信息
 export struct ProfileEditInfo {
     id: string,
@@ -89,49 +95,385 @@ export struct ProfileEditInfo {
     env-vars: string,
 }
 
-// 配色预览色块（色块 + 下方标签）
-component ColorChip {
+// 调色板候选色：hex 供回写，c 供色块显示
+struct PickerColor {
+    hex: string,
+    c: color,
+}
+
+// 颜色选择弹层：调色板网格（6 列 × 4 行）+ 十六进制输入。
+// 点选调色板或输入十六进制值时实时经 picked 回调。
+component ColorPickerPopup {
+    in-out property <string> hex;
+    callback picked(string);
+    property <length> cell: 24px;
+    property <[PickerColor]> row0: [
+        {hex: "#000000", c: #000000}, {hex: "#404040", c: #404040}, {hex: "#808080", c: #808080},
+        {hex: "#c0c0c0", c: #c0c0c0}, {hex: "#ffffff", c: #ffffff}, {hex: "#ffa500", c: #ffa500},
+    ];
+    property <[PickerColor]> row1: [
+        {hex: "#ff0000", c: #ff0000}, {hex: "#800000", c: #800000}, {hex: "#ff8080", c: #ff8080},
+        {hex: "#00ff00", c: #00ff00}, {hex: "#008000", c: #008000}, {hex: "#80ff80", c: #80ff80},
+    ];
+    property <[PickerColor]> row2: [
+        {hex: "#0000ff", c: #0000ff}, {hex: "#000080", c: #000080}, {hex: "#8080ff", c: #8080ff},
+        {hex: "#ffff00", c: #ffff00}, {hex: "#808000", c: #808000}, {hex: "#ffff80", c: #ffff80},
+    ];
+    property <[PickerColor]> row3: [
+        {hex: "#ff00ff", c: #ff00ff}, {hex: "#800080", c: #800080}, {hex: "#ff80ff", c: #ff80ff},
+        {hex: "#00ffff", c: #00ffff}, {hex: "#008080", c: #008080}, {hex: "#80ffff", c: #80ffff},
+    ];
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        HorizontalLayout {
+            spacing: 4px;
+            for pc in root.row0: Rectangle {
+                width: root.cell;
+                height: root.cell;
+                border-radius: 3px;
+                border-width: 1px;
+                border-color: #dadce0;
+                background: pc.c;
+                TouchArea { clicked => { root.picked(pc.hex); } }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            for pc in root.row1: Rectangle {
+                width: root.cell;
+                height: root.cell;
+                border-radius: 3px;
+                border-width: 1px;
+                border-color: #dadce0;
+                background: pc.c;
+                TouchArea { clicked => { root.picked(pc.hex); } }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            for pc in root.row2: Rectangle {
+                width: root.cell;
+                height: root.cell;
+                border-radius: 3px;
+                border-width: 1px;
+                border-color: #dadce0;
+                background: pc.c;
+                TouchArea { clicked => { root.picked(pc.hex); } }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            for pc in root.row3: Rectangle {
+                width: root.cell;
+                height: root.cell;
+                border-radius: 3px;
+                border-width: 1px;
+                border-color: #dadce0;
+                background: pc.c;
+                TouchArea { clicked => { root.picked(pc.hex); } }
+            }
+        }
+
+        // 十六进制输入
+        Rectangle {
+            height: 28px;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: #dadce0;
+            clip: true;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                TextInput {
+                    font-size: 13px;
+                    color: #1f1f1f;
+                    text <=> root.hex;
+                    edited => { root.picked(self.text); }
+                }
+            }
+        }
+    }
+}
+
+// 可编辑配色色块（色块 + 可选下方标签 + 点击弹出颜色选择器）
+component ColorSwatchChip {
     in property <brush> swatch;
     in property <string> label;
+    // 当前色值（选择器打开时传入弹层，选择结果经 changed 回写）
+    in property <string> hex;
+    in property <length> chip-w: 22px;
+    in property <length> chip-h: 20px;
+    callback changed(string);
+    // PopupWindow 独立作用域，经根属性桥接把当前色值传入弹层
+    property <string> picker-hex;
     VerticalLayout {
         spacing: 3px;
         Rectangle {
-            width: 22px;
-            height: 22px;
+            width: chip-w;
+            height: chip-h;
             border-radius: 3px;
             border-width: 1px;
-            border-color: #dadce0;
+            border-color: chip-touch.has-hover ? #1a73e8 : #dadce0;
             background: swatch;
+            chip-touch := TouchArea {
+                clicked => {
+                    root.picker-hex = root.hex;
+                    picker-pop.show();
+                }
+            }
         }
-        Text {
+        if label != "" : Text {
             text: label;
             color: #5f6368;
             font-size: 10px;
             horizontal-alignment: center;
         }
     }
+    picker-pop := PopupWindow {
+        // 点击弹层内部（如 hex 输入框）不再误关；点外部或 Esc 关闭
+        close-policy: close-on-click-outside;
+        width: 184px;
+        height: 164px;
+        picker := ColorPickerPopup {
+            hex <=> root.picker-hex;
+            picked(h) => { root.changed(h); }
+        }
+    }
 }
 
-// 颜色编辑字段（标签 + 十六进制输入框，编辑结果经 changed 回写父级）
+// 颜色编辑字段（标签 + 矩形色块 + 十六进制输入）。
+// 点击色块弹出颜色选择器（调色板 / 十六进制），结果经 changed 回写父级。
 component ColorField {
     in property <string> label;
     in property <string> value;
+    // 色块显示色（Slint 无法解析 hex 字符串，由 Rust 侧解析回填）
+    in property <brush> swatch;
+    in property <length> label-w: 44px;
     callback changed(string);
+    // 弹层桥接属性：PopupWindow 是独立作用域，内部 id 不暴露给组件代码，
+    // 经此属性把当前色值传入弹层（打开时赋初值，弹层内编辑实时回传）
+    property <string> picker-hex;
     HorizontalLayout {
         spacing: 6px;
         Text {
             text: label;
-            width: 44px;
+            width: label-w;
             color: #5f6368;
             font-size: 13px;
             vertical-alignment: center;
         }
-        TextInput {
+        Rectangle {
+            width: 26px;
+            height: 20px;
+            border-radius: 3px;
+            border-width: 1px;
+            border-color: #dadce0;
+            background: swatch;
+            swatch-touch := TouchArea {
+                clicked => {
+                    root.picker-hex = root.value;
+                    picker-pop.show();
+                }
+            }
+        }
+        hex-input := TextInput {
             width: 82px;
             font-size: 13px;
             color: #1f1f1f;
             text: value;
             edited => { changed(self.text); }
+        }
+    }
+    // 外部 value 变化（选调色板 / 切换方案回填）时同步输入框；
+    // 仅在文本确实不同才赋值，避免用户输入时打断光标位置
+    changed value => {
+        if (hex-input.text != root.value) { hex-input.text = root.value; }
+    }
+    picker-pop := PopupWindow {
+        // 点击弹层内部（如 hex 输入框）不再误关；点外部或 Esc 关闭
+        close-policy: close-on-click-outside;
+        width: 184px;
+        height: 164px;
+        picker := ColorPickerPopup {
+            hex <=> root.picker-hex;
+            picked(h) => { root.changed(h); }
+        }
+    }
+}
+
+// 配色方案操作按钮（另存为 / 保存 / 删除，含置灰态）
+component SchemeBtn {
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <bool> danger: false;
+    in property <length> btn-w: 64px;
+    callback clicked();
+    Rectangle {
+        width: btn-w;
+        height: 26px;
+        border-radius: 4px;
+        border-width: danger ? 1px : 0px;
+        border-color: root.enabled ? #d93025 : #dadce0;
+        background: !root.enabled ? #f1f3f4
+            : root.danger ? (btn-touch.has-hover ? #fdecec : #ffffff)
+            : (btn-touch.has-hover ? #1557b0 : #1a73e8);
+        Text {
+            text: label;
+            color: !root.enabled ? #9aa0a6 : (root.danger ? #d93025 : #ffffff);
+            font-size: 12px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        btn-touch := TouchArea {
+            enabled: root.enabled;
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
+// 「另存为」按钮：点击弹出输入名称弹窗，确认后经 confirmed 回传新名称。
+// 弹窗内含实时校验提示（validation），确认按钮仅在校验通过时可点击。
+// 注意：组件必须保持单根元素（PopupWindow 嵌套在根 Rectangle 内）。
+// 若 PopupWindow 与 Rectangle 平级（多顶层子元素），HorizontalLayout 对该组件
+// 的布局信息计算错误，宽度约束失效导致三个按钮互相重叠。
+component SaveAsButton {
+    in property <bool> enabled: true;
+    // 打开弹窗时预填的名称（当前方案名）
+    in property <string> initial-name;
+    // 输入名称的实时校验结果（Rust 侧回填）
+    in property <SaveAsValidation> validation;
+    // 输入变化 → 父级转发 Rust 校验
+    callback name-edited(string);
+    // 校验通过后点「确认」→ 回传新名称
+    callback confirmed(string);
+    // 弹窗输入草稿（与输入框双向绑定）
+    property <string> draft-name;
+
+    Rectangle {
+        width: 92px;
+        height: 26px;
+        border-radius: 4px;
+        background: !root.enabled ? #f1f3f4 : (save-as-touch.has-hover ? #1557b0 : #1a73e8);
+        Text {
+            text: "另存为新方案";
+            color: !root.enabled ? #9aa0a6 : #ffffff;
+            font-size: 12px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        save-as-touch := TouchArea {
+            enabled: root.enabled;
+            clicked => {
+                root.draft-name = root.initial-name;
+                root.name-edited(root.draft-name);
+                pop.show();
+            }
+        }
+
+        // 弹窗：close-policy 用 close-on-click-outside —— 默认的 close-on-click
+        // 会把弹窗内部未被 TouchArea 消费的点击（如 TextInput 的按下）也当作
+        // 关闭触发，导致输入框无法获得焦点；close-on-click-outside 仅在点击
+        // 弹窗外部或按 Esc 时关闭，输入框可正常选中输入。
+        pop := PopupWindow {
+            close-policy: close-on-click-outside;
+            // 弹窗显示时把键盘焦点转给名称输入框，可直接输入（同字体下拉搜索框模式）
+            forward-focus: name-input;
+            width: 280px;
+            height: 158px;
+            Rectangle {
+                background: #ffffff;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: #dadce0;
+                clip: true;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    Text {
+                        text: "另存为新方案";
+                        color: #1f1f1f;
+                        font-size: 13px;
+                        font-weight: 700;
+                    }
+
+                    // 名称输入框
+                    Rectangle {
+                        height: 28px;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: !root.validation.ok ? #d93025 : #dadce0;
+                        clip: true;
+                        name-input := TextInput {
+                            x: 8px;
+                            width: parent.width - 12px;
+                            font-size: 13px;
+                            color: #1f1f1f;
+                            vertical-alignment: center;
+                            single-line: true;
+                            text <=> root.draft-name;
+                            edited => { root.name-edited(self.text); }
+                        }
+                    }
+
+                    // 校验提示（仅校验失败时显示）
+                    Text {
+                        text: root.validation.ok ? "" : root.validation.message;
+                        color: #d93025;
+                        font-size: 11px;
+                        visible: !root.validation.ok;
+                    }
+
+                    // 确认 / 取消
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: end;
+                        // 取消：仅关闭弹窗，不改动任何状态
+                        Rectangle {
+                            width: 60px;
+                            height: 26px;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: #dadce0;
+                            background: cancel-touch.has-hover ? #f1f3f4 : #ffffff;
+                            Text {
+                                text: "取消";
+                                color: #1f1f1f;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            cancel-touch := TouchArea {
+                                clicked => { pop.close(); }
+                            }
+                        }
+                        // 确认：仅校验通过时可点击，确认后回传新名称并关闭
+                        Rectangle {
+                            width: 60px;
+                            height: 26px;
+                            border-radius: 4px;
+                            background: !root.validation.ok ? #f1f3f4 : (ok-touch.has-hover ? #1557b0 : #1a73e8);
+                            Text {
+                                text: "确认";
+                                color: !root.validation.ok ? #9aa0a6 : #ffffff;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            ok-touch := TouchArea {
+                                enabled: root.validation.ok;
+                                clicked => {
+                                    root.confirmed(root.draft-name);
+                                    pop.close();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -191,24 +533,61 @@ export component SettingsWindow inherits Window {
     // ─── 配色方案 ───
     // 方案列表（内置在前，自定义在后）
     in property <[ColorSchemeEntry]> color-scheme-list;
-    // 预览色板：19 个 brush（前景/背景/选区 + 16 色 ANSI），Rust 侧解析注入
+    // 预览色板：19 个 brush（前景/背景/选区 + 16 色 ANSI）。
+    // 初值来自选中方案；编辑器草稿每次修改后由 Rust 侧解析回填，实现即时预览。
     in property <[brush]> scheme-preview;
     // 编辑器草稿（当前方案的颜色，编辑后另存为自定义）
     in-out property <SchemeColors> scheme-colors;
+    // 草稿基线（Rust 侧随选中方案注入，用于 dirty 判定）
+    in property <SchemeColors> scheme-baseline;
+    // 草稿是否被修改（与基线逐字段对比）：控制「另存为 / 保存」按钮可用性
+    property <bool> scheme-dirty:
+        root.scheme-colors.name != root.scheme-baseline.name
+        || root.scheme-colors.foreground != root.scheme-baseline.foreground
+        || root.scheme-colors.background != root.scheme-baseline.background
+        || root.scheme-colors.selection != root.scheme-baseline.selection
+        || root.scheme-colors.ansi0 != root.scheme-baseline.ansi0
+        || root.scheme-colors.ansi1 != root.scheme-baseline.ansi1
+        || root.scheme-colors.ansi2 != root.scheme-baseline.ansi2
+        || root.scheme-colors.ansi3 != root.scheme-baseline.ansi3
+        || root.scheme-colors.ansi4 != root.scheme-baseline.ansi4
+        || root.scheme-colors.ansi5 != root.scheme-baseline.ansi5
+        || root.scheme-colors.ansi6 != root.scheme-baseline.ansi6
+        || root.scheme-colors.ansi7 != root.scheme-baseline.ansi7
+        || root.scheme-colors.ansi8 != root.scheme-baseline.ansi8
+        || root.scheme-colors.ansi9 != root.scheme-baseline.ansi9
+        || root.scheme-colors.ansi10 != root.scheme-baseline.ansi10
+        || root.scheme-colors.ansi11 != root.scheme-baseline.ansi11
+        || root.scheme-colors.ansi12 != root.scheme-baseline.ansi12
+        || root.scheme-colors.ansi13 != root.scheme-baseline.ansi13
+        || root.scheme-colors.ansi14 != root.scheme-baseline.ansi14
+        || root.scheme-colors.ansi15 != root.scheme-baseline.ansi15;
+    // ANSI 行标签（普通/亮色两列共用）
+    property <[string]> ansi-names: ["黑","红","绿","黄","蓝","品红","青","白"];
     // 下拉框当前选中索引
     in-out property <int> scheme-index: -1;
-    // ANSI 色块标签（0..15）
-    property <[string]> ansi-labels: ["0","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"];
-    // 当前选中方案是否为自定义（决定是否显示删除按钮）
+    // 当前选中方案是否为自定义（决定「保存 / 删除」按钮可用性）
     property <bool> selected-is-custom:
         (root.scheme-index >= 0 && root.scheme-index < root.color-scheme-list.length)
         ? root.color-scheme-list[root.scheme-index].is-custom : false;
     // 选中方案回调（回填编辑器与预览）
     callback scheme-selected(string);
-    // 另存为自定义方案
+    // 另存为自定义方案（同名覆盖：内置名 → 生效于内置，自定义名 → 保存修改）
     callback save-custom-scheme(SchemeColors);
     // 删除自定义方案
     callback delete-custom-scheme(string);
+    // 草稿颜色变化 → Rust 解析回填 scheme-preview（即时预览）
+    callback scheme-colors-changed(SchemeColors);
+    // ─── 「另存为」弹窗 ───
+    // 输入名称实时校验结果（Rust 侧校验空值/非法字符/重名后回填）
+    in property <SaveAsValidation> save-as-validation: { ok: true, message: "" };
+    // 弹窗输入变化 → Rust 实时校验并回填 save-as-validation
+    callback save-as-name-edited(string);
+    // ─── 光标色（全局外观项，独立于配色方案） ───
+    // 光标色草稿解析结果（色块显示用）
+    in property <brush> cursor-color-preview: #ffffff;
+    // 光标色草稿变化 → Rust 解析回填 cursor-color-preview
+    callback cursor-color-changed(string);
 
     // ─── 回调 ───
     callback save-general(GeneralSettingsInfo);
@@ -896,202 +1275,204 @@ export component SettingsWindow inherits Window {
                                 }
                             }
 
-                            // 光标样式
-                            HorizontalLayout {
-                                spacing: 10px;
-                                Text {
-                                    text: "光标样式";
-                                    color: root.c-text-secondary;
-                                    font-size: 14px;
-                                    vertical-alignment: center;
-                                    width: 100px;
-                                }
-                                TextInput {
-                                    font-size: 14px;
-                                    width: 120px;
-                                    text: root.general-draft.cursor-style;
-                                    edited => { root.general-draft.cursor-style = self.text; }
-                                }
-                                Text {
-                                    text: "(block / beam / underline)";
-                                    color: root.c-text-hint;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                }
-                            }
-
-                            // 光标颜色（全局外观项，独立于配色方案）
-                            HorizontalLayout {
-                                spacing: 10px;
-                                Text {
-                                    text: "光标色";
-                                    color: root.c-text-secondary;
-                                    font-size: 14px;
-                                    vertical-alignment: center;
-                                    width: 100px;
-                                }
-                                TextInput {
-                                    font-size: 14px;
-                                    width: 120px;
-                                    text: root.general-draft.cursor-color;
-                                    edited => { root.general-draft.cursor-color = self.text; }
-                                }
-                                Text {
-                                    text: "(#RRGGBB)";
-                                    color: root.c-text-hint;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                }
-                            }
-
-                            // 配色预览：核心色 + 16 色 ANSI
+                            // ── 配色方案子设置（缩进体现场次层级） ──
                             VerticalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "配色预览";
-                                    color: root.c-text-secondary;
-                                    font-size: 12px;
-                                }
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    ColorChip { swatch: root.scheme-preview[0]; label: "前景"; }
-                                    ColorChip { swatch: root.scheme-preview[1]; label: "背景"; }
-                                    ColorChip { swatch: root.scheme-preview[2]; label: "选区"; }
-                                }
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    for l[i] in root.ansi-labels: ColorChip {
-                                        swatch: root.scheme-preview[3 + i];
-                                        label: l;
+                                padding-left: 24px;
+                                spacing: 16px;
+
+                                // ── 配色预览（色块点击即编辑） ──
+                                VerticalLayout {
+                                    spacing: 15px;
+
+                                    // 终端默认配色：背景色 + 文本色 + 选区色
+                                    VerticalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: "终端配色";
+                                            color: root.c-text-secondary;
+                                            font-size: 13px;
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            ColorSwatchChip {
+                                                label: "背景色";
+                                                hex: root.scheme-colors.background;
+                                                swatch: root.scheme-preview[1];
+                                                changed(v) => { root.scheme-colors.background = v; root.scheme-colors-changed(root.scheme-colors); }
+                                            }
+                                            ColorSwatchChip {
+                                                label: "文本色";
+                                                hex: root.scheme-colors.foreground;
+                                                swatch: root.scheme-preview[0];
+                                                changed(v) => { root.scheme-colors.foreground = v; root.scheme-colors-changed(root.scheme-colors); }
+                                            }
+                                            ColorSwatchChip {
+                                                label: "选区色";
+                                                hex: root.scheme-colors.selection;
+                                                swatch: root.scheme-preview[2];
+                                                changed(v) => { root.scheme-colors.selection = v; root.scheme-colors-changed(root.scheme-colors); }
+                                            }
+                                            Rectangle { horizontal-stretch: 1; }
+                                        }
                                     }
-                                }
-                            }
 
-                            Rectangle { height: 6px; }
+                                    // ANSI 配色：普通 / 亮色 两组竖向排列，点击色块直接编辑
+                                    VerticalLayout {
+                                        spacing: 6px;
+                                        Text {
+                                            text: "ANSI 配色";
+                                            color: root.c-text-secondary;
+                                            font-size: 13px;
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 10px;
 
-                            // 自定义配色编辑器
-                            Text {
-                                text: "自定义配色";
-                                color: root.c-text-secondary;
-                                font-size: 12px;
-                            }
-                            Text {
-                                text: "修改颜色后点「另存为新方案」；同名保存将优先生效于内置方案。";
-                                color: root.c-text-hint;
-                                font-size: 12px;
-                            }
+                                            // 行标签列（黑..白，固定宽度贴紧色块）
+                                            VerticalLayout {
+                                                width: 36px;
+                                                spacing: 4px;
+                                                Text { height: 20px; }
+                                                for lbl in root.ansi-names: Text {
+                                                    height: 20px;
+                                                    text: lbl;
+                                                    color: root.c-text-secondary;
+                                                    font-size: 12px;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
 
-                            // 名称
-                            HorizontalLayout {
-                                spacing: 10px;
-                                Text {
-                                    text: "名称";
-                                    color: root.c-text-secondary;
-                                    font-size: 14px;
-                                    vertical-alignment: center;
-                                    width: 100px;
-                                }
-                                TextInput {
-                                    width: 200px;
-                                    font-size: 14px;
-                                    text: root.scheme-colors.name;
-                                    edited => { root.scheme-colors.name = self.text; }
-                                }
-                            }
+                                            // 普通色（ANSI 0-7）
+                                            VerticalLayout {
+                                                width: 48px;
+                                                spacing: 4px;
+                                                Text {
+                                                    height: 20px;
+                                                    text: "普通";
+                                                    color: root.c-text-hint;
+                                                    font-size: 11px;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi0; swatch: root.scheme-preview[3]; changed(v) => { root.scheme-colors.ansi0 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi1; swatch: root.scheme-preview[4]; changed(v) => { root.scheme-colors.ansi1 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi2; swatch: root.scheme-preview[5]; changed(v) => { root.scheme-colors.ansi2 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi3; swatch: root.scheme-preview[6]; changed(v) => { root.scheme-colors.ansi3 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi4; swatch: root.scheme-preview[7]; changed(v) => { root.scheme-colors.ansi4 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi5; swatch: root.scheme-preview[8]; changed(v) => { root.scheme-colors.ansi5 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi6; swatch: root.scheme-preview[9]; changed(v) => { root.scheme-colors.ansi6 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi7; swatch: root.scheme-preview[10]; changed(v) => { root.scheme-colors.ansi7 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                            }
 
-                            // 前景 / 背景 / 光标 / 选区
-                            HorizontalLayout {
-                                spacing: 14px;
-                                ColorField { label: "前景色"; value: root.scheme-colors.foreground; changed(v) => { root.scheme-colors.foreground = v; } }
-                                ColorField { label: "背景色"; value: root.scheme-colors.background; changed(v) => { root.scheme-colors.background = v; } }
-                            }
-                            HorizontalLayout {
-                                spacing: 14px;
-                                ColorField { label: "选区色"; value: root.scheme-colors.selection; changed(v) => { root.scheme-colors.selection = v; } }
-                            }
+                                            // 亮色（ANSI 8-15）
+                                            VerticalLayout {
+                                                width: 48px;
+                                                spacing: 4px;
+                                                Text {
+                                                    height: 20px;
+                                                    text: "亮色";
+                                                    color: root.c-text-hint;
+                                                    font-size: 11px;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi8; swatch: root.scheme-preview[11]; changed(v) => { root.scheme-colors.ansi8 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi9; swatch: root.scheme-preview[12]; changed(v) => { root.scheme-colors.ansi9 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi10; swatch: root.scheme-preview[13]; changed(v) => { root.scheme-colors.ansi10 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi11; swatch: root.scheme-preview[14]; changed(v) => { root.scheme-colors.ansi11 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi12; swatch: root.scheme-preview[15]; changed(v) => { root.scheme-colors.ansi12 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi13; swatch: root.scheme-preview[16]; changed(v) => { root.scheme-colors.ansi13 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi14; swatch: root.scheme-preview[17]; changed(v) => { root.scheme-colors.ansi14 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi15; swatch: root.scheme-preview[18]; changed(v) => { root.scheme-colors.ansi15 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                            }
 
-                            // 标准色 0-7
-                            Text {
-                                text: "标准色（ANSI 0-7）";
-                                color: root.c-text-hint;
-                                font-size: 12px;
-                            }
-                            HorizontalLayout {
-                                spacing: 14px;
-                                ColorField { label: "黑"; value: root.scheme-colors.ansi0; changed(v) => { root.scheme-colors.ansi0 = v; } }
-                                ColorField { label: "红"; value: root.scheme-colors.ansi1; changed(v) => { root.scheme-colors.ansi1 = v; } }
-                                ColorField { label: "绿"; value: root.scheme-colors.ansi2; changed(v) => { root.scheme-colors.ansi2 = v; } }
-                                ColorField { label: "黄"; value: root.scheme-colors.ansi3; changed(v) => { root.scheme-colors.ansi3 = v; } }
-                            }
-                            HorizontalLayout {
-                                spacing: 14px;
-                                ColorField { label: "蓝"; value: root.scheme-colors.ansi4; changed(v) => { root.scheme-colors.ansi4 = v; } }
-                                ColorField { label: "品红"; value: root.scheme-colors.ansi5; changed(v) => { root.scheme-colors.ansi5 = v; } }
-                                ColorField { label: "青"; value: root.scheme-colors.ansi6; changed(v) => { root.scheme-colors.ansi6 = v; } }
-                                ColorField { label: "白"; value: root.scheme-colors.ansi7; changed(v) => { root.scheme-colors.ansi7 = v; } }
-                            }
-
-                            // 亮色 8-15
-                            Text {
-                                text: "亮色（ANSI 8-15）";
-                                color: root.c-text-hint;
-                                font-size: 12px;
-                            }
-                            HorizontalLayout {
-                                spacing: 14px;
-                                ColorField { label: "亮黑"; value: root.scheme-colors.ansi8; changed(v) => { root.scheme-colors.ansi8 = v; } }
-                                ColorField { label: "亮红"; value: root.scheme-colors.ansi9; changed(v) => { root.scheme-colors.ansi9 = v; } }
-                                ColorField { label: "亮绿"; value: root.scheme-colors.ansi10; changed(v) => { root.scheme-colors.ansi10 = v; } }
-                                ColorField { label: "亮黄"; value: root.scheme-colors.ansi11; changed(v) => { root.scheme-colors.ansi11 = v; } }
-                            }
-                            HorizontalLayout {
-                                spacing: 14px;
-                                ColorField { label: "亮蓝"; value: root.scheme-colors.ansi12; changed(v) => { root.scheme-colors.ansi12 = v; } }
-                                ColorField { label: "亮品红"; value: root.scheme-colors.ansi13; changed(v) => { root.scheme-colors.ansi13 = v; } }
-                                ColorField { label: "亮青"; value: root.scheme-colors.ansi14; changed(v) => { root.scheme-colors.ansi14 = v; } }
-                                ColorField { label: "亮白"; value: root.scheme-colors.ansi15; changed(v) => { root.scheme-colors.ansi15 = v; } }
-                            }
-
-                            // 操作按钮
-                            HorizontalLayout {
-                                spacing: 10px;
-                                // 另存为新方案
-                                Rectangle {
-                                    width: 120px;
-                                    height: 32px;
-                                    background: save-scheme.has-hover ? root.c-primary-hover : root.c-primary;
-                                    border-radius: 4px;
-                                    Text {
-                                        text: "另存为新方案";
-                                        color: #ffffff;
-                                        font-size: 14px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                    save-scheme := TouchArea {
-                                        clicked => {
-                                            root.save-custom-scheme(root.scheme-colors);
+                                            Rectangle { horizontal-stretch: 1; }
                                         }
                                     }
                                 }
-                                // 删除（仅自定义方案显示）
-                                if root.selected-is-custom: Rectangle {
-                                    width: 100px;
-                                    height: 32px;
-                                    background: del-scheme.has-hover ? #fdecec : #ffffff;
-                                    border-radius: 4px;
-                                    border-width: 1px;
-                                    border-color: root.c-danger;
+
+                                // ── 操作按钮（置灰逻辑：另存为=已修改；保存=自定义且已修改；删除=自定义） ──
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    SaveAsButton {
+                                        enabled: root.scheme-dirty;
+                                        initial-name: root.scheme-colors.name;
+                                        validation: root.save-as-validation;
+                                        name-edited(name) => { root.save-as-name-edited(name); }
+                                        confirmed(name) => {
+                                            root.scheme-colors.name = name;
+                                            root.save-custom-scheme(root.scheme-colors);
+                                        }
+                                    }
+                                    SchemeBtn {
+                                        label: "保存";
+                                        btn-w: 56px;
+                                        enabled: root.selected-is-custom && root.scheme-dirty;
+                                        clicked => { root.save-custom-scheme(root.scheme-colors); }
+                                    }
+                                    SchemeBtn {
+                                        label: "删除";
+                                        btn-w: 56px;
+                                        danger: true;
+                                        enabled: root.selected-is-custom;
+                                        clicked => { root.delete-custom-scheme(root.scheme-colors.name); }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                            }
+
+                            // ── 光标（独立于配色方案的展示设置） ──
+                            VerticalLayout {
+                                spacing: 10px;
+
+                                Text {
+                                    text: "光标";
+                                    color: root.c-text;
+                                    font-size: 15px;
+                                    font-weight: 700;
+                                }
+
+                                // 光标样式
+                                HorizontalLayout {
+                                    spacing: 10px;
                                     Text {
-                                        text: "删除方案";
-                                        color: root.c-danger;
+                                        text: "光标样式";
+                                        color: root.c-text-secondary;
                                         font-size: 14px;
-                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: 88px;
+                                    }
+                                    TextInput {
+                                        font-size: 14px;
+                                        width: 120px;
+                                        text: root.general-draft.cursor-style;
+                                        edited => { root.general-draft.cursor-style = self.text; }
+                                    }
+                                    Text {
+                                        text: "(block / beam / underline)";
+                                        color: root.c-text-hint;
+                                        font-size: 12px;
                                         vertical-alignment: center;
                                     }
-                                    del-scheme := TouchArea {
-                                        clicked => {
-                                            root.delete-custom-scheme(root.scheme-colors.name);
+                                }
+
+                                // 光标色（全局外观项：色块 + 选择器 + 十六进制）
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    Text {
+                                        text: "光标色";
+                                        color: root.c-text-secondary;
+                                        font-size: 14px;
+                                        vertical-alignment: center;
+                                        width: 88px;
+                                    }
+                                    ColorField {
+                                        label: "";
+                                        label-w: 0px;
+                                        value: root.general-draft.cursor-color;
+                                        swatch: root.cursor-color-preview;
+                                        changed(v) => {
+                                            root.general-draft.cursor-color = v;
+                                            root.cursor-color-changed(v);
                                         }
                                     }
                                 }
