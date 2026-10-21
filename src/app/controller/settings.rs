@@ -155,6 +155,36 @@ impl App {
         }
     }
 
+    // 配色方案「确认」临时应用：仅内存生效到终端，不落盘（保存时才持久化）。
+    pub(super) fn on_apply_scheme_preview(&mut self, colors: SchemeColors) {
+        let scheme = scheme_from_ui(&colors);
+        // 终端区背景色（临时，读取草稿方案而非已保存配置）
+        self.main_window.set_bg_color(rgb_to_color(scheme.background));
+        // 会话配色（临时）
+        self.sessions.apply_color_scheme(scheme);
+        self.render_active_force();
+    }
+
+    // 光标色「确认」临时应用：仅内存生效到终端，不落盘。
+    pub(super) fn on_apply_cursor_color_preview(&mut self, hex: SharedString) {
+        let c = color_scheme::parse_hex(&hex).unwrap_or(DEFAULT_CURSOR);
+        self.main_window
+            .set_cursor_color(slint::Color::from_argb_u8(0x44, c.0, c.1, c.2));
+        self.render_active_force();
+    }
+
+    // 颜色选择器预览请求：解析 hex → 回填弹层预览色（仅选择器内部预览，不触碰面板草稿）。
+    // 非法值忽略（保持上一次预览色，避免预览色块闪烁/回跳默认）。
+    pub(super) fn on_color_preview_request(&mut self, hex: SharedString) {
+        if let Some(c) = color_scheme::parse_hex(&hex) {
+            if let Some(w) = self.settings_window.as_ref() {
+                w.set_active_preview_brush(rgb_to_brush(c));
+                // 用递增计数驱动弹层同步，避免连续输入同一 hex 时因值相等而漏同步
+                w.set_preview_response_token(w.get_preview_response_token() + 1);
+            }
+        }
+    }
+
     // 「另存为」弹窗名称输入：实时校验并回填结果（空值 / 非法字符 / 重名）。
     pub(super) fn on_check_scheme_name(&mut self, name: SharedString) {
         let validation = self.validate_save_as_name(&name);
@@ -310,6 +340,30 @@ impl App {
         window.on_cursor_color_changed(move |hex| {
             command_tx
                 .send(WindowEvent::CursorColorChanged(hex))
+                .unwrap();
+        });
+
+        // 配色方案「确认」临时应用 → 终端（不落盘）
+        let command_tx = self.event_tx.clone();
+        window.on_apply_scheme_preview(move |colors| {
+            command_tx
+                .send(WindowEvent::ApplySchemePreview(colors))
+                .unwrap();
+        });
+
+        // 光标色「确认」临时应用 → 终端（不落盘）
+        let command_tx = self.event_tx.clone();
+        window.on_apply_cursor_color_preview(move |hex| {
+            command_tx
+                .send(WindowEvent::ApplyCursorColorPreview(hex))
+                .unwrap();
+        });
+
+        // 颜色选择器预览请求 → 解析回填弹层预览色（不触碰面板草稿）
+        let command_tx = self.event_tx.clone();
+        window.on_color_preview_request(move |hex| {
+            command_tx
+                .send(WindowEvent::ColorPreviewRequest(hex))
                 .unwrap();
         });
 

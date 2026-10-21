@@ -67,6 +67,12 @@ pub enum WindowEvent {
     DeleteCustomScheme(SharedString),
     // 光标色草稿变化（解析回填光标色预览色块）
     CursorColorChanged(SharedString),
+    // 配色方案「确认」临时应用（仅内存生效到终端，不落盘）
+    ApplySchemePreview(SchemeColors),
+    // 光标色「确认」临时应用（仅内存生效到终端，不落盘）
+    ApplyCursorColorPreview(SharedString),
+    // 颜色选择器预览请求（十六进制输入 → 解析回填弹层预览色，不触碰面板草稿）
+    ColorPreviewRequest(SharedString),
     // 「另存为」弹窗名称输入（校验空值/非法字符/重名后回填校验结果）
     CheckSchemeName(SharedString),
 }

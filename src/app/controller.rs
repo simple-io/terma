@@ -468,6 +468,12 @@ impl App {
             WindowEvent::DeleteCustomScheme(name) => self.on_delete_custom_scheme(name),
             // 光标色草稿变化（解析回填光标色预览）
             WindowEvent::CursorColorChanged(hex) => self.on_cursor_color_changed(hex),
+            // 配色方案「确认」临时应用（不落盘）
+            WindowEvent::ApplySchemePreview(colors) => self.on_apply_scheme_preview(colors),
+            // 光标色「确认」临时应用（不落盘）
+            WindowEvent::ApplyCursorColorPreview(hex) => self.on_apply_cursor_color_preview(hex),
+            // 颜色选择器预览请求（解析回填弹层预览色）
+            WindowEvent::ColorPreviewRequest(hex) => self.on_color_preview_request(hex),
             // 「另存为」名称校验
             WindowEvent::CheckSchemeName(name) => self.on_check_scheme_name(name),
         }

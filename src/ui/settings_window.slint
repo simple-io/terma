@@ -101,96 +101,371 @@ struct PickerColor {
     c: color,
 }
 
-// 颜色选择弹层：调色板网格（6 列 × 4 行）+ 十六进制输入。
-// 点选调色板或输入十六进制值时实时经 picked 回调。
+// 颜色选择弹层：平滑选色（色相条 + 饱和度/明度面板）+ 固定候选色 + 十六进制输入。
+// 交互遵循「先预览、后确认」：拖拽面板/色相条、点选候选色仅在选择器内部实时预览
+// （本地 HSV 状态）；十六进制输入经 preview 回调请求 Rust 解析回填内部预览；二者
+// 均不触碰面板。仅点击「确认」才经 confirmed 回传色值应用（面板草稿 + 终端）。
 component ColorPickerPopup {
     in-out property <string> hex;
-    callback picked(string);
+    // 当前已提交颜色（色块 brush）：打开弹层时据此同步平滑选色器
+    in property <brush> current-color;
+    // 预览颜色（Rust 解析 hex 后回填）：十六进制输入时据此同步平滑选色器（仅内部预览，不触碰面板）
+    in property <brush> preview-color: transparent;
+    // 打开同步信号：父级每次弹出前自增，触发一次「当前色 → HSV」同步
+    in property <int> sync-token: 0;
+    // 预览响应信号：Rust 每次解析回填 preview-color 后自增，触发「预览色 → HSV」同步。
+    // 用递增计数而非「值变化」检测，避免连续输入同一 hex 时因值相等而漏同步。
+    in property <int> preview-response-token: 0;
+    // 预览请求：十六进制输入时回传 hex，请求 Rust 解析回填 preview-color（仅内部预览）
+    callback preview(string);
+    // 「确认」按钮：回传所选色值（应用到面板草稿 + 终端，临时、不落盘）
+    callback confirmed(string);
+    // 「取消」按钮：放弃本次选择（由父级关闭弹层，面板不变）
+    callback cancelled();
+
     property <length> cell: 24px;
+
+    // 平滑选色状态（HSV：hue ∈ [0,360]，sat/val ∈ [0,1]）
+    property <float> hue: 0.0;
+    property <float> sat: 1.0;
+    property <float> val: 1.0;
+    // 拖拽中标志：抑制「外部色值回填 → 平滑选色器」的异步往返同步，避免拖拽抖动/回弹
+    property <bool> dragging: false;
+
+    // 当前平滑选色结果（预览色块与回写 hex 用）
+    property <color> picked-color: hsv(root.hue, root.sat, root.val);
+    // 当前色相的纯色（SV 面板右侧基准色）
+    property <color> pure-hue: hsv(root.hue, 1.0, 1.0);
+
+    // 候选色按「色相近邻」排序（便于对比）：
+    //   1) 无彩灰阶在前（按明度递增：黑→暗灰→灰→浅灰→白）
+    //   2) 彩色彩虹序在后（红→橙→黄→绿→青→蓝→品红，按色相角 0°→300° 递增）
+    //   3) 同色相族内按「纯色 → 暗色 → 浅色」排列
     property <[PickerColor]> row0: [
         {hex: "#000000", c: #000000}, {hex: "#404040", c: #404040}, {hex: "#808080", c: #808080},
-        {hex: "#c0c0c0", c: #c0c0c0}, {hex: "#ffffff", c: #ffffff}, {hex: "#ffa500", c: #ffa500},
+        {hex: "#c0c0c0", c: #c0c0c0}, {hex: "#ffffff", c: #ffffff}, {hex: "#ff0000", c: #ff0000},
     ];
     property <[PickerColor]> row1: [
-        {hex: "#ff0000", c: #ff0000}, {hex: "#800000", c: #800000}, {hex: "#ff8080", c: #ff8080},
-        {hex: "#00ff00", c: #00ff00}, {hex: "#008000", c: #008000}, {hex: "#80ff80", c: #80ff80},
-    ];
-    property <[PickerColor]> row2: [
-        {hex: "#0000ff", c: #0000ff}, {hex: "#000080", c: #000080}, {hex: "#8080ff", c: #8080ff},
+        {hex: "#800000", c: #800000}, {hex: "#ff8080", c: #ff8080}, {hex: "#ffa500", c: #ffa500},
         {hex: "#ffff00", c: #ffff00}, {hex: "#808000", c: #808000}, {hex: "#ffff80", c: #ffff80},
     ];
-    property <[PickerColor]> row3: [
-        {hex: "#ff00ff", c: #ff00ff}, {hex: "#800080", c: #800080}, {hex: "#ff80ff", c: #ff80ff},
+    property <[PickerColor]> row2: [
+        {hex: "#00ff00", c: #00ff00}, {hex: "#008000", c: #008000}, {hex: "#80ff80", c: #80ff80},
         {hex: "#00ffff", c: #00ffff}, {hex: "#008080", c: #008080}, {hex: "#80ffff", c: #80ffff},
     ];
-    VerticalLayout {
-        padding: 8px;
-        spacing: 6px;
+    property <[PickerColor]> row3: [
+        {hex: "#0000ff", c: #0000ff}, {hex: "#000080", c: #000080}, {hex: "#8080ff", c: #8080ff},
+        {hex: "#ff00ff", c: #ff00ff}, {hex: "#800080", c: #800080}, {hex: "#ff80ff", c: #ff80ff},
+    ];
 
-        HorizontalLayout {
-            spacing: 4px;
-            for pc in root.row0: Rectangle {
-                width: root.cell;
-                height: root.cell;
-                border-radius: 3px;
-                border-width: 1px;
-                border-color: #dadce0;
-                background: pc.c;
-                TouchArea { clicked => { root.picked(pc.hex); } }
-            }
-        }
-        HorizontalLayout {
-            spacing: 4px;
-            for pc in root.row1: Rectangle {
-                width: root.cell;
-                height: root.cell;
-                border-radius: 3px;
-                border-width: 1px;
-                border-color: #dadce0;
-                background: pc.c;
-                TouchArea { clicked => { root.picked(pc.hex); } }
-            }
-        }
-        HorizontalLayout {
-            spacing: 4px;
-            for pc in root.row2: Rectangle {
-                width: root.cell;
-                height: root.cell;
-                border-radius: 3px;
-                border-width: 1px;
-                border-color: #dadce0;
-                background: pc.c;
-                TouchArea { clicked => { root.picked(pc.hex); } }
-            }
-        }
-        HorizontalLayout {
-            spacing: 4px;
-            for pc in root.row3: Rectangle {
-                width: root.cell;
-                height: root.cell;
-                border-radius: 3px;
-                border-width: 1px;
-                border-color: #dadce0;
-                background: pc.c;
-                TouchArea { clicked => { root.picked(pc.hex); } }
-            }
-        }
+    // 十六进制数字查找表
+    property <[string]> hex-digits: ["0","1","2","3","4","5","6","7","8","9","a","b","c","d","e","f"];
 
-        // 十六进制输入
-        Rectangle {
-            height: 28px;
-            border-radius: 4px;
-            border-width: 1px;
-            border-color: #dadce0;
-            clip: true;
+    // int(0-255) → 两位十六进制字符串
+    function to-hex2(v: int) -> string {
+        return root.hex-digits[floor(v / 16)] + root.hex-digits[mod(v, 16)];
+    }
+    // color → "#rrggbb"
+    function color-to-hex(c: color) -> string {
+        return "#" + root.to-hex2(c.red) + root.to-hex2(c.green) + root.to-hex2(c.blue);
+    }
+    // 当前色（brush）→ 同步 hue/sat/val
+    function sync-from-color() {
+        let h = root.current-color.to-hsv();
+        root.hue = h.hue;
+        root.sat = h.saturation;
+        root.val = h.value;
+    }
+    // 预览色（brush）→ 同步 hue/sat/val
+    function sync-from-preview() {
+        let h = root.preview-color.to-hsv();
+        root.hue = h.hue;
+        root.sat = h.saturation;
+        root.val = h.value;
+    }
+    // 平滑选色结果 → 回写 hex（仅内部预览，不通知父级）
+    function commit-smooth() {
+        root.hex = root.color-to-hex(root.picked-color);
+    }
+    // 候选色点击：本地同步 HSV + 回写 hex（仅内部预览，无需 Rust 异步回填）
+    function pick-candidate(c: color, hex-str: string) {
+        let h = c.to-hsv();
+        root.hue = h.hue;
+        root.sat = h.saturation;
+        root.val = h.value;
+        root.hex = hex-str;
+    }
+
+    // 打开信号：父级自增 sync-token → 以当前色初始化平滑选色器
+    changed sync-token => {
+        root.sync-from-color();
+    }
+    // 外部已提交色变化（切换方案 / 确认回填）→ 同步平滑选色器
+    changed current-color => {
+        if (!root.dragging) {
+            root.sync-from-color();
+        }
+    }
+    // 预览响应信号：Rust 解析回填 preview-color 后 → 同步平滑选色器（仅内部预览）
+    changed preview-response-token => {
+        if (!root.dragging) {
+            root.sync-from-preview();
+        }
+    }
+
+    Rectangle {
+        background: #ffffff;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: #dadce0;
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+
+            // ── 饱和度 × 明度面板（水平=饱和度，垂直=明度） ──
+            sv-panel := Rectangle {
+                width: 164px;
+                height: 100px;
+                border-radius: 4px;
+                border-width: 1px;
+                border-color: #dadce0;
+                clip: true;
+
+                // 底层：水平 白 → 纯色相（饱和度轴）
+                Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    background: @linear-gradient(90deg, #ffffff, root.pure-hue);
+                }
+                // 上层：垂直 透明 → 黑（明度轴）
+                Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    background: @linear-gradient(180deg, transparent, #000000);
+                }
+
+                // 标记：白色圆环（深色外晕描边，浅/深背景均清晰）
+                Rectangle {
+                    x: root.sat * sv-panel.width - 5px;
+                    y: (1 - root.val) * sv-panel.height - 5px;
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 5px;
+                    border-width: 2px;
+                    border-color: #ffffff;
+                    background: #00000040;
+                }
+
+                sv-touch := TouchArea {
+                    pointer-event(event) => {
+                        if (event.button != PointerEventButton.left) {
+                            return;
+                        }
+                        if (event.kind == PointerEventKind.down) {
+                            root.dragging = true;
+                            root.sat = max(0.0, min(1.0, sv-touch.mouse-x / sv-touch.width));
+                            root.val = 1.0 - max(0.0, min(1.0, sv-touch.mouse-y / sv-touch.height));
+                            root.commit-smooth();
+                        } else if (event.kind == PointerEventKind.move && root.dragging) {
+                            root.sat = max(0.0, min(1.0, sv-touch.mouse-x / sv-touch.width));
+                            root.val = 1.0 - max(0.0, min(1.0, sv-touch.mouse-y / sv-touch.height));
+                            root.commit-smooth();
+                        } else if (event.kind == PointerEventKind.up) {
+                            root.dragging = false;
+                        }
+                    }
+                }
+            }
+
+            // ── 色相条 ──
+            hue-bar := Rectangle {
+                width: 164px;
+                height: 12px;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: #dadce0;
+                clip: true;
+                background: @linear-gradient(90deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+
+                // 色相标记（白色竖条 + 深色描边）
+                Rectangle {
+                    x: root.hue / 360 * hue-bar.width - 4px;
+                    y: 1px;
+                    width: 8px;
+                    height: 10px;
+                    border-radius: 2px;
+                    border-width: 1px;
+                    border-color: #ffffff;
+                    background: #00000040;
+                }
+
+                hue-touch := TouchArea {
+                    pointer-event(event) => {
+                        if (event.button != PointerEventButton.left) {
+                            return;
+                        }
+                        if (event.kind == PointerEventKind.down) {
+                            root.dragging = true;
+                            root.hue = max(0.0, min(360.0, hue-touch.mouse-x / hue-touch.width * 360));
+                            root.commit-smooth();
+                        } else if (event.kind == PointerEventKind.move && root.dragging) {
+                            root.hue = max(0.0, min(360.0, hue-touch.mouse-x / hue-touch.width * 360));
+                            root.commit-smooth();
+                        } else if (event.kind == PointerEventKind.up) {
+                            root.dragging = false;
+                        }
+                    }
+                }
+            }
+
+            // ── 预览 + 十六进制输入 ──
+            VerticalLayout {
+                spacing: 4px;
+                // 输入框标签（与色块标签同风格：10px 灰字，紧贴输入框上方）
+                Text {
+                    height: 12px;
+                    text: "十六进制";
+                    color: #5f6368;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    // 当前选色预览
+                    Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #dadce0;
+                        background: root.picked-color;
+                    }
+                    Rectangle {
+                        height: 24px;
+                        horizontal-stretch: 1;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #dadce0;
+                        clip: true;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            popup-hex-input := TextInput {
+                                font-size: 13px;
+                                color: #1f1f1f;
+                                vertical-alignment: center;
+                                text <=> root.hex;
+                                edited => { root.preview(self.text); }
+                            }
+                        }
+                        // 占位提示：十六进制格式
+                        Text {
+                            x: 6px;
+                            width: parent.width - 12px;
+                            height: parent.height;
+                            text: "#RRGGBB（6 位十六进制）";
+                            color: #9aa0a6;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            visible: popup-hex-input.text == "";
+                        }
+                    }
+                }
+            }
+
+            // ── 候选色网格（6 列 × 4 行） ──
+            VerticalLayout {
+                spacing: 4px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    for pc in root.row0: Rectangle {
+                        width: root.cell;
+                        height: root.cell;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #dadce0;
+                        background: pc.c;
+                        TouchArea { clicked => { root.pick-candidate(pc.c, pc.hex); } }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    for pc in root.row1: Rectangle {
+                        width: root.cell;
+                        height: root.cell;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #dadce0;
+                        background: pc.c;
+                        TouchArea { clicked => { root.pick-candidate(pc.c, pc.hex); } }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    for pc in root.row2: Rectangle {
+                        width: root.cell;
+                        height: root.cell;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #dadce0;
+                        background: pc.c;
+                        TouchArea { clicked => { root.pick-candidate(pc.c, pc.hex); } }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    for pc in root.row3: Rectangle {
+                        width: root.cell;
+                        height: root.cell;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #dadce0;
+                        background: pc.c;
+                        TouchArea { clicked => { root.pick-candidate(pc.c, pc.hex); } }
+                    }
+                }
+            }
+
+            // ── 操作按钮：取消 / 确认 ──
             HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 8px;
-                TextInput {
-                    font-size: 13px;
-                    color: #1f1f1f;
-                    text <=> root.hex;
-                    edited => { root.picked(self.text); }
+                alignment: end;
+                spacing: 6px;
+                // 取消：关闭弹层，不应用所选颜色
+                Rectangle {
+                    width: 56px;
+                    height: 26px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: #dadce0;
+                    background: cancel-touch.has-hover ? #f1f3f4 : #ffffff;
+                    Text {
+                        text: "取消";
+                        color: #1f1f1f;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    cancel-touch := TouchArea {
+                        clicked => { root.cancelled(); }
+                    }
+                }
+                // 确认：回传所选色值（应用到面板草稿 + 临时应用到终端，不落盘）
+                Rectangle {
+                    width: 56px;
+                    height: 26px;
+                    border-radius: 4px;
+                    background: ok-touch.has-hover ? #1557b0 : #1a73e8;
+                    Text {
+                        text: "确认";
+                        color: #ffffff;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    ok-touch := TouchArea {
+                        clicked => { root.confirmed(root.hex); }
+                    }
                 }
             }
         }
@@ -206,8 +481,18 @@ component ColorSwatchChip {
     in property <length> chip-w: 22px;
     in property <length> chip-h: 20px;
     callback changed(string);
+    // 「确认」后临时应用到终端（仅内存生效、不落盘；由父级触发 Rust）
+    callback applied();
+    // 预览请求：十六进制输入 → 请求 Rust 解析回填 preview-color（仅选择器内部预览，不触碰面板）
+    callback preview-request(string);
+    // 预览颜色（Rust 解析回填，窗口级共享：同时仅一个弹层打开）
+    in property <brush> preview-color: transparent;
+    // 预览响应信号（Rust 自增，驱动弹层同步预览色）
+    in property <int> preview-response-token: 0;
     // PopupWindow 独立作用域，经根属性桥接把当前色值传入弹层
     property <string> picker-hex;
+    // 打开同步信号：每次弹出前自增，触发弹层内「当前色 → 平滑选色器」同步
+    property <int> picker-sync: 0;
     VerticalLayout {
         spacing: 3px;
         Rectangle {
@@ -220,6 +505,7 @@ component ColorSwatchChip {
             chip-touch := TouchArea {
                 clicked => {
                     root.picker-hex = root.hex;
+                    root.picker-sync += 1;
                     picker-pop.show();
                 }
             }
@@ -234,11 +520,23 @@ component ColorSwatchChip {
     picker-pop := PopupWindow {
         // 点击弹层内部（如 hex 输入框）不再误关；点外部或 Esc 关闭
         close-policy: close-on-click-outside;
-        width: 184px;
-        height: 164px;
+        // 向上弹出，避免过高弹层超出设置窗口下缘
+        y: -348px;
+        width: 186px;
+        height: 340px;
         picker := ColorPickerPopup {
             hex <=> root.picker-hex;
-            picked(h) => { root.changed(h); }
+            current-color: root.swatch;
+            preview-color: root.preview-color;
+            preview-response-token: root.preview-response-token;
+            sync-token: root.picker-sync;
+            preview(h) => { root.preview-request(h); }
+            confirmed(h) => {
+                root.changed(h);
+                root.applied();
+                picker-pop.close();
+            }
+            cancelled() => { picker-pop.close(); }
         }
     }
 }
@@ -252,9 +550,19 @@ component ColorField {
     in property <brush> swatch;
     in property <length> label-w: 44px;
     callback changed(string);
+    // 「确认」后临时应用到终端（仅内存生效、不落盘；由父级触发 Rust）
+    callback applied();
+    // 预览请求：十六进制输入 → 请求 Rust 解析回填 preview-color（仅选择器内部预览，不触碰面板）
+    callback preview-request(string);
+    // 预览颜色（Rust 解析回填，窗口级共享：同时仅一个弹层打开）
+    in property <brush> preview-color: transparent;
+    // 预览响应信号（Rust 自增，驱动弹层同步预览色）
+    in property <int> preview-response-token: 0;
     // 弹层桥接属性：PopupWindow 是独立作用域，内部 id 不暴露给组件代码，
     // 经此属性把当前色值传入弹层（打开时赋初值，弹层内编辑实时回传）
     property <string> picker-hex;
+    // 打开同步信号：每次弹出前自增，触发弹层内「当前色 → 平滑选色器」同步
+    property <int> picker-sync: 0;
     HorizontalLayout {
         spacing: 6px;
         Text {
@@ -274,16 +582,40 @@ component ColorField {
             swatch-touch := TouchArea {
                 clicked => {
                     root.picker-hex = root.value;
+                    root.picker-sync += 1;
                     picker-pop.show();
                 }
             }
         }
-        hex-input := TextInput {
-            width: 82px;
-            font-size: 13px;
-            color: #1f1f1f;
-            text: value;
-            edited => { changed(self.text); }
+        Rectangle {
+            width: 108px;
+            height: 26px;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: #dadce0;
+            clip: true;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                hex-input := TextInput {
+                    font-size: 13px;
+                    color: #1f1f1f;
+                    vertical-alignment: center;
+                    text: value;
+                    edited => { changed(self.text); }
+                }
+            }
+            // 占位提示：十六进制格式
+            Text {
+                x: 6px;
+                width: parent.width - 12px;
+                height: parent.height;
+                text: "#RRGGBB";
+                color: #9aa0a6;
+                font-size: 13px;
+                vertical-alignment: center;
+                visible: hex-input.text == "";
+            }
         }
     }
     // 外部 value 变化（选调色板 / 切换方案回填）时同步输入框；
@@ -294,16 +626,32 @@ component ColorField {
     picker-pop := PopupWindow {
         // 点击弹层内部（如 hex 输入框）不再误关；点外部或 Esc 关闭
         close-policy: close-on-click-outside;
-        width: 184px;
-        height: 164px;
+        // 向上弹出，避免过高弹层超出设置窗口下缘
+        y: -348px;
+        width: 186px;
+        height: 340px;
         picker := ColorPickerPopup {
             hex <=> root.picker-hex;
-            picked(h) => { root.changed(h); }
+            current-color: root.swatch;
+            preview-color: root.preview-color;
+            preview-response-token: root.preview-response-token;
+            sync-token: root.picker-sync;
+            preview(h) => { root.preview-request(h); }
+            confirmed(h) => {
+                root.changed(h);
+                root.applied();
+                picker-pop.close();
+            }
+            cancelled() => { picker-pop.close(); }
         }
     }
 }
 
 // 配色方案操作按钮（另存为 / 保存 / 删除，含置灰态）
+// 注意：本组件作为 HorizontalLayout 子项使用时，布局约束取自根元素的
+// min/preferred/max-width（height 同理）；根 Rectangle 上的显式 width/height
+// 只是几何赋值，会被布局覆盖并回退到内容宽度（文字宽），导致按钮塌缩重叠。
+// 因此固定尺寸必须写进 min/preferred/max 三元约束。
 component SchemeBtn {
     in property <string> label;
     in property <bool> enabled: true;
@@ -311,8 +659,12 @@ component SchemeBtn {
     in property <length> btn-w: 64px;
     callback clicked();
     Rectangle {
-        width: btn-w;
-        height: 26px;
+        min-width: btn-w;
+        preferred-width: btn-w;
+        max-width: btn-w;
+        min-height: 26px;
+        preferred-height: 26px;
+        max-height: 26px;
         border-radius: 4px;
         border-width: danger ? 1px : 0px;
         border-color: root.enabled ? #d93025 : #dadce0;
@@ -335,9 +687,7 @@ component SchemeBtn {
 
 // 「另存为」按钮：点击弹出输入名称弹窗，确认后经 confirmed 回传新名称。
 // 弹窗内含实时校验提示（validation），确认按钮仅在校验通过时可点击。
-// 注意：组件必须保持单根元素（PopupWindow 嵌套在根 Rectangle 内）。
-// 若 PopupWindow 与 Rectangle 平级（多顶层子元素），HorizontalLayout 对该组件
-// 的布局信息计算错误，宽度约束失效导致三个按钮互相重叠。
+// 固定尺寸经 min/preferred/max 三元约束声明（原因见 SchemeBtn 顶部注释）。
 component SaveAsButton {
     in property <bool> enabled: true;
     // 打开弹窗时预填的名称（当前方案名）
@@ -352,8 +702,12 @@ component SaveAsButton {
     property <string> draft-name;
 
     Rectangle {
-        width: 92px;
-        height: 26px;
+        min-width: 92px;
+        preferred-width: 92px;
+        max-width: 92px;
+        min-height: 26px;
+        preferred-height: 26px;
+        max-height: 26px;
         border-radius: 4px;
         background: !root.enabled ? #f1f3f4 : (save-as-touch.has-hover ? #1557b0 : #1a73e8);
         Text {
@@ -588,6 +942,17 @@ export component SettingsWindow inherits Window {
     in property <brush> cursor-color-preview: #ffffff;
     // 光标色草稿变化 → Rust 解析回填 cursor-color-preview
     callback cursor-color-changed(string);
+    // 「确认」临时应用：配色方案草稿 → 终端（仅内存生效，不落盘）
+    callback apply-scheme-preview(SchemeColors);
+    // 「确认」临时应用：光标色 → 终端（仅内存生效，不落盘）
+    callback apply-cursor-color-preview(string);
+    // ─── 颜色选择器内部预览（先预览、后确认应用的状态隔离） ───
+    // 预览颜色（Rust 解析 hex 后回填；窗口级共享，同时仅一个弹层打开）
+    in property <brush> active-preview-brush: transparent;
+    // 预览响应信号（Rust 每次解析回填后自增，驱动弹层同步预览色）
+    in property <int> preview-response-token: 0;
+    // 预览请求：弹层十六进制输入 → Rust 解析回填 active-preview-brush（不触碰面板草稿）
+    callback color-preview-request(string);
 
     // ─── 回调 ───
     callback save-general(GeneralSettingsInfo);
@@ -1292,25 +1657,42 @@ export component SettingsWindow inherits Window {
                                             color: root.c-text-secondary;
                                             font-size: 13px;
                                         }
+                                        Text {
+                                            text: "点击色块打开颜色选择器，可拖拽选色或输入十六进制色值";
+                                            color: root.c-text-hint;
+                                            font-size: 12px;
+                                        }
                                         HorizontalLayout {
                                             spacing: 8px;
                                             ColorSwatchChip {
                                                 label: "背景色";
                                                 hex: root.scheme-colors.background;
                                                 swatch: root.scheme-preview[1];
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
                                                 changed(v) => { root.scheme-colors.background = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
                                             }
                                             ColorSwatchChip {
                                                 label: "文本色";
                                                 hex: root.scheme-colors.foreground;
                                                 swatch: root.scheme-preview[0];
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
                                                 changed(v) => { root.scheme-colors.foreground = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
                                             }
                                             ColorSwatchChip {
                                                 label: "选区色";
                                                 hex: root.scheme-colors.selection;
                                                 swatch: root.scheme-preview[2];
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
                                                 changed(v) => { root.scheme-colors.selection = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
                                             }
                                             Rectangle { horizontal-stretch: 1; }
                                         }
@@ -1353,14 +1735,14 @@ export component SettingsWindow inherits Window {
                                                     horizontal-alignment: center;
                                                     vertical-alignment: center;
                                                 }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi0; swatch: root.scheme-preview[3]; changed(v) => { root.scheme-colors.ansi0 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi1; swatch: root.scheme-preview[4]; changed(v) => { root.scheme-colors.ansi1 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi2; swatch: root.scheme-preview[5]; changed(v) => { root.scheme-colors.ansi2 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi3; swatch: root.scheme-preview[6]; changed(v) => { root.scheme-colors.ansi3 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi4; swatch: root.scheme-preview[7]; changed(v) => { root.scheme-colors.ansi4 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi5; swatch: root.scheme-preview[8]; changed(v) => { root.scheme-colors.ansi5 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi6; swatch: root.scheme-preview[9]; changed(v) => { root.scheme-colors.ansi6 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi7; swatch: root.scheme-preview[10]; changed(v) => { root.scheme-colors.ansi7 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi0; swatch: root.scheme-preview[3]; changed(v) => { root.scheme-colors.ansi0 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi1; swatch: root.scheme-preview[4]; changed(v) => { root.scheme-colors.ansi1 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi2; swatch: root.scheme-preview[5]; changed(v) => { root.scheme-colors.ansi2 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi3; swatch: root.scheme-preview[6]; changed(v) => { root.scheme-colors.ansi3 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi4; swatch: root.scheme-preview[7]; changed(v) => { root.scheme-colors.ansi4 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi5; swatch: root.scheme-preview[8]; changed(v) => { root.scheme-colors.ansi5 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi6; swatch: root.scheme-preview[9]; changed(v) => { root.scheme-colors.ansi6 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi7; swatch: root.scheme-preview[10]; changed(v) => { root.scheme-colors.ansi7 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
                                             }
 
                                             // 亮色（ANSI 8-15）
@@ -1375,14 +1757,14 @@ export component SettingsWindow inherits Window {
                                                     horizontal-alignment: center;
                                                     vertical-alignment: center;
                                                 }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi8; swatch: root.scheme-preview[11]; changed(v) => { root.scheme-colors.ansi8 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi9; swatch: root.scheme-preview[12]; changed(v) => { root.scheme-colors.ansi9 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi10; swatch: root.scheme-preview[13]; changed(v) => { root.scheme-colors.ansi10 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi11; swatch: root.scheme-preview[14]; changed(v) => { root.scheme-colors.ansi11 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi12; swatch: root.scheme-preview[15]; changed(v) => { root.scheme-colors.ansi12 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi13; swatch: root.scheme-preview[16]; changed(v) => { root.scheme-colors.ansi13 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi14; swatch: root.scheme-preview[17]; changed(v) => { root.scheme-colors.ansi14 = v; root.scheme-colors-changed(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi15; swatch: root.scheme-preview[18]; changed(v) => { root.scheme-colors.ansi15 = v; root.scheme-colors-changed(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi8; swatch: root.scheme-preview[11]; changed(v) => { root.scheme-colors.ansi8 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi9; swatch: root.scheme-preview[12]; changed(v) => { root.scheme-colors.ansi9 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi10; swatch: root.scheme-preview[13]; changed(v) => { root.scheme-colors.ansi10 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi11; swatch: root.scheme-preview[14]; changed(v) => { root.scheme-colors.ansi11 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi12; swatch: root.scheme-preview[15]; changed(v) => { root.scheme-colors.ansi12 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi13; swatch: root.scheme-preview[16]; changed(v) => { root.scheme-colors.ansi13 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi14; swatch: root.scheme-preview[17]; changed(v) => { root.scheme-colors.ansi14 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi15; swatch: root.scheme-preview[18]; changed(v) => { root.scheme-colors.ansi15 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
                                             }
 
                                             Rectangle { horizontal-stretch: 1; }
@@ -1444,6 +1826,7 @@ export component SettingsWindow inherits Window {
                                     TextInput {
                                         font-size: 14px;
                                         width: 120px;
+                                        vertical-alignment: center;
                                         text: root.general-draft.cursor-style;
                                         edited => { root.general-draft.cursor-style = self.text; }
                                     }
@@ -1470,9 +1853,15 @@ export component SettingsWindow inherits Window {
                                         label-w: 0px;
                                         value: root.general-draft.cursor-color;
                                         swatch: root.cursor-color-preview;
+                                        preview-color: root.active-preview-brush;
+                                        preview-response-token: root.preview-response-token;
+                                        preview-request(h) => { root.color-preview-request(h); }
                                         changed(v) => {
                                             root.general-draft.cursor-color = v;
                                             root.cursor-color-changed(v);
+                                        }
+                                        applied() => {
+                                            root.apply-cursor-color-preview(root.general-draft.cursor-color);
                                         }
                                     }
                                 }
