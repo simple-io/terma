@@ -46,8 +46,12 @@ export component TerminalView inherits Rectangle {
     in property <string> font-family: "JetBrains Mono";
     // 终端背景色（配色方案背景，Rust 注入）
     in property <color> bg-color: #000000;
-    // 光标色（配色方案光标，Rust 注入为半透明）
-    in property <color> cursor-color: #ffffff44;
+    // 光标色（全局外观项，60% 不透明度，Rust 注入覆盖）
+    in property <color> cursor-color: #ffffff99;
+    // 光标样式：block / beam / underline（Rust 注入）
+    in property <string> cursor-style: "block";
+    // 光标闪烁开关（Rust 注入）
+    in property <bool> cursor-blink: true;
 
     // ─── 滚动（scrollback 历史查看） ───
     // 是否显示滚动条
@@ -97,12 +101,26 @@ export component TerminalView inherits Rectangle {
         }
     }
 
-    // 光标块（半透明高亮）
-    if root.cursor-visible: Rectangle {
+    // ─── 光标闪烁 ───
+    // 闪烁相位：true = 显示，false = 隐藏。仅光标可见且开启闪烁时计时翻转，
+    // 纯 UI 侧动画（不惊动 Rust 渲染链路）。interval 500ms 对应约 1s 的完整明暗周期。
+    property <bool> blink-phase: true;
+    cursor-blink-timer := Timer {
+        interval: 500ms;
+        running: root.cursor-blink && root.cursor-visible;
+        triggered => {
+            root.blink-phase = !root.blink-phase;
+        }
+    }
+    // 光标最终显隐：不可见时恒隐；可见且关闭闪烁时恒显；可见且开启闪烁时随相位翻转。
+    property <bool> cursor-shown: root.cursor-visible && (!root.cursor-blink || root.blink-phase);
+
+    // 光标（按样式渲染：块 / 竖线 / 下划线）
+    if root.cursor-shown: Rectangle {
         x: root.cursor-col * root.char-w;
-        y: root.cursor-row * root.char-h;
-        width: root.char-w;
-        height: root.char-h;
+        y: root.cursor-row * root.char-h + (root.cursor-style == "underline" ? root.char-h - 2px : 0px);
+        width: root.cursor-style == "beam" ? 2px : root.char-w;
+        height: root.cursor-style == "underline" ? 2px : root.char-h;
         background: root.cursor-color;
     }
 

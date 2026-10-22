@@ -19,6 +19,8 @@ font_size = 12
 cursor_style = "block"
 # 光标颜色（全局外观项，独立于配色方案，格式 #RRGGBB）
 cursor_color = "#ffffff"
+# 光标闪烁（true = 周期闪烁 / false = 常亮）
+cursor_blink = true
 # 配色方案名（内置：Default / Solarized Dark / Dracula / Gruvbox Dark / Nord /
 # One Dark / Tokyo Night / Catppuccin Mocha / Solarized Light / GitHub Light）
 # 用户自定义方案保存在 [[general.color_schemes]]，同名优先于内置。

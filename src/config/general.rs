@@ -12,6 +12,9 @@ fn default_font_size() -> u32 {
 fn default_cursor_style() -> String {
     "block".into()
 }
+fn default_cursor_blink() -> bool {
+    true
+}
 fn default_color_scheme() -> String {
     "Default".into()
 }
@@ -42,6 +45,10 @@ pub struct GeneralConfig {
     #[serde(default)]
     pub cursor_color: CursorColor,
 
+    // 终端光标闪烁
+    #[serde(default = "default_cursor_blink")]
+    pub cursor_blink: bool,
+
     // 终端配色方案
     #[serde(default = "default_color_scheme")]
     pub color_scheme: String,
@@ -67,6 +74,7 @@ impl Default for GeneralConfig {
             font_size: default_font_size(),
             cursor_style: default_cursor_style(),
             cursor_color: CursorColor::default(),
+            cursor_blink: default_cursor_blink(),
             color_scheme: default_color_scheme(),
             color_schemes: Vec::new(),
             scrollback_limit: default_scrollback_limit(),

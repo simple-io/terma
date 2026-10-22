@@ -25,9 +25,9 @@
 //!   on_resized()          → 窗口尺寸变化即时同步网格 + PTY + 重绘
 
 use crate::app::events::{TerminalEvent, WindowEvent};
+use crate::config::ColorScheme;
 use crate::config::ConfigManager;
 use crate::config::fonts;
-use crate::config::ColorScheme;
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::session::{RenderOutput, ScrollAction, SessionManager};
 use slint::language::KeyboardModifiers;
@@ -191,16 +191,22 @@ impl App {
         self.config.active_color_scheme()
     }
 
-    // 把当前配色方案的背景色 + 全局光标色注入主窗口（终端区背景 + 光标色）。
+    // 把当前配色方案的背景色 + 全局光标设置（色/样式/闪烁）注入主窗口。
     // 选区色当前仅存于方案数据中（尚无选区渲染，预留）。
     fn apply_window_colors(&self) {
         let p = self.active_color_scheme();
         self.main_window.set_bg_color(rgb_to_color(p.background));
-        let cursor = self.config.general().cursor_color.color;
+        let general = self.config.general();
+        let cursor = general.cursor_color.color;
+        // 0x99（60%）不透明度：光标矩形位于文字图层下方，字形仍清晰，
         self.main_window
             .set_cursor_color(slint::Color::from_argb_u8(
-                0x44, cursor.0, cursor.1, cursor.2,
+                0x99, cursor.0, cursor.1, cursor.2,
             ));
+        // 光标样式 + 闪烁（保存后立即生效：on_save_settings 与 app_init 都会走此处）
+        self.main_window
+            .set_cursor_style(general.cursor_style.as_str().into());
+        self.main_window.set_cursor_blink(general.cursor_blink);
     }
 
     // 设置终端配置

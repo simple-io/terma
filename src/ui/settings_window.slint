@@ -31,6 +31,8 @@ export struct GeneralSettingsInfo {
     cursor-style: string,
     // 光标颜色（全局外观项）
     cursor-color: string,
+    // 光标闪烁
+    cursor-blink: bool,
     // 配色方案
     color-scheme: string,
     // 响铃
@@ -541,108 +543,92 @@ component ColorSwatchChip {
     }
 }
 
-// 颜色编辑字段（标签 + 矩形色块 + 十六进制输入）。
-// 点击色块弹出颜色选择器（调色板 / 十六进制），结果经 changed 回写父级。
-component ColorField {
-    in property <string> label;
-    in property <string> value;
-    // 色块显示色（Slint 无法解析 hex 字符串，由 Rust 侧解析回填）
-    in property <brush> swatch;
-    in property <length> label-w: 44px;
-    callback changed(string);
-    // 「确认」后临时应用到终端（仅内存生效、不落盘；由父级触发 Rust）
-    callback applied();
-    // 预览请求：十六进制输入 → 请求 Rust 解析回填 preview-color（仅选择器内部预览，不触碰面板）
-    callback preview-request(string);
-    // 预览颜色（Rust 解析回填，窗口级共享：同时仅一个弹层打开）
-    in property <brush> preview-color: transparent;
-    // 预览响应信号（Rust 自增，驱动弹层同步预览色）
-    in property <int> preview-response-token: 0;
-    // 弹层桥接属性：PopupWindow 是独立作用域，内部 id 不暴露给组件代码，
-    // 经此属性把当前色值传入弹层（打开时赋初值，弹层内编辑实时回传）
-    property <string> picker-hex;
-    // 打开同步信号：每次弹出前自增，触发弹层内「当前色 → 平滑选色器」同步
-    property <int> picker-sync: 0;
-    HorizontalLayout {
-        spacing: 6px;
-        Text {
-            text: label;
-            width: label-w;
-            color: #5f6368;
-            font-size: 13px;
-            vertical-alignment: center;
-        }
+// 光标样式单选选项（轻量风格）：单选圆点 + 光标形状图形，无外框画布。
+// 选中：蓝色单选点（白环 + 蓝心）；未选中：灰色实心点；悬停浅灰底。
+// 注意：作为 HorizontalLayout 子项时固定尺寸必须写进 min/preferred/max 三元约束
+// （同 SchemeBtn，根 Rectangle 上的显式 width/height 会被布局忽略并塌缩）。
+component CursorStyleOption {
+    in property <string> kind;
+    in property <string> selected-kind;
+    callback choose(string);
+
+    property <bool> active: root.selected-kind == root.kind;
+
+    Rectangle {
+        min-width: 48px;
+        preferred-width: 48px;
+        max-width: 48px;
+        min-height: 26px;
+        preferred-height: 26px;
+        max-height: 26px;
+        border-radius: 4px;
+        background: opt-touch.has-hover ? #f1f3f4 : transparent;
+
+        // 单选圆点
         Rectangle {
-            width: 26px;
+            x: 5px;
+            y: (parent.height - self.height) / 2;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            background: root.active ? #1a73e8 : #c4c7c5;
+            // 选中态：白色环 + 蓝色中心点
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                border-radius: 4px;
+                background: #ffffff;
+                visible: root.active;
+                Rectangle {
+                    width: 4px;
+                    height: 4px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 2px;
+                    background: #1a73e8;
+                }
+            }
+        }
+
+        // 光标形状图形（深灰，与截图视觉一致）
+        Rectangle {
+            x: 25px;
+            y: (parent.height - self.height) / 2;
+            width: 18px;
             height: 20px;
-            border-radius: 3px;
-            border-width: 1px;
-            border-color: #dadce0;
-            background: swatch;
-            swatch-touch := TouchArea {
-                clicked => {
-                    root.picker-hex = root.value;
-                    root.picker-sync += 1;
-                    picker-pop.show();
-                }
+            background: transparent;
+            // 块：实心矩形
+            if root.kind == "block": Rectangle {
+                x: 3px;
+                y: 2px;
+                width: 11px;
+                height: 16px;
+                background: #3c4043;
+            }
+            // 竖线：细竖条
+            if root.kind == "beam": Rectangle {
+                x: 8px;
+                y: 2px;
+                width: 2px;
+                height: 16px;
+                background: #3c4043;
+            }
+            // 下划线：底部短横条
+            if root.kind == "underline": Rectangle {
+                x: 1px;
+                y: 16px;
+                width: 15px;
+                height: 2px;
+                background: #3c4043;
             }
         }
-        Rectangle {
-            width: 108px;
-            height: 26px;
-            border-radius: 4px;
-            border-width: 1px;
-            border-color: #dadce0;
-            clip: true;
-            HorizontalLayout {
-                padding-left: 6px;
-                padding-right: 6px;
-                hex-input := TextInput {
-                    font-size: 13px;
-                    color: #1f1f1f;
-                    vertical-alignment: center;
-                    text: value;
-                    edited => { changed(self.text); }
-                }
-            }
-            // 占位提示：十六进制格式
-            Text {
-                x: 6px;
-                width: parent.width - 12px;
-                height: parent.height;
-                text: "#RRGGBB";
-                color: #9aa0a6;
-                font-size: 13px;
-                vertical-alignment: center;
-                visible: hex-input.text == "";
-            }
-        }
-    }
-    // 外部 value 变化（选调色板 / 切换方案回填）时同步输入框；
-    // 仅在文本确实不同才赋值，避免用户输入时打断光标位置
-    changed value => {
-        if (hex-input.text != root.value) { hex-input.text = root.value; }
-    }
-    picker-pop := PopupWindow {
-        // 点击弹层内部（如 hex 输入框）不再误关；点外部或 Esc 关闭
-        close-policy: close-on-click-outside;
-        // 向上弹出，避免过高弹层超出设置窗口下缘
-        y: -348px;
-        width: 186px;
-        height: 340px;
-        picker := ColorPickerPopup {
-            hex <=> root.picker-hex;
-            current-color: root.swatch;
-            preview-color: root.preview-color;
-            preview-response-token: root.preview-response-token;
-            sync-token: root.picker-sync;
-            preview(h) => { root.preview-request(h); }
-            confirmed(h) => {
-                root.changed(h);
-                root.applied();
-                picker-pop.close();
-            }
-            cancelled() => { picker-pop.close(); }
+
+        opt-touch := TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => { root.choose(root.kind); }
         }
     }
 }
@@ -1813,7 +1799,7 @@ export component SettingsWindow inherits Window {
                                     font-weight: 700;
                                 }
 
-                                // 光标样式
+                                // 光标样式（单选：图形直观展示，无文字说明）
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text {
@@ -1823,19 +1809,22 @@ export component SettingsWindow inherits Window {
                                         vertical-alignment: center;
                                         width: 88px;
                                     }
-                                    TextInput {
-                                        font-size: 14px;
-                                        width: 120px;
-                                        vertical-alignment: center;
-                                        text: root.general-draft.cursor-style;
-                                        edited => { root.general-draft.cursor-style = self.text; }
+                                    CursorStyleOption {
+                                        kind: "underline";
+                                        selected-kind: root.general-draft.cursor-style;
+                                        choose(k) => { root.general-draft.cursor-style = k; }
                                     }
-                                    Text {
-                                        text: "(block / beam / underline)";
-                                        color: root.c-text-hint;
-                                        font-size: 12px;
-                                        vertical-alignment: center;
+                                    CursorStyleOption {
+                                        kind: "beam";
+                                        selected-kind: root.general-draft.cursor-style;
+                                        choose(k) => { root.general-draft.cursor-style = k; }
                                     }
+                                    CursorStyleOption {
+                                        kind: "block";
+                                        selected-kind: root.general-draft.cursor-style;
+                                        choose(k) => { root.general-draft.cursor-style = k; }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
                                 }
 
                                 // 光标色（全局外观项：色块 + 选择器 + 十六进制）
@@ -1848,10 +1837,11 @@ export component SettingsWindow inherits Window {
                                         vertical-alignment: center;
                                         width: 88px;
                                     }
-                                    ColorField {
+                                    ColorSwatchChip {
+                                        chip-w: 26px;
+                                        chip-h: 20px;
                                         label: "";
-                                        label-w: 0px;
-                                        value: root.general-draft.cursor-color;
+                                        hex: root.general-draft.cursor-color;
                                         swatch: root.cursor-color-preview;
                                         preview-color: root.active-preview-brush;
                                         preview-response-token: root.preview-response-token;
@@ -1863,6 +1853,45 @@ export component SettingsWindow inherits Window {
                                         applied() => {
                                             root.apply-cursor-color-preview(root.general-draft.cursor-color);
                                         }
+                                    }
+                                }
+
+                                // 光标闪烁（勾选框）
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    Text {
+                                        text: "光标闪烁";
+                                        color: root.c-text-secondary;
+                                        font-size: 14px;
+                                        vertical-alignment: center;
+                                        width: 88px;
+                                    }
+                                    Rectangle {
+                                        width: 16px;
+                                        height: 16px;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 3px;
+                                        border-width: 1px;
+                                        border-color: root.general-draft.cursor-blink ? root.c-primary : #b0b4b8;
+                                        background: root.general-draft.cursor-blink ? root.c-primary : #ffffff;
+                                        blink-touch := TouchArea {
+                                            clicked => {
+                                                root.general-draft.cursor-blink = !root.general-draft.cursor-blink;
+                                            }
+                                        }
+                                        Text {
+                                            text: root.general-draft.cursor-blink ? "\u{2713}" : "";
+                                            color: #ffffff;
+                                            font-size: 12px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    Text {
+                                        text: "光标闪烁";
+                                        color: root.c-text-secondary;
+                                        font-size: 13px;
+                                        vertical-alignment: center;
                                     }
                                 }
                             }

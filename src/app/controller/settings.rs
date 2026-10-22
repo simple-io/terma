@@ -34,6 +34,7 @@ impl App {
             cursor_color: CursorColor {
                 color: color_scheme::parse_hex(&info.cursor_color).unwrap_or(DEFAULT_CURSOR),
             },
+            cursor_blink: info.cursor_blink,
             color_scheme: info.color_scheme.to_string(),
             color_schemes: self.config.general().color_schemes.clone(),
             bell_sound: info.bell_sound,
@@ -169,7 +170,7 @@ impl App {
     pub(super) fn on_apply_cursor_color_preview(&mut self, hex: SharedString) {
         let c = color_scheme::parse_hex(&hex).unwrap_or(DEFAULT_CURSOR);
         self.main_window
-            .set_cursor_color(slint::Color::from_argb_u8(0x44, c.0, c.1, c.2));
+            .set_cursor_color(slint::Color::from_argb_u8(0x99, c.0, c.1, c.2));
         self.render_active_force();
     }
 
@@ -397,6 +398,7 @@ impl App {
             cursor_color: color_scheme::to_hex(general.cursor_color.color)
                 .as_str()
                 .into(),
+            cursor_blink: general.cursor_blink,
             color_scheme: general.color_scheme.as_str().into(),
             bell_sound: general.bell_sound,
             scrollback_limit: general.scrollback_limit as i32,
