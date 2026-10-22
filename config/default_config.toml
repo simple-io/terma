@@ -16,6 +16,9 @@
 default_profile = "zsh"
 font_family = "Monaco"
 font_size = 12
+# 初始尺寸（终端打开时的默认行/列数，结合字体度量换算窗口像素尺寸）
+initial_rows = 36
+initial_cols = 120
 cursor_style = "block"
 # 光标颜色（全局外观项，独立于配色方案，格式 #RRGGBB）
 cursor_color = "#ffffff"

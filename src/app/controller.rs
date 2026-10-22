@@ -51,7 +51,7 @@ pub use ui_generated::{
 
 /// Tab 栏 + 分隔线高度（逻辑像素）
 const CHROME_H: i32 = 37;
-/// 默认终端网格（启动目标尺寸，也作为无窗口尺寸可参考时的回退值）
+/// 默认终端网格（窗口尺寸不可用时的回退值；启动尺寸由配置 initial_rows/cols 决定）
 const DEFAULT_ROWS: u16 = 36;
 const DEFAULT_COLS: u16 = 120;
 /// 窗口水平方向 chrome（终端区域左右留白，逻辑像素）
@@ -224,13 +224,17 @@ impl App {
         self.profiles_model.set_vec(items);
     }
 
-    // 设置终端窗口初始尺寸
+    // 设置终端窗口初始尺寸：按配置的初始行/列数结合字体度量
+    // （char_w / char_h）换算窗口逻辑像素尺寸，另加 Tab 栏与四周留白。
     fn apply_initial_window_size(&self) {
+        let general = self.config.general();
+        let rows = general.initial_rows.clamp(1, MAX_ROWS as u32) as f32;
+        let cols = general.initial_cols.clamp(1, MAX_COLS as u32) as f32;
         let char_w = self.char_w.get();
         let char_h = self.char_h.get();
         let logical = slint::LogicalSize::new(
-            DEFAULT_COLS as f32 * char_w + H_PADDING as f32,
-            DEFAULT_ROWS as f32 * char_h + CHROME_H as f32 + V_PADDING as f32,
+            cols * char_w + H_PADDING as f32,
+            rows * char_h + V_PADDING as f32 + CHROME_H as f32,
         );
         self.main_window
             .window()

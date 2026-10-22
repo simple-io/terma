@@ -4,7 +4,7 @@
 //   - 独立 OS 窗口，与主窗口分离，设置时不影响终端
 //   - 侧边导航栏 + 右侧内容区布局（亮色主题）
 //   - 两个分类页：通用配置 + 启动项配置
-//   - 通用配置：字体、颜色、光标、配色方案、声音、scrollback、默认启动项
+//   - 通用配置：初始尺寸、字体、颜色、光标、配色方案、声音、scrollback、默认启动项
 //   - 启动项配置：Profile 列表的增删改查
 //
 // 通信（与 Rust 侧 controller.rs 交互）：
@@ -19,10 +19,14 @@
 // 注意：此文件独立编译，不 import 项目内其他 .slint 文件，
 // 避免跨编译单元 struct 类型冲突。所有 struct 在此文件内独立定义。
 
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, LineEdit } from "std-widgets.slint";
 
 // 通用配置信息
 export struct GeneralSettingsInfo {
+    // 初始尺寸：行数（终端打开时的默认行数）
+    initial-rows: int,
+    // 初始尺寸：列数（终端打开时的默认列数）
+    initial-cols: int,
     // 字体
     font-family: string,
     // 字号
@@ -144,24 +148,57 @@ component ColorPickerPopup {
     //   2) 彩色彩虹序在后（红→橙→黄→绿→青→蓝→品红，按色相角 0°→300° 递增）
     //   3) 同色相族内按「纯色 → 暗色 → 浅色」排列
     property <[PickerColor]> row0: [
-        {hex: "#000000", c: #000000}, {hex: "#404040", c: #404040}, {hex: "#808080", c: #808080},
-        {hex: "#c0c0c0", c: #c0c0c0}, {hex: "#ffffff", c: #ffffff}, {hex: "#ff0000", c: #ff0000},
+        { hex: "#000000", c: #000000 },
+        { hex: "#404040", c: #404040 },
+        { hex: "#808080", c: #808080 },
+        { hex: "#c0c0c0", c: #c0c0c0 },
+        { hex: "#ffffff", c: #ffffff },
+        { hex: "#ff0000", c: #ff0000 },
     ];
     property <[PickerColor]> row1: [
-        {hex: "#800000", c: #800000}, {hex: "#ff8080", c: #ff8080}, {hex: "#ffa500", c: #ffa500},
-        {hex: "#ffff00", c: #ffff00}, {hex: "#808000", c: #808000}, {hex: "#ffff80", c: #ffff80},
+        { hex: "#800000", c: #800000 },
+        { hex: "#ff8080", c: #ff8080 },
+        { hex: "#ffa500", c: #ffa500 },
+        { hex: "#ffff00", c: #ffff00 },
+        { hex: "#808000", c: #808000 },
+        { hex: "#ffff80", c: #ffff80 },
     ];
     property <[PickerColor]> row2: [
-        {hex: "#00ff00", c: #00ff00}, {hex: "#008000", c: #008000}, {hex: "#80ff80", c: #80ff80},
-        {hex: "#00ffff", c: #00ffff}, {hex: "#008080", c: #008080}, {hex: "#80ffff", c: #80ffff},
+        { hex: "#00ff00", c: #00ff00 },
+        { hex: "#008000", c: #008000 },
+        { hex: "#80ff80", c: #80ff80 },
+        { hex: "#00ffff", c: #00ffff },
+        { hex: "#008080", c: #008080 },
+        { hex: "#80ffff", c: #80ffff },
     ];
     property <[PickerColor]> row3: [
-        {hex: "#0000ff", c: #0000ff}, {hex: "#000080", c: #000080}, {hex: "#8080ff", c: #8080ff},
-        {hex: "#ff00ff", c: #ff00ff}, {hex: "#800080", c: #800080}, {hex: "#ff80ff", c: #ff80ff},
+        { hex: "#0000ff", c: #0000ff },
+        { hex: "#000080", c: #000080 },
+        { hex: "#8080ff", c: #8080ff },
+        { hex: "#ff00ff", c: #ff00ff },
+        { hex: "#800080", c: #800080 },
+        { hex: "#ff80ff", c: #ff80ff },
     ];
 
     // 十六进制数字查找表
-    property <[string]> hex-digits: ["0","1","2","3","4","5","6","7","8","9","a","b","c","d","e","f"];
+    property <[string]> hex-digits: [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+    ];
 
     // int(0-255) → 两位十六进制字符串
     function to-hex2(v: int) -> string {
@@ -332,6 +369,7 @@ component ColorPickerPopup {
                     font-size: 10px;
                     vertical-alignment: center;
                 }
+
                 HorizontalLayout {
                     spacing: 6px;
                     // 当前选色预览
@@ -343,6 +381,7 @@ component ColorPickerPopup {
                         border-color: #dadce0;
                         background: root.picked-color;
                     }
+
                     Rectangle {
                         height: 24px;
                         horizontal-stretch: 1;
@@ -388,9 +427,12 @@ component ColorPickerPopup {
                         border-width: 1px;
                         border-color: #dadce0;
                         background: pc.c;
-                        TouchArea { clicked => { root.pick-candidate(pc.c, pc.hex); } }
+                        TouchArea {
+                            clicked => { root.pick-candidate(pc.c, pc.hex); }
+                        }
                     }
                 }
+
                 HorizontalLayout {
                     spacing: 4px;
                     for pc in root.row1: Rectangle {
@@ -400,9 +442,12 @@ component ColorPickerPopup {
                         border-width: 1px;
                         border-color: #dadce0;
                         background: pc.c;
-                        TouchArea { clicked => { root.pick-candidate(pc.c, pc.hex); } }
+                        TouchArea {
+                            clicked => { root.pick-candidate(pc.c, pc.hex); }
+                        }
                     }
                 }
+
                 HorizontalLayout {
                     spacing: 4px;
                     for pc in root.row2: Rectangle {
@@ -412,9 +457,12 @@ component ColorPickerPopup {
                         border-width: 1px;
                         border-color: #dadce0;
                         background: pc.c;
-                        TouchArea { clicked => { root.pick-candidate(pc.c, pc.hex); } }
+                        TouchArea {
+                            clicked => { root.pick-candidate(pc.c, pc.hex); }
+                        }
                     }
                 }
+
                 HorizontalLayout {
                     spacing: 4px;
                     for pc in root.row3: Rectangle {
@@ -424,7 +472,9 @@ component ColorPickerPopup {
                         border-width: 1px;
                         border-color: #dadce0;
                         background: pc.c;
-                        TouchArea { clicked => { root.pick-candidate(pc.c, pc.hex); } }
+                        TouchArea {
+                            clicked => { root.pick-candidate(pc.c, pc.hex); }
+                        }
                     }
                 }
             }
@@ -448,6 +498,7 @@ component ColorPickerPopup {
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
+
                     cancel-touch := TouchArea {
                         clicked => { root.cancelled(); }
                     }
@@ -465,6 +516,7 @@ component ColorPickerPopup {
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
+
                     ok-touch := TouchArea {
                         clicked => { root.confirmed(root.hex); }
                     }
@@ -512,13 +564,15 @@ component ColorSwatchChip {
                 }
             }
         }
-        if label != "" : Text {
+
+        if label != "": Text {
             text: label;
             color: #5f6368;
             font-size: 10px;
             horizontal-alignment: center;
         }
     }
+
     picker-pop := PopupWindow {
         // 点击弹层内部（如 hex 输入框）不再误关；点外部或 Esc 关闭
         close-policy: close-on-click-outside;
@@ -664,6 +718,7 @@ component SchemeBtn {
             horizontal-alignment: center;
             vertical-alignment: center;
         }
+
         btn-touch := TouchArea {
             enabled: root.enabled;
             clicked => { root.clicked(); }
@@ -703,6 +758,7 @@ component SaveAsButton {
             horizontal-alignment: center;
             vertical-alignment: center;
         }
+
         save-as-touch := TouchArea {
             enabled: root.enabled;
             clicked => {
@@ -786,6 +842,7 @@ component SaveAsButton {
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
+
                             cancel-touch := TouchArea {
                                 clicked => { pop.close(); }
                             }
@@ -803,6 +860,7 @@ component SaveAsButton {
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
+
                             ok-touch := TouchArea {
                                 enabled: root.validation.ok;
                                 clicked => {
@@ -865,7 +923,7 @@ export component SettingsWindow inherits Window {
     property <length> font-item-h: 30px;
     property <length> font-item-step: 32px; // 项高 + 2px 间距
     // 字号下拉候选（固定整数档位，选中即应用，无单位）
-    in property <[int]> font-size-options: [ 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 28];
+    in property <[int]> font-size-options: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 28];
     // 搜索词变更（关键词, 当前字体）：Rust 侧做模糊过滤（部分匹配、不区分大小写）
     // 回填 filtered-font-list；空关键词时同时回填 font-current-index
     callback font-search-edited(string, string);
@@ -903,7 +961,7 @@ export component SettingsWindow inherits Window {
         || root.scheme-colors.ansi14 != root.scheme-baseline.ansi14
         || root.scheme-colors.ansi15 != root.scheme-baseline.ansi15;
     // ANSI 颜色名图例（普通/亮色两行共用，与色块列一一对齐）
-    property <[string]> ansi-names: ["黑","红","绿","黄","蓝","品红","青","白"];
+    property <[string]> ansi-names: ["黑", "红", "绿", "黄", "蓝", "品红", "青", "白"];
     // 下拉框当前选中索引
     in-out property <int> scheme-index: -1;
     // 当前选中方案是否为自定义（决定「保存 / 删除」按钮可用性）
@@ -999,7 +1057,7 @@ export component SettingsWindow inherits Window {
     function font-select-current() {
         if (root.filtered-font-list.length != 0) {
             let idx = (root.font-hl-index >= 0 && root.font-hl-index < root.filtered-font-list.length)
-                        ? root.font-hl-index : 0;
+                ? root.font-hl-index : 0;
             root.general-draft.font-family = root.filtered-font-list[idx].family;
         }
     }
@@ -1040,11 +1098,13 @@ export component SettingsWindow inherits Window {
                     vertical-alignment: center;
                 }
 
-                Rectangle { height: 5px; }
+                Rectangle {
+                    height: 5px;
+                }
 
                 // 导航主体（可滚动，启动项过多时不溢出）
                 ScrollView {
-                vertical-stretch: 1;
+                    vertical-stretch: 1;
                     VerticalLayout {
                         spacing: 6px;
 
@@ -1062,6 +1122,7 @@ export component SettingsWindow inherits Window {
                                 font-weight: root.active-tab == 0 ? 600 : 400;
                                 vertical-alignment: center;
                             }
+
                             nav0-touch := TouchArea {
                                 clicked => { root.active-tab = 0; }
                             }
@@ -1081,13 +1142,14 @@ export component SettingsWindow inherits Window {
                                 font-weight: root.active-tab == 1 ? 600 : 400;
                                 vertical-alignment: center;
                             }
+
                             nav1-touch := TouchArea {
                                 clicked => { root.active-tab = 1; }
                             }
                         }
 
                         // ── 启动项子级节点（缩进体现层级从属） ──
-                        for profile[i] in root.profile-list : Rectangle {
+                        for profile[i] in root.profile-list: Rectangle {
                             height: 32px;
                             border-radius: 6px;
                             background: (root.active-tab == 1 && i == root.selected-index)
@@ -1106,7 +1168,10 @@ export component SettingsWindow inherits Window {
                                     vertical-alignment: center;
                                     overflow: elide;
                                 }
-                                Rectangle { horizontal-stretch: 1; }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                }
                                 // 默认启动项标记
                                 Text {
                                     text: profile.id == root.general-settings.default-profile-id ? "★" : "";
@@ -1138,6 +1203,7 @@ export component SettingsWindow inherits Window {
                                 font-size: 13px;
                                 vertical-alignment: center;
                             }
+
                             nav-add-touch := TouchArea {
                                 clicked => {
                                     root.active-tab = 1;
@@ -1159,7 +1225,7 @@ export component SettingsWindow inherits Window {
                 clip: true;
 
                 // ═══ 通用配置页 ═══
-                if root.active-tab == 0 : Rectangle {
+                if root.active-tab == 0: Rectangle {
                     ScrollView {
                         VerticalLayout {
                             padding: 28px;
@@ -1170,6 +1236,68 @@ export component SettingsWindow inherits Window {
                                 color: root.c-text;
                                 font-size: 17px;
                                 font-weight: 700;
+                            }
+
+                            // 初始尺寸（终端打开时的默认行/列数，Rust 侧按字体度量换算窗口像素尺寸）
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text {
+                                    text: "窗口初始尺寸";
+                                    color: root.c-text-secondary;
+                                    font-size: 14px;
+                                    vertical-alignment: center;
+                                    width: 100px;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 3px;
+                                    alignment: start;
+                                    LineEdit {
+                                        font-size: 14px;
+                                        width: 80px;
+                                        input-type: number;
+                                        text: root.general-draft.initial-rows;
+                                        edited => {
+                                            if self.text.to-float() >= 1 {
+                                                root.general-draft.initial-rows = self.text.to-float();
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "行";
+                                        color: root.c-text-hint;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Rectangle {
+                                        width: 20px;
+                                    }
+
+                                    LineEdit {
+                                        font-size: 14px;
+                                        width: 80px;
+                                        input-type: number;
+                                        text: root.general-draft.initial-cols;
+                                        edited => {
+                                            if self.text.to-float() >= 1 {
+                                                root.general-draft.initial-cols = self.text.to-float();
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "列";
+                                        color: root.c-text-hint;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Rectangle {
+                                        vertical-stretch: 1;
+                                    }
+                                }
                             }
 
                             // 字体（下拉选择：项目自带字体置顶 + 分割线 + 系统字体）
@@ -1203,7 +1331,10 @@ export component SettingsWindow inherits Window {
                                             vertical-alignment: center;
                                             overflow: elide;
                                         }
-                                        Rectangle { horizontal-stretch: 1; }
+
+                                        Rectangle {
+                                            horizontal-stretch: 1;
+                                        }
                                         // 下拉箭头
                                         Text {
                                             text: "\u{25BE}";
@@ -1329,7 +1460,7 @@ export component SettingsWindow inherits Window {
                                                         spacing: 2px;
 
                                                         // 空列表提示：完整列表为空（枚举失败）与无匹配区分提示
-                                                        if root.filtered-font-list.length == 0 : Text {
+                                                        if root.filtered-font-list.length == 0: Text {
                                                             text: root.font-list.length == 0
                                                                 ? "未找到可用字体" : "未找到匹配的字体";
                                                             color: root.c-text-hint;
@@ -1339,17 +1470,17 @@ export component SettingsWindow inherits Window {
                                                             vertical-alignment: center;
                                                         }
 
-                                                        for font[i] in root.filtered-font-list : Rectangle {
+                                                        for font[i] in root.filtered-font-list: Rectangle {
                                                             height: root.font-item-h;
                                                             border-radius: 4px;
                                                             background: font.family == root.general-draft.font-family
                                                                 ? root.c-selected-soft
                                                                 : ((i == root.font-hl-index || font-opt-touch.has-hover)
-                                                                    ? root.c-hover : transparent);
+                                                                ? root.c-hover : transparent);
 
                                                             // 分割线：内置字体组与系统字体组之间
                                                             // （过滤后仍保持组序：内置在前；仅在前项是内置时画线）
-                                                            if !font.is-bundled && i > 0 && root.filtered-font-list[i - 1].is-bundled : Rectangle {
+                                                            if !font.is-bundled && i > 0 && root.filtered-font-list[i - 1].is-bundled: Rectangle {
                                                                 y: -1px;
                                                                 width: 100%;
                                                                 height: 1px;
@@ -1369,7 +1500,10 @@ export component SettingsWindow inherits Window {
                                                                     vertical-alignment: center;
                                                                     overflow: elide;
                                                                 }
-                                                                Rectangle { horizontal-stretch: 1; }
+
+                                                                Rectangle {
+                                                                    horizontal-stretch: 1;
+                                                                }
                                                                 // 内置字体来源标记
                                                                 Text {
                                                                     text: font.is-bundled ? "内置" : "";
@@ -1425,7 +1559,10 @@ export component SettingsWindow inherits Window {
                                             font-size: 14px;
                                             vertical-alignment: center;
                                         }
-                                        Rectangle { horizontal-stretch: 1; }
+
+                                        Rectangle {
+                                            horizontal-stretch: 1;
+                                        }
                                         // 下拉箭头
                                         Text {
                                             text: "\u{25BE}";
@@ -1457,7 +1594,7 @@ export component SettingsWindow inherits Window {
                                                     padding: 4px;
                                                     spacing: 2px;
 
-                                                    for sz in root.font-size-options : Rectangle {
+                                                    for sz in root.font-size-options: Rectangle {
                                                         height: 28px;
                                                         border-radius: 4px;
                                                         background: sz == root.general-draft.font-size
@@ -1533,7 +1670,11 @@ export component SettingsWindow inherits Window {
                                             vertical-alignment: center;
                                             overflow: elide;
                                         }
-                                        Rectangle { horizontal-stretch: 1; }
+
+                                        Rectangle {
+                                            horizontal-stretch: 1;
+                                        }
+
                                         Text {
                                             text: "\u{25BE}";
                                             color: root.c-text-secondary;
@@ -1563,7 +1704,7 @@ export component SettingsWindow inherits Window {
                                                     padding: 4px;
                                                     spacing: 2px;
 
-                                                    for s[i] in root.color-scheme-list : Rectangle {
+                                                    for s[i] in root.color-scheme-list: Rectangle {
                                                         height: 32px;
                                                         border-radius: 4px;
                                                         background: (i == root.scheme-index || scheme-opt-touch.has-hover)
@@ -1601,7 +1742,11 @@ export component SettingsWindow inherits Window {
                                                                 vertical-alignment: center;
                                                                 overflow: elide;
                                                             }
-                                                            Rectangle { horizontal-stretch: 1; }
+
+                                                            Rectangle {
+                                                                horizontal-stretch: 1;
+                                                            }
+
                                                             Text {
                                                                 text: s.is-custom ? "自定义" : "";
                                                                 color: root.c-text-hint;
@@ -1643,11 +1788,13 @@ export component SettingsWindow inherits Window {
                                             color: root.c-text-secondary;
                                             font-size: 13px;
                                         }
+
                                         Text {
                                             text: "点击色块打开颜色选择器，可拖拽选色或输入十六进制色值";
                                             color: root.c-text-hint;
                                             font-size: 12px;
                                         }
+
                                         HorizontalLayout {
                                             spacing: 8px;
                                             ColorSwatchChip {
@@ -1660,6 +1807,7 @@ export component SettingsWindow inherits Window {
                                                 changed(v) => { root.scheme-colors.background = v; root.scheme-colors-changed(root.scheme-colors); }
                                                 applied() => { root.apply-scheme-preview(root.scheme-colors); }
                                             }
+
                                             ColorSwatchChip {
                                                 label: "文本色";
                                                 hex: root.scheme-colors.foreground;
@@ -1670,6 +1818,7 @@ export component SettingsWindow inherits Window {
                                                 changed(v) => { root.scheme-colors.foreground = v; root.scheme-colors-changed(root.scheme-colors); }
                                                 applied() => { root.apply-scheme-preview(root.scheme-colors); }
                                             }
+
                                             ColorSwatchChip {
                                                 label: "选区色";
                                                 hex: root.scheme-colors.selection;
@@ -1680,7 +1829,10 @@ export component SettingsWindow inherits Window {
                                                 changed(v) => { root.scheme-colors.selection = v; root.scheme-colors-changed(root.scheme-colors); }
                                                 applied() => { root.apply-scheme-preview(root.scheme-colors); }
                                             }
-                                            Rectangle { horizontal-stretch: 1; }
+
+                                            Rectangle {
+                                                horizontal-stretch: 1;
+                                            }
                                         }
                                     }
 
@@ -1703,16 +1855,98 @@ export component SettingsWindow inherits Window {
                                                 font-size: 11px;
                                                 vertical-alignment: center;
                                             }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi0; swatch: root.scheme-preview[3]; changed(v) => { root.scheme-colors.ansi0 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi1; swatch: root.scheme-preview[4]; changed(v) => { root.scheme-colors.ansi1 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi2; swatch: root.scheme-preview[5]; changed(v) => { root.scheme-colors.ansi2 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi3; swatch: root.scheme-preview[6]; changed(v) => { root.scheme-colors.ansi3 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi4; swatch: root.scheme-preview[7]; changed(v) => { root.scheme-colors.ansi4 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi5; swatch: root.scheme-preview[8]; changed(v) => { root.scheme-colors.ansi5 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi6; swatch: root.scheme-preview[9]; changed(v) => { root.scheme-colors.ansi6 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi7; swatch: root.scheme-preview[10]; changed(v) => { root.scheme-colors.ansi7 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
 
-                                            Rectangle { horizontal-stretch: 1; }
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi0;
+                                                swatch: root.scheme-preview[3];
+                                                changed(v) => { root.scheme-colors.ansi0 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi1;
+                                                swatch: root.scheme-preview[4];
+                                                changed(v) => { root.scheme-colors.ansi1 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi2;
+                                                swatch: root.scheme-preview[5];
+                                                changed(v) => { root.scheme-colors.ansi2 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi3;
+                                                swatch: root.scheme-preview[6];
+                                                changed(v) => { root.scheme-colors.ansi3 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi4;
+                                                swatch: root.scheme-preview[7];
+                                                changed(v) => { root.scheme-colors.ansi4 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi5;
+                                                swatch: root.scheme-preview[8];
+                                                changed(v) => { root.scheme-colors.ansi5 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi6;
+                                                swatch: root.scheme-preview[9];
+                                                changed(v) => { root.scheme-colors.ansi6 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi7;
+                                                swatch: root.scheme-preview[10];
+                                                changed(v) => { root.scheme-colors.ansi7 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            Rectangle {
+                                                horizontal-stretch: 1;
+                                            }
                                         }
 
                                         // 亮色行（ANSI 8-15，横向排列）
@@ -1726,23 +1960,108 @@ export component SettingsWindow inherits Window {
                                                 font-size: 11px;
                                                 vertical-alignment: center;
                                             }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi8; swatch: root.scheme-preview[11]; changed(v) => { root.scheme-colors.ansi8 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi9; swatch: root.scheme-preview[12]; changed(v) => { root.scheme-colors.ansi9 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi10; swatch: root.scheme-preview[13]; changed(v) => { root.scheme-colors.ansi10 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi11; swatch: root.scheme-preview[14]; changed(v) => { root.scheme-colors.ansi11 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi12; swatch: root.scheme-preview[15]; changed(v) => { root.scheme-colors.ansi12 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi13; swatch: root.scheme-preview[16]; changed(v) => { root.scheme-colors.ansi13 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi14; swatch: root.scheme-preview[17]; changed(v) => { root.scheme-colors.ansi14 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi15; swatch: root.scheme-preview[18]; changed(v) => { root.scheme-colors.ansi15 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
 
-                                            Rectangle { horizontal-stretch: 1; }
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi8;
+                                                swatch: root.scheme-preview[11];
+                                                changed(v) => { root.scheme-colors.ansi8 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi9;
+                                                swatch: root.scheme-preview[12];
+                                                changed(v) => { root.scheme-colors.ansi9 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi10;
+                                                swatch: root.scheme-preview[13];
+                                                changed(v) => { root.scheme-colors.ansi10 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi11;
+                                                swatch: root.scheme-preview[14];
+                                                changed(v) => { root.scheme-colors.ansi11 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi12;
+                                                swatch: root.scheme-preview[15];
+                                                changed(v) => { root.scheme-colors.ansi12 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi13;
+                                                swatch: root.scheme-preview[16];
+                                                changed(v) => { root.scheme-colors.ansi13 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi14;
+                                                swatch: root.scheme-preview[17];
+                                                changed(v) => { root.scheme-colors.ansi14 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            ColorSwatchChip {
+                                                chip-w: 30px;
+                                                hex: root.scheme-colors.ansi15;
+                                                swatch: root.scheme-preview[18];
+                                                changed(v) => { root.scheme-colors.ansi15 = v; root.scheme-colors-changed(root.scheme-colors); }
+                                                preview-color: root.active-preview-brush;
+                                                preview-response-token: root.preview-response-token;
+                                                preview-request(h) => { root.color-preview-request(h); }
+                                                applied() => { root.apply-scheme-preview(root.scheme-colors); }
+                                            }
+
+                                            Rectangle {
+                                                horizontal-stretch: 1;
+                                            }
                                         }
 
                                         // 颜色名图例（单行，与色块列一一对齐：36px = 行标签 28px + 间距 8px，单元宽 30px = chip-w）
                                         HorizontalLayout {
                                             spacing: 8px;
 
-                                            Rectangle { width: 36px; }
+                                            Rectangle {
+                                                width: 36px;
+                                            }
+
                                             for name in root.ansi-names: Text {
                                                 width: 30px;
                                                 text: name;
@@ -1752,7 +2071,9 @@ export component SettingsWindow inherits Window {
                                                 vertical-alignment: center;
                                             }
 
-                                            Rectangle { horizontal-stretch: 1; }
+                                            Rectangle {
+                                                horizontal-stretch: 1;
+                                            }
                                         }
                                     }
                                 }
@@ -1770,12 +2091,14 @@ export component SettingsWindow inherits Window {
                                             root.save-custom-scheme(root.scheme-colors);
                                         }
                                     }
+
                                     SchemeBtn {
                                         label: "保存";
                                         btn-w: 56px;
                                         enabled: root.selected-is-custom && root.scheme-dirty;
                                         clicked => { root.save-custom-scheme(root.scheme-colors); }
                                     }
+
                                     SchemeBtn {
                                         label: "删除";
                                         btn-w: 56px;
@@ -1783,7 +2106,10 @@ export component SettingsWindow inherits Window {
                                         enabled: root.selected-is-custom;
                                         clicked => { root.delete-custom-scheme(root.scheme-colors.name); }
                                     }
-                                    Rectangle { horizontal-stretch: 1; }
+
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                    }
                                 }
                             }
 
@@ -1809,22 +2135,28 @@ export component SettingsWindow inherits Window {
                                         vertical-alignment: center;
                                         width: 88px;
                                     }
+
                                     CursorStyleOption {
                                         kind: "underline";
                                         selected-kind: root.general-draft.cursor-style;
                                         choose(k) => { root.general-draft.cursor-style = k; }
                                     }
+
                                     CursorStyleOption {
                                         kind: "beam";
                                         selected-kind: root.general-draft.cursor-style;
                                         choose(k) => { root.general-draft.cursor-style = k; }
                                     }
+
                                     CursorStyleOption {
                                         kind: "block";
                                         selected-kind: root.general-draft.cursor-style;
                                         choose(k) => { root.general-draft.cursor-style = k; }
                                     }
-                                    Rectangle { horizontal-stretch: 1; }
+
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                    }
                                 }
 
                                 // 光标色（全局外观项：色块 + 选择器 + 十六进制）
@@ -1837,6 +2169,7 @@ export component SettingsWindow inherits Window {
                                         vertical-alignment: center;
                                         width: 88px;
                                     }
+
                                     ColorSwatchChip {
                                         chip-w: 26px;
                                         chip-h: 20px;
@@ -1866,6 +2199,7 @@ export component SettingsWindow inherits Window {
                                         vertical-alignment: center;
                                         width: 88px;
                                     }
+
                                     Rectangle {
                                         width: 16px;
                                         height: 16px;
@@ -1879,6 +2213,7 @@ export component SettingsWindow inherits Window {
                                                 root.general-draft.cursor-blink = !root.general-draft.cursor-blink;
                                             }
                                         }
+
                                         Text {
                                             text: root.general-draft.cursor-blink ? "\u{2713}" : "";
                                             color: #ffffff;
@@ -1891,7 +2226,9 @@ export component SettingsWindow inherits Window {
                             }
 
                             // 组间留白：分组之间间距明显大于组内
-                            Rectangle { height: 14px; }
+                            Rectangle {
+                                height: 14px;
+                            }
 
                             // 行为
                             Text {
@@ -1911,6 +2248,7 @@ export component SettingsWindow inherits Window {
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
+
                                 Rectangle {
                                     width: 16px;
                                     height: 16px;
@@ -1924,6 +2262,7 @@ export component SettingsWindow inherits Window {
                                             root.general-draft.bell-sound = !root.general-draft.bell-sound;
                                         }
                                     }
+
                                     Text {
                                         text: root.general-draft.bell-sound ? "\u{2713}" : "";
                                         color: #ffffff;
@@ -1932,6 +2271,7 @@ export component SettingsWindow inherits Window {
                                         vertical-alignment: center;
                                     }
                                 }
+
                                 Text {
                                     text: "终端响铃时播放声音";
                                     color: root.c-text-secondary;
@@ -1950,6 +2290,7 @@ export component SettingsWindow inherits Window {
                                     vertical-alignment: center;
                                     width: 100px;
                                 }
+
                                 TextInput {
                                     font-size: 14px;
                                     width: 80px;
@@ -1960,6 +2301,7 @@ export component SettingsWindow inherits Window {
                                         }
                                     }
                                 }
+
                                 Text {
                                     text: "行（0=无限制）";
                                     color: root.c-text-hint;
@@ -1969,7 +2311,9 @@ export component SettingsWindow inherits Window {
                             }
 
                             // 组间留白：分组之间间距明显大于组内
-                            Rectangle { height: 14px; }
+                            Rectangle {
+                                height: 14px;
+                            }
 
                             // 默认启动项
                             Text {
@@ -2011,7 +2355,10 @@ export component SettingsWindow inherits Window {
                                             vertical-alignment: center;
                                             overflow: elide;
                                         }
-                                        Rectangle { horizontal-stretch: 1; }
+
+                                        Rectangle {
+                                            horizontal-stretch: 1;
+                                        }
                                         // 下拉箭头
                                         Text {
                                             text: "\u{25BE}";
@@ -2044,7 +2391,7 @@ export component SettingsWindow inherits Window {
                                                 spacing: 2px;
 
                                                 // 空列表提示
-                                                if root.profile-list.length == 0 : Text {
+                                                if root.profile-list.length == 0: Text {
                                                     text: "暂无启动项";
                                                     color: root.c-text-hint;
                                                     font-size: 13px;
@@ -2054,7 +2401,7 @@ export component SettingsWindow inherits Window {
                                                 }
 
                                                 // 选项：名称(命令)
-                                                for profile[i] in root.profile-list : Rectangle {
+                                                for profile[i] in root.profile-list: Rectangle {
                                                     height: 32px;
                                                     border-radius: 4px;
                                                     background: i == root.default-index ? root.c-selected-soft : (opt-touch.has-hover ? root.c-hover : transparent);
@@ -2083,13 +2430,15 @@ export component SettingsWindow inherits Window {
                             }
 
                             // 弹性填充
-                            Rectangle { vertical-stretch: 1; }
+                            Rectangle {
+                                vertical-stretch: 1;
+                            }
                         }
                     }
                 }
 
                 // ═══ 启动项配置页（列表已由左侧导航承担，此处仅保留编辑表单） ═══
-                if root.active-tab == 1 : Rectangle {
+                if root.active-tab == 1: Rectangle {
                     background: root.c-content-bg;
                     clip: true;
 
@@ -2099,168 +2448,177 @@ export component SettingsWindow inherits Window {
                             spacing: 18px;
 
                             // 无启动项时的空状态提示
-                            if root.profile-list.length == 0 : Text {
+                            if root.profile-list.length == 0: Text {
                                 text: "暂无启动项，点击左侧导航「+ 添加启动项」创建";
                                 color: root.c-text-hint;
                                 font-size: 14px;
                             }
 
-                                // 仅在有选中项时显示编辑表单
-                                if root.profile-list.length > 0 : VerticalLayout {
-                                    spacing: 18px;
+                            // 仅在有选中项时显示编辑表单
+                                if root.profile-list.length > 0: VerticalLayout {
+                                spacing: 18px;
 
-                                    // 名称
+                                // 名称
                                     HorizontalLayout {
-                                        spacing: 10px;
-                                        Text {
-                                            text: "名称";
-                                            color: root.c-text-secondary;
-                                            font-size: 14px;
-                                            vertical-alignment: center;
-                                            width: 90px;
-                                        }
-                                        TextInput {
-                                            font-size: 14px;
-                                            width: 250px;
-                                            text: root.profile-draft.name;
-                                            edited => { root.profile-draft.name = self.text; }
-                                        }
+                                    spacing: 10px;
+                                    Text {
+                                        text: "名称";
+                                        color: root.c-text-secondary;
+                                        font-size: 14px;
+                                        vertical-alignment: center;
+                                        width: 90px;
                                     }
 
-                                    // 命令
+                                    TextInput {
+                                        font-size: 14px;
+                                        width: 250px;
+                                        text: root.profile-draft.name;
+                                        edited => { root.profile-draft.name = self.text; }
+                                    }
+                                }
+
+                                // 命令
                                     HorizontalLayout {
-                                        spacing: 10px;
-                                        Text {
-                                            text: "命令";
-                                            color: root.c-text-secondary;
-                                            font-size: 14px;
-                                            vertical-alignment: center;
-                                            width: 90px;
-                                        }
-                                        TextInput {
-                                            font-size: 14px;
-                                            width: 250px;
-                                            text: root.profile-draft.command;
-                                            edited => { root.profile-draft.command = self.text; }
-                                        }
+                                    spacing: 10px;
+                                    Text {
+                                        text: "命令";
+                                        color: root.c-text-secondary;
+                                        font-size: 14px;
+                                        vertical-alignment: center;
+                                        width: 90px;
                                     }
 
-                                    // 参数
+                                    TextInput {
+                                        font-size: 14px;
+                                        width: 250px;
+                                        text: root.profile-draft.command;
+                                        edited => { root.profile-draft.command = self.text; }
+                                    }
+                                }
+
+                                // 参数
                                     HorizontalLayout {
-                                        spacing: 10px;
-                                        Text {
-                                            text: "参数";
-                                            color: root.c-text-secondary;
-                                            font-size: 14px;
-                                            vertical-alignment: center;
-                                            width: 90px;
-                                        }
-                                        TextInput {
-                                            font-size: 14px;
-                                            width: 250px;
-                                            text: root.profile-draft.args;
-                                            edited => { root.profile-draft.args = self.text; }
-                                        }
+                                    spacing: 10px;
+                                    Text {
+                                        text: "参数";
+                                        color: root.c-text-secondary;
+                                        font-size: 14px;
+                                        vertical-alignment: center;
+                                        width: 90px;
                                     }
 
-                                    // 工作目录
+                                    TextInput {
+                                        font-size: 14px;
+                                        width: 250px;
+                                        text: root.profile-draft.args;
+                                        edited => { root.profile-draft.args = self.text; }
+                                    }
+                                }
+
+                                // 工作目录
                                     HorizontalLayout {
-                                        spacing: 10px;
-                                        Text {
-                                            text: "工作目录";
-                                            color: root.c-text-secondary;
-                                            font-size: 14px;
-                                            vertical-alignment: center;
-                                            width: 90px;
-                                        }
-                                        TextInput {
-                                            font-size: 14px;
-                                            width: 250px;
-                                            text: root.profile-draft.working-directory;
-                                            edited => { root.profile-draft.working-directory = self.text; }
-                                        }
+                                    spacing: 10px;
+                                    Text {
+                                        text: "工作目录";
+                                        color: root.c-text-secondary;
+                                        font-size: 14px;
+                                        vertical-alignment: center;
+                                        width: 90px;
                                     }
 
-                                    // 环境变量
+                                    TextInput {
+                                        font-size: 14px;
+                                        width: 250px;
+                                        text: root.profile-draft.working-directory;
+                                        edited => { root.profile-draft.working-directory = self.text; }
+                                    }
+                                }
+
+                                // 环境变量
                                     VerticalLayout {
-                                        spacing: 6px;
-                                        Text {
-                                            text: "环境变量";
-                                            color: root.c-text-secondary;
+                                    spacing: 6px;
+                                    Text {
+                                        text: "环境变量";
+                                        color: root.c-text-secondary;
+                                        font-size: 14px;
+                                    }
+
+                                    Text {
+                                        text: "每行 KEY=VALUE 格式";
+                                        color: root.c-text-hint;
+                                        font-size: 12px;
+                                    }
+
+                                    Rectangle {
+                                        height: 80px;
+                                        background: #ffffff;
+                                        border-radius: 4px;
+                                        border-width: 1px;
+                                        border-color: root.c-border;
+                                        clip: true;
+                                        TextInput {
                                             font-size: 14px;
+                                            text: root.profile-draft.env-vars;
+                                            single-line: false;
+                                            wrap: word-wrap;
+                                            edited => {
+                                                root.profile-draft.env-vars = self.text;
+                                            }
                                         }
-                                        Text {
-                                            text: "每行 KEY=VALUE 格式";
-                                            color: root.c-text-hint;
-                                            font-size: 12px;
-                                        }
-                                        Rectangle {
-                                            height: 80px;
-                                            background: #ffffff;
-                                            border-radius: 4px;
-                                            border-width: 1px;
-                                            border-color: root.c-border;
-                                            clip: true;
-                                            TextInput {
-                                                font-size: 14px;
-                                                text: root.profile-draft.env-vars;
-                                                single-line: false;
-                                                wrap: word-wrap;
-                                                edited => {
-                                                    root.profile-draft.env-vars = self.text;
-                                                }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                vertical-stretch: 1;
+                            }
+
+                            // 操作按钮：删除 + 保存
+                                HorizontalLayout {
+                                alignment: end;
+                                spacing: 10px;
+
+                                // 删除按钮（功能自原列表面板迁入）
+                                    Rectangle {
+                                    width: 104px;
+                                    height: 32px;
+                                    background: del-btn.has-hover ? #fdecec : #ffffff;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: root.c-danger;
+                                    Text {
+                                        text: "删除启动项";
+                                        color: root.c-danger;
+                                        font-size: 14px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    del-btn := TouchArea {
+                                        clicked => {
+                                            if root.profile-list.length > 0 {
+                                                root.delete-profile(root.profile-draft.id);
                                             }
                                         }
                                     }
                                 }
 
-                                Rectangle { vertical-stretch: 1; }
-
-                                // 操作按钮：删除 + 保存
-                                HorizontalLayout {
-                                    alignment: end;
-                                    spacing: 10px;
-
-                                    // 删除按钮（功能自原列表面板迁入）
-                                    Rectangle {
-                                        width: 104px;
-                                        height: 32px;
-                                        background: del-btn.has-hover ? #fdecec : #ffffff;
-                                        border-radius: 4px;
-                                        border-width: 1px;
-                                        border-color: root.c-danger;
-                                        Text {
-                                            text: "删除启动项";
-                                            color: root.c-danger;
-                                            font-size: 14px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-                                        del-btn := TouchArea {
-                                            clicked => {
-                                                if root.profile-list.length > 0 {
-                                                    root.delete-profile(root.profile-draft.id);
-                                                }
-                                            }
-                                        }
+                                Rectangle {
+                                    width: 100px;
+                                    height: 32px;
+                                    background: save-prof.has-hover ? root.c-primary-hover : root.c-primary;
+                                    border-radius: 4px;
+                                    Text {
+                                        text: "保存修改";
+                                        color: #ffffff;
+                                        font-size: 14px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
                                     }
 
-                                    Rectangle {
-                                        width: 100px;
-                                        height: 32px;
-                                        background: save-prof.has-hover ? root.c-primary-hover : root.c-primary;
-                                        border-radius: 4px;
-                                        Text {
-                                            text: "保存修改";
-                                            color: #ffffff;
-                                            font-size: 14px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-                                        save-prof := TouchArea {
-                                            clicked => {
-                                                root.save-profile(root.profile-draft);
-                                            }
+                                    save-prof := TouchArea {
+                                        clicked => {
+                                            root.save-profile(root.profile-draft);
                                         }
                                     }
                                 }
@@ -2268,6 +2626,7 @@ export component SettingsWindow inherits Window {
                         }
                     }
                 }
+            }
 
             // ─── 底部按钮栏 ───
             Rectangle {
@@ -2301,6 +2660,7 @@ export component SettingsWindow inherits Window {
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
+
                         cancel-touch := TouchArea {
                             clicked => {
                                 root.cancelled();
@@ -2309,7 +2669,7 @@ export component SettingsWindow inherits Window {
                     }
 
                     // 保存通用配置按钮（仅通用配置页显示）
-                    if root.active-tab == 0 : Rectangle {
+                    if root.active-tab == 0: Rectangle {
                         width: 88px;
                         height: 32px;
                         y: (parent.height - self.height) / 2;
@@ -2322,6 +2682,7 @@ export component SettingsWindow inherits Window {
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
+
                         save-gen := TouchArea {
                             clicked => {
                                 root.save-general(root.general-draft);

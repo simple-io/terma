@@ -30,6 +30,8 @@ impl App {
             default_profile: info.default_profile_id.to_string(),
             font_family: info.font_family.to_string(),
             font_size: info.font_size as u32,
+            initial_rows: info.initial_rows.clamp(1, MAX_ROWS) as u32,
+            initial_cols: info.initial_cols.clamp(1, MAX_COLS) as u32,
             cursor_style: info.cursor_style.to_string(),
             cursor_color: CursorColor {
                 color: color_scheme::parse_hex(&info.cursor_color).unwrap_or(DEFAULT_CURSOR),
@@ -394,6 +396,8 @@ impl App {
         window.set_general_settings(GeneralSettingsInfo {
             font_family: general.font_family.as_str().into(),
             font_size: general.font_size as i32,
+            initial_rows: general.initial_rows as i32,
+            initial_cols: general.initial_cols as i32,
             cursor_style: general.cursor_style.as_str().into(),
             cursor_color: color_scheme::to_hex(general.cursor_color.color)
                 .as_str()

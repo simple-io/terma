@@ -9,6 +9,12 @@ fn default_font_family() -> String {
 fn default_font_size() -> u32 {
     12
 }
+fn default_initial_rows() -> u32 {
+    36
+}
+fn default_initial_cols() -> u32 {
+    120
+}
 fn default_cursor_style() -> String {
     "block".into()
 }
@@ -36,6 +42,14 @@ pub struct GeneralConfig {
     // 终端字体大小
     #[serde(default = "default_font_size")]
     pub font_size: u32,
+
+    // 终端初始尺寸：行数
+    #[serde(default = "default_initial_rows")]
+    pub initial_rows: u32,
+
+    // 终端初始尺寸：列数
+    #[serde(default = "default_initial_cols")]
+    pub initial_cols: u32,
 
     // 终端光标样式
     #[serde(default = "default_cursor_style")]
@@ -72,6 +86,8 @@ impl Default for GeneralConfig {
             default_profile: String::new(),
             font_family: default_font_family(),
             font_size: default_font_size(),
+            initial_rows: default_initial_rows(),
+            initial_cols: default_initial_cols(),
             cursor_style: default_cursor_style(),
             cursor_color: CursorColor::default(),
             cursor_blink: default_cursor_blink(),
