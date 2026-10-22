@@ -330,13 +330,17 @@ impl App {
             self.main_window.set_cursor_row(output.cursor.row);
             self.main_window.set_cursor_col(output.cursor.col);
             self.main_window.set_cursor_visible(output.cursor.visible);
-            // 滚动条：仅在有 scrollback 时更新（无历史时保持现状，与原逻辑一致）
+            // 设置滚动条状态
             if let Some(scroll) = output.scroll {
+                // 有历史时显示滚动条
                 self.main_window.set_has_scrollback(true);
                 // 滚动条位置 = offset / sb_len。0 = 底部（最新），1 = 顶部（最老历史）
                 self.main_window.set_scroll_ratio(scroll.position);
                 // 滑块大小比例 = 可见行数 / 总行数，历史越长滑块越短
                 self.main_window.set_viewport_ratio(scroll.viewport);
+            } else {
+                // 无历史时隐藏滚动条
+                self.main_window.set_has_scrollback(false);
             }
         }
     }
