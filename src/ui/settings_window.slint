@@ -902,7 +902,7 @@ export component SettingsWindow inherits Window {
         || root.scheme-colors.ansi13 != root.scheme-baseline.ansi13
         || root.scheme-colors.ansi14 != root.scheme-baseline.ansi14
         || root.scheme-colors.ansi15 != root.scheme-baseline.ansi15;
-    // ANSI 行标签（普通/亮色两列共用）
+    // ANSI 颜色名图例（普通/亮色两行共用，与色块列一一对齐）
     property <[string]> ansi-names: ["黑","红","绿","黄","蓝","品红","青","白"];
     // 下拉框当前选中索引
     in-out property <int> scheme-index: -1;
@@ -1692,65 +1692,64 @@ export component SettingsWindow inherits Window {
                                             color: root.c-text-secondary;
                                             font-size: 13px;
                                         }
+                                        // 普通色行（ANSI 0-7，横向排列；颜色名统一显示在组底部图例行）
                                         HorizontalLayout {
-                                            spacing: 10px;
+                                            spacing: 8px;
 
-                                            // 行标签列（黑..白，固定宽度贴紧色块）
-                                            VerticalLayout {
-                                                width: 36px;
-                                                spacing: 4px;
-                                                Text { height: 20px; }
-                                                for lbl in root.ansi-names: Text {
-                                                    height: 20px;
-                                                    text: lbl;
-                                                    color: root.c-text-secondary;
-                                                    font-size: 12px;
-                                                    vertical-alignment: center;
-                                                }
+                                            Text {
+                                                width: 28px;
+                                                text: "普通";
+                                                color: root.c-text-hint;
+                                                font-size: 11px;
+                                                vertical-alignment: center;
                                             }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi0; swatch: root.scheme-preview[3]; changed(v) => { root.scheme-colors.ansi0 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi1; swatch: root.scheme-preview[4]; changed(v) => { root.scheme-colors.ansi1 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi2; swatch: root.scheme-preview[5]; changed(v) => { root.scheme-colors.ansi2 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi3; swatch: root.scheme-preview[6]; changed(v) => { root.scheme-colors.ansi3 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi4; swatch: root.scheme-preview[7]; changed(v) => { root.scheme-colors.ansi4 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi5; swatch: root.scheme-preview[8]; changed(v) => { root.scheme-colors.ansi5 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi6; swatch: root.scheme-preview[9]; changed(v) => { root.scheme-colors.ansi6 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi7; swatch: root.scheme-preview[10]; changed(v) => { root.scheme-colors.ansi7 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
 
-                                            // 普通色（ANSI 0-7）
-                                            VerticalLayout {
-                                                width: 48px;
-                                                spacing: 4px;
-                                                Text {
-                                                    height: 20px;
-                                                    text: "普通";
-                                                    color: root.c-text-hint;
-                                                    font-size: 11px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi0; swatch: root.scheme-preview[3]; changed(v) => { root.scheme-colors.ansi0 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi1; swatch: root.scheme-preview[4]; changed(v) => { root.scheme-colors.ansi1 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi2; swatch: root.scheme-preview[5]; changed(v) => { root.scheme-colors.ansi2 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi3; swatch: root.scheme-preview[6]; changed(v) => { root.scheme-colors.ansi3 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi4; swatch: root.scheme-preview[7]; changed(v) => { root.scheme-colors.ansi4 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi5; swatch: root.scheme-preview[8]; changed(v) => { root.scheme-colors.ansi5 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi6; swatch: root.scheme-preview[9]; changed(v) => { root.scheme-colors.ansi6 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi7; swatch: root.scheme-preview[10]; changed(v) => { root.scheme-colors.ansi7 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            Rectangle { horizontal-stretch: 1; }
+                                        }
+
+                                        // 亮色行（ANSI 8-15，横向排列）
+                                        HorizontalLayout {
+                                            spacing: 8px;
+
+                                            Text {
+                                                width: 28px;
+                                                text: "亮色";
+                                                color: root.c-text-hint;
+                                                font-size: 11px;
+                                                vertical-alignment: center;
                                             }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi8; swatch: root.scheme-preview[11]; changed(v) => { root.scheme-colors.ansi8 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi9; swatch: root.scheme-preview[12]; changed(v) => { root.scheme-colors.ansi9 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi10; swatch: root.scheme-preview[13]; changed(v) => { root.scheme-colors.ansi10 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi11; swatch: root.scheme-preview[14]; changed(v) => { root.scheme-colors.ansi11 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi12; swatch: root.scheme-preview[15]; changed(v) => { root.scheme-colors.ansi12 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi13; swatch: root.scheme-preview[16]; changed(v) => { root.scheme-colors.ansi13 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi14; swatch: root.scheme-preview[17]; changed(v) => { root.scheme-colors.ansi14 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            ColorSwatchChip { chip-w: 30px; hex: root.scheme-colors.ansi15; swatch: root.scheme-preview[18]; changed(v) => { root.scheme-colors.ansi15 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
 
-                                            // 亮色（ANSI 8-15）
-                                            VerticalLayout {
-                                                width: 48px;
-                                                spacing: 4px;
-                                                Text {
-                                                    height: 20px;
-                                                    text: "亮色";
-                                                    color: root.c-text-hint;
-                                                    font-size: 11px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi8; swatch: root.scheme-preview[11]; changed(v) => { root.scheme-colors.ansi8 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi9; swatch: root.scheme-preview[12]; changed(v) => { root.scheme-colors.ansi9 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi10; swatch: root.scheme-preview[13]; changed(v) => { root.scheme-colors.ansi10 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi11; swatch: root.scheme-preview[14]; changed(v) => { root.scheme-colors.ansi11 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi12; swatch: root.scheme-preview[15]; changed(v) => { root.scheme-colors.ansi12 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi13; swatch: root.scheme-preview[16]; changed(v) => { root.scheme-colors.ansi13 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi14; swatch: root.scheme-preview[17]; changed(v) => { root.scheme-colors.ansi14 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
-                                                ColorSwatchChip { chip-w: 44px; hex: root.scheme-colors.ansi15; swatch: root.scheme-preview[18]; changed(v) => { root.scheme-colors.ansi15 = v; root.scheme-colors-changed(root.scheme-colors); } preview-color: root.active-preview-brush; preview-response-token: root.preview-response-token; preview-request(h) => { root.color-preview-request(h); } applied() => { root.apply-scheme-preview(root.scheme-colors); } }
+                                            Rectangle { horizontal-stretch: 1; }
+                                        }
+
+                                        // 颜色名图例（单行，与色块列一一对齐：36px = 行标签 28px + 间距 8px，单元宽 30px = chip-w）
+                                        HorizontalLayout {
+                                            spacing: 8px;
+
+                                            Rectangle { width: 36px; }
+                                            for name in root.ansi-names: Text {
+                                                width: 30px;
+                                                text: name;
+                                                color: root.c-text-hint;
+                                                font-size: 10px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
                                             }
 
                                             Rectangle { horizontal-stretch: 1; }
