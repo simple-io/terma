@@ -280,6 +280,17 @@ impl TerminalSession {
         self.scroll_update(offset)
     }
 
+    // 用户开始输入时调用：若当前处于滚动（非跟随）模式，立即回到底部并切回跟随模式，
+    // 使输入回显落在可视区底部、不被滚动位置遮挡。已在跟随模式则返回 None（无需重绘）。
+    pub fn resume_follow(&mut self) -> ScrollAction {
+        if self.scroll_offset.get() == 0 {
+            return ScrollAction::None;
+        }
+        // 清空滚轮像素累加器，避免残留余量在切回后首次滚动时产生偏移跳变
+        self.scroll_acc = 0.0;
+        self.scroll_update(0)
+    }
+
     // 更新滚动偏移量，target 为调用方按当前 offset 加减行数算出的目标偏移，范围 0 ～ sb_len
     fn scroll_update(&mut self, target: usize) -> ScrollAction {
         let old_offset = self.scroll_offset.get();

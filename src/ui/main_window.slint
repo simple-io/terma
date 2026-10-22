@@ -90,6 +90,11 @@ export component MainWindow inherits Window {
     // 窗口尺寸变化（由 width/height 属性变更即时触发，替代轮询检测）
     callback resized();
 
+    // 窗口初始焦点转发到终端区域：TerminalView 内部再 forward-focus 到隐藏的 ime-input，
+    // 使窗口一显示即可接收键盘/输入法输入，无需先点击终端区。显式 .focus()（如点击标签、
+    // 打开菜单弹层）不受影响，forward-focus 仅在窗口自身获得焦点时决定初始落点。
+    forward-focus: terminal-area;
+
     // 窗口尺寸变化即时回调：width/height 任一变更即通知 Rust 侧同步网格 + PTY 并重绘。
     // Slint 后端在收到系统 resize 事件后更新 WindowItem 的 width/height，进而触发下述 changed 回调。
     changed width => {

@@ -596,20 +596,36 @@ impl App {
     // 键盘输入
     fn on_key_input(&mut self, text: SharedString, mods: KeyboardModifiers) {
         let input_data = encode_key(&text, mods);
-        if !input_data.is_empty() {
-            if let Err(e) = self.sessions.write_to_active(&input_data) {
-                eprintln!("[terma] key input write error: {e}");
-            }
+        if input_data.is_empty() {
+            return;
         }
+        if let Err(e) = self.sessions.write_to_active(&input_data) {
+            eprintln!("[terma] key input write error: {e}");
+        }
+        self.resume_follow_on_input();
     }
 
     // IME 回调提交文本, 输入法完成选词后提交的完整字符串（如中文）, 直接转为 UTF-8 字节写入激活会话的 PTY。
     fn on_ime_commit(&mut self, text: SharedString) {
         let ime_data = text.as_bytes().to_vec();
-        if !ime_data.is_empty() {
-            if let Err(e) = self.sessions.write_to_active(&ime_data) {
-                eprintln!("[terma] ime commit write error: {e}");
-            }
+        if ime_data.is_empty() {
+            return;
+        }
+        if let Err(e) = self.sessions.write_to_active(&ime_data) {
+            eprintln!("[terma] ime commit write error: {e}");
+        }
+        self.resume_follow_on_input();
+    }
+
+    // 用户开始输入内容：若当前处于滚动（非跟随）模式，立即切回跟随模式并全量重绘，
+    // 保证输入回显始终显示在可视区底部、不被滚动位置影响。已在跟随模式则无操作。
+    fn resume_follow_on_input(&mut self) {
+        let action = self
+            .sessions
+            .active_session_mut()
+            .map(|session| session.resume_follow());
+        if matches!(action, Some(ScrollAction::FollowMode)) {
+            self.render_active_force();
         }
     }
 
