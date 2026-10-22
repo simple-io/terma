@@ -170,10 +170,13 @@ export component TerminalView inherits Rectangle {
     //   - edited：捕获输入法提交（CommitComposition）。IME 的预编辑（拼音）只更新内部
     //     preedit 状态、不会触发 edited；只有用户选词提交时才会触发 edited，此时 self.text
     //     即提交的完整字符串，转发给 root.ime-commit 写入 PTY，随后清空 text 以接收下一次提交。
-    //   - 位置跟随光标，使系统 IME 候选框出现在实际插入点附近；滚动历史（光标隐藏）时移到屏外。
+    //   - 位置跟随光标，使系统 IME 候选框出现在实际插入点附近。
+    //   - 关键：位置始终 clamp 到可视区内（不随光标隐藏移到屏外）。若滚入历史时把
+    //     ime-input 移到 -1000px，Slint 会在下一次鼠标/键盘事件时因「焦点项不可见」而
+    //     清除其键盘焦点，导致终端失焦；保持可见即可从根上避免焦点被自动回收。
     ime-input := TextInput {
-        x: root.cursor-visible ? max(0px, root.cursor-col * root.char-w) : -1000px;
-        y: root.cursor-visible ? root.cursor-row * root.char-h : -1000px;
+        x: max(0px, min(root.cursor-col * root.char-w, root.width - 1px));
+        y: max(0px, min(root.cursor-row * root.char-h, root.height - 1px));
         width: 1px;
         height: 1px;
         // 完全透明、隐藏光标，不产生任何视觉元素
@@ -206,8 +209,16 @@ export component TerminalView inherits Rectangle {
             ime-input.focus();
             root.clicked();
         }
+        // 按下即交还焦点（覆盖「按下后拖动 / 按下后移出」等 clicked 不触发的场景），
+        // 保证任何落在终端区的鼠标交互后键盘焦点都回到 ime-input。
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                ime-input.focus();
+            }
+        }
         // 鼠标滚轮：滚入/滚出历史
         scroll-event(event) => {
+            ime-input.focus();
             root.scroll-delta(event.delta-y);
             root.show-scrollbar();
             accept
@@ -240,24 +251,27 @@ export component TerminalView inherits Rectangle {
             background: #888a;
         }
 
-        // 拖动手势区：点击跳转 + 拖动滚动
+        // 拖动手势区：点击跳转 + 拖动滚动；交互全程交还焦点，避免拖动滚动条后键盘失焦。
         touch := TouchArea {
             width: 100%;
             height: 100%;
             pointer-event(event) => {
                 if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    ime-input.focus();
                     root.scroll-to(scrollbar.ratio-from-y(self.mouse-y));
                     root.show-scrollbar();
                 }
             }
             moved => {
                 if (self.pressed) {
+                    ime-input.focus();
                     root.scroll-to(scrollbar.ratio-from-y(self.mouse-y));
                     root.show-scrollbar();
                 }
             }
             // 滚动条上滚轮同样生效
             scroll-event(event) => {
+                ime-input.focus();
                 root.scroll-delta(event.delta-y);
                 root.show-scrollbar();
                 accept
