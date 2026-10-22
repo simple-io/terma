@@ -1787,16 +1787,17 @@ export component SettingsWindow inherits Window {
                                 }
                             }
 
-                            // ── 光标（独立于配色方案的展示设置） ──
-                            VerticalLayout {
-                                spacing: 10px;
+                            // ── 光标设置（独立于配色方案的展示设置，与配色方案同层级） ──
+                            Text {
+                                text: "光标设置";
+                                color: root.c-text-secondary;
+                                font-size: 14px;
+                            }
 
-                                Text {
-                                    text: "光标";
-                                    color: root.c-text;
-                                    font-size: 15px;
-                                    font-weight: 700;
-                                }
+                            // 光标设置子项（缩进与配色方案子设置保持一致）
+                            VerticalLayout {
+                                padding-left: 24px;
+                                spacing: 16px;
 
                                 // 光标样式（单选：图形直观展示，无文字说明）
                                 HorizontalLayout {
@@ -1830,7 +1831,7 @@ export component SettingsWindow inherits Window {
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text {
-                                        text: "光标色";
+                                        text: "光标颜色";
                                         color: root.c-text-secondary;
                                         font-size: 14px;
                                         vertical-alignment: center;
@@ -1886,16 +1887,21 @@ export component SettingsWindow inherits Window {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    Text {
-                                        text: "光标闪烁";
-                                        color: root.c-text-secondary;
-                                        font-size: 13px;
-                                        vertical-alignment: center;
-                                    }
                                 }
                             }
 
-                            // 声音
+                            // 组间留白：分组之间间距明显大于组内
+                            Rectangle { height: 14px; }
+
+                            // 行为
+                            Text {
+                                text: "行为";
+                                color: root.c-text;
+                                font-size: 17px;
+                                font-weight: 700;
+                            }
+
+                            // 响铃
                             HorizontalLayout {
                                 spacing: 10px;
                                 Text {
@@ -1932,17 +1938,6 @@ export component SettingsWindow inherits Window {
                                     font-size: 13px;
                                     vertical-alignment: center;
                                 }
-                            }
-
-                            // 组间留白：分组之间间距明显大于组内
-                            Rectangle { height: 14px; }
-
-                            // 行为
-                            Text {
-                                text: "行为";
-                                color: root.c-text;
-                                font-size: 17px;
-                                font-weight: 700;
                             }
 
                             // Scrollback 上限
