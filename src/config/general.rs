@@ -28,6 +28,17 @@ fn default_scrollback_limit() -> usize {
     10000
 }
 
+/// 会话内容缓存数（scrollback 历史行数）下限：低于此值历史几乎无实用意义，
+/// 且 `ScreenBuffer` 把 `scrollback_limit == 0` 视为「不记录历史」，故下限必须 > 0。
+pub const MIN_SCROLLBACK_LIMIT: usize = 100;
+/// 会话内容缓存数上限：每行按列数存放 Cell，过大的上限会造成明显的内存占用。
+pub const MAX_SCROLLBACK_LIMIT: usize = 100000;
+
+/// 把缓存行数钳制到 [MIN_SCROLLBACK_LIMIT, MAX_SCROLLBACK_LIMIT]。
+pub fn clamp_scrollback_limit(limit: usize) -> usize {
+    limit.clamp(MIN_SCROLLBACK_LIMIT, MAX_SCROLLBACK_LIMIT)
+}
+
 /// 通用配置（应用级别）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralConfig {
@@ -71,7 +82,7 @@ pub struct GeneralConfig {
     #[serde(default)]
     pub color_schemes: Vec<ColorScheme>,
 
-    // 终端滚动缓冲区行数限制
+    // 会话内容缓存数：终端 scrollback 历史行数上限
     #[serde(default = "default_scrollback_limit")]
     pub scrollback_limit: usize,
 
@@ -102,5 +113,30 @@ impl Default for GeneralConfig {
 impl GeneralConfig {
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scrollback_limit_is_clamped_to_allowed_range() {
+        assert_eq!(clamp_scrollback_limit(0), MIN_SCROLLBACK_LIMIT);
+        assert_eq!(
+            clamp_scrollback_limit(MIN_SCROLLBACK_LIMIT - 1),
+            MIN_SCROLLBACK_LIMIT
+        );
+        assert_eq!(
+            clamp_scrollback_limit(MAX_SCROLLBACK_LIMIT + 1),
+            MAX_SCROLLBACK_LIMIT
+        );
+        assert_eq!(clamp_scrollback_limit(5000), 5000);
+    }
+
+    #[test]
+    fn default_scrollback_limit_within_allowed_range() {
+        let d = default_scrollback_limit();
+        assert_eq!(clamp_scrollback_limit(d), d);
     }
 }

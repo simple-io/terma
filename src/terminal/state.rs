@@ -62,13 +62,13 @@ pub struct TerminalState {
 
 /// 终端仿真状态机实现
 impl TerminalState {
-    pub fn new(rows: usize, cols: usize, bell: Bell) -> Self {
+    pub fn new(rows: usize, cols: usize, bell: Bell, scrollback_limit: usize) -> Self {
         Self {
             rows,
             cols,
             cursor: Cursor::new(0, 0),
             pending_wrap: false,
-            primary: ScreenBuffer::new(rows, cols),
+            primary: ScreenBuffer::new(rows, cols, scrollback_limit),
             alternate: ScreenBuffer::new_alternate(rows, cols),
             active: ActiveScreen::Primary,
             cell_style: CellStyle::default(),
@@ -139,6 +139,12 @@ impl TerminalState {
         self.clamp_cursor();
         self.pending_wrap = false;
         self.dirty = true;
+    }
+
+    // 调整会话内容缓存数（scrollback 上限）。仅 Primary 持有历史，
+    // Alternate（vim/top 等全屏程序）始终不缓存，故不参与调整。
+    pub fn set_scrollback_limit(&mut self, limit: usize) {
+        self.primary.set_scrollback_limit(limit);
     }
 
     // 防止光标位置越界处理
@@ -600,7 +606,9 @@ impl Perform for TerminalState {
             b'M' => self.reverse_index(),
             // RIS：完全复位
             b'c' => {
-                *self = TerminalState::new(self.rows, self.cols, self.bell.clone());
+                // 复位保留用户配置的会话内容缓存数（RIS 只重置终端状态，不改配置）
+                let limit = self.primary.scrollback_limit;
+                *self = TerminalState::new(self.rows, self.cols, self.bell.clone(), limit);
             }
             // DECSC：Save Cursor，保存光标（每屏独立槽位，resize 时跟随 reflow）
             b'7' => {
@@ -647,7 +655,7 @@ mod tests {
 
     #[test]
     fn wide_char_writes_lead_and_continuation() {
-        let mut st = TerminalState::new(5, 10, Default::default());
+        let mut st = TerminalState::new(5, 10, Default::default(), 1000);
         feed(&mut st, "你");
         // 宽字符写入首格 + 续列占位，光标前进 2 列
         assert_eq!(st.cursor.col, 2);
@@ -662,7 +670,7 @@ mod tests {
     #[test]
     fn wide_char_at_line_end_is_truncated() {
         // 1 行 3 列：先写两个 ASCII 占满到最后一列（col=2），此时再放宽字符无处容纳
-        let mut st = TerminalState::new(2, 3, Default::default());
+        let mut st = TerminalState::new(2, 3, Default::default(), 1000);
         feed(&mut st, "AB");
         assert_eq!(st.cursor.col, 2);
 
@@ -681,7 +689,7 @@ mod tests {
 
     #[test]
     fn scroll_up_keeps_grid_size_and_shifts_content() {
-        let mut st = TerminalState::new(3, 4, Default::default());
+        let mut st = TerminalState::new(3, 4, Default::default(), 1000);
         // 填满 3 行后继续输出触发整屏上滚
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD");
         let screen = st.screen();
@@ -695,8 +703,36 @@ mod tests {
     }
 
     #[test]
+    fn scrollback_limit_caps_history_and_drops_oldest() {
+        // 上限 2：滚动产生 3 行历史，只保留最近 2 行
+        let mut st = TerminalState::new(2, 4, Default::default(), 2);
+        feed(&mut st, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD\r\nEEEE");
+        assert_eq!(st.screen().scrollback.len(), 2);
+        assert!(scrollback_text(&st, 0).starts_with("BBBB"));
+        assert!(scrollback_text(&st, 1).starts_with("CCCC"));
+    }
+
+    #[test]
+    fn set_scrollback_limit_shrinks_history_keeping_newest() {
+        let mut st = TerminalState::new(2, 4, Default::default(), 1000);
+        feed(&mut st, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD");
+        assert_eq!(st.screen().scrollback.len(), 2);
+
+        // 调小上限：立即裁掉最老的历史行
+        st.set_scrollback_limit(1);
+        assert_eq!(st.screen().scrollback.len(), 1);
+        assert!(scrollback_text(&st, 0).starts_with("BBBB"));
+
+        // 调大上限：后续滚动继续累积
+        st.set_scrollback_limit(10);
+        feed(&mut st, "\r\nEEEE");
+        assert_eq!(st.screen().scrollback.len(), 2);
+        assert!(scrollback_text(&st, 1).starts_with("CCCC"));
+    }
+
+    #[test]
     fn backspace_erase_clears_wide_char_and_continuation() {
-        let mut st = TerminalState::new(5, 10, Default::default());
+        let mut st = TerminalState::new(5, 10, Default::default(), 1000);
         feed(&mut st, "你");
         // shell 回删典型序列：\b\b 两个空格 \b\b
         feed(&mut st, "\x08\x08  \x08\x08");
@@ -727,7 +763,7 @@ mod tests {
 
     #[test]
     fn repro_ls_reflow_loses_spaces() {
-        let mut st = TerminalState::new(6, 80, Default::default());
+        let mut st = TerminalState::new(6, 80, Default::default(), 1000);
         // 模拟 zsh 下彩色 ls 多列输出（行宽 80 内不换行）
         let line1 = "\x1b[36mApplications\x1b[0m  \x1b[36mDesktop\x1b[0m  \x1b[36mdevelop\x1b[0m  \x1b[36mDocuments\x1b[0m  \x1b[36mDownloads\x1b[0m";
         feed(&mut st, "xk@xk-mac ~ % ls\r\n");
@@ -753,7 +789,7 @@ mod tests {
     #[test]
     fn repro_ls_reflow_loses_spaces_scrollback() {
         // ls 输出超过屏幕高度，前几行滚入 scrollback，再拖拽 resize
-        let mut st = TerminalState::new(5, 80, Default::default());
+        let mut st = TerminalState::new(5, 80, Default::default(), 1000);
         let mut out = String::from("xk@xk-mac ~ % ls\r\n");
         for i in 0..12 {
             out.push_str(&format!(
@@ -806,7 +842,7 @@ mod tests {
 
     #[test]
     fn replay_zsh_ls_tabs_survive_resize() {
-        let mut st = TerminalState::new(24, 80, Default::default());
+        let mut st = TerminalState::new(24, 80, Default::default(), 1000);
         feed(&mut st, ZSH_PHASE1);
 
         // 拖拽式缩小再放大
@@ -829,7 +865,7 @@ mod tests {
     #[test]
     fn tab_does_not_overwrite_existing_content() {
         // tab 不擦除已有内容：先在间隙位置写内容，再 tab 跳过，内容保持
-        let mut st = TerminalState::new(5, 40, Default::default());
+        let mut st = TerminalState::new(5, 40, Default::default(), 1000);
         feed(&mut st, "abc");
         feed(&mut st, "\x1b[1;9H"); // 移到 (0,8)
         feed(&mut st, "X");
@@ -845,7 +881,7 @@ mod tests {
 
     #[test]
     fn resize_truncates_wide_char_at_boundary() {
-        let mut st = TerminalState::new(2, 10, Default::default());
+        let mut st = TerminalState::new(2, 10, Default::default(), 1000);
         feed(&mut st, "你");
         // 缩小到 1 列：宽字符首格落在最后一列、续列被裁掉 → 首格应被清空为空格
         st.resize(2, 1);
@@ -856,7 +892,7 @@ mod tests {
 
     #[test]
     fn dch_does_not_split_wide_char() {
-        let mut st = TerminalState::new(2, 10, Default::default());
+        let mut st = TerminalState::new(2, 10, Default::default(), 1000);
         feed(&mut st, "A你B");
         // 光标回到第 0 列，删除 1 个字符（DCH）→ "A" 被删，"你B" 左移，宽字符保持完整
         feed(&mut st, "\r\x1b[1P");
@@ -887,7 +923,7 @@ mod tests {
     #[test]
     fn resize_grow_height_appends_blank_rows() {
         // 仅增大高度：内容原样保留在顶部，尾部追加空白行，不触发 reflow
-        let mut st = TerminalState::new(2, 10, Default::default());
+        let mut st = TerminalState::new(2, 10, Default::default(), 1000);
         feed(&mut st, "hello");
         assert_eq!((st.cursor.row, st.cursor.col), (0, 5));
 
@@ -909,7 +945,7 @@ mod tests {
     #[test]
     fn resize_shrink_height_drops_trailing_blank_rows() {
         // 仅缩小高度、尾部是空白行：直接裁剪，不产生 scrollback、不丢内容
-        let mut st = TerminalState::new(5, 10, Default::default());
+        let mut st = TerminalState::new(5, 10, Default::default(), 1000);
         feed(&mut st, "AAAA\r\nBBBB");
 
         st.resize(3, 10);
@@ -928,7 +964,7 @@ mod tests {
     fn resize_shrink_height_pushes_content_to_scrollback() {
         // 仅缩小高度、尾部已无空白：超出的内容行应从屏幕顶部（而非底部）按序滚入 scrollback，
         // 底部内容与光标保留。
-        let mut st = TerminalState::new(3, 10, Default::default());
+        let mut st = TerminalState::new(3, 10, Default::default(), 1000);
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
 
         st.resize(1, 10);
@@ -950,7 +986,7 @@ mod tests {
     fn resize_shrink_prefers_trailing_blanks_then_scrolls_top() {
         // 5 行：前 3 行内容、后 2 行空白。缩小到 2 行：
         // 先裁掉 2 行尾部空白（不碰内容），高度仍不足再滚掉顶部 1 行内容 AAAA。
-        let mut st = TerminalState::new(5, 10, Default::default());
+        let mut st = TerminalState::new(5, 10, Default::default(), 1000);
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
         assert_eq!(st.cursor.row, 2);
 
@@ -970,7 +1006,7 @@ mod tests {
     #[test]
     fn resize_shrink_height_shifts_cursor_and_saved_cursor() {
         // 顶部内容滚入 scrollback 后，光标与保存光标随内容上移，锚定同一字符
-        let mut st = TerminalState::new(3, 10, Default::default());
+        let mut st = TerminalState::new(3, 10, Default::default(), 1000);
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
         assert_eq!(st.cursor.row, 2);
         feed(&mut st, "\x1b7"); // 保存光标 (2,4)
@@ -991,7 +1027,7 @@ mod tests {
     #[test]
     fn resize_height_only_roundtrip_preserves_content() {
         // 增高再缩回原高度，内容完整往返、不丢失、不重排
-        let mut st = TerminalState::new(3, 10, Default::default());
+        let mut st = TerminalState::new(3, 10, Default::default(), 1000);
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
 
         st.resize(8, 10);
@@ -1010,7 +1046,7 @@ mod tests {
     fn dch_at_nonzero_col_keeps_row_width() {
         // 回归：DCH 在非零列删除字符后，行宽必须保持为 cols。
         // 旧实现把行 resize 成 `cols - col`，导致行宽收缩、后续写入右侧列越界 panic。
-        let mut st = TerminalState::new(2, 10, Default::default());
+        let mut st = TerminalState::new(2, 10, Default::default(), 1000);
         feed(&mut st, "ABCDE");
         assert_eq!(st.cursor.col, 5);
         // 光标移到第 3 列（index 2），删除 1 个字符 → "C" 被删，"DE" 左移，右侧填充空白（`\0`）
@@ -1032,7 +1068,7 @@ mod tests {
     #[test]
     fn resize_shrinks_wraps_content() {
         // 写入 10 字符到 10 列宽的行，缩小到 5 列应拆成 2 行
-        let mut st = TerminalState::new(3, 10, Default::default());
+        let mut st = TerminalState::new(3, 10, Default::default(), 1000);
         feed(&mut st, "abcdefghij");
         st.resize(3, 5);
         // 第一行: "abcde"
@@ -1048,7 +1084,7 @@ mod tests {
     #[test]
     fn resize_grows_merges_wrapped_lines() {
         // 先写入 10 字符到 5 列宽的行（产生软换行），再放大到 10 列应合并
-        let mut st = TerminalState::new(3, 5, Default::default());
+        let mut st = TerminalState::new(3, 5, Default::default(), 1000);
         feed(&mut st, "abcdefghij");
         // 此时 row 0 = "abcde" (wrapped), row 1 = "fghij"
         assert_eq!(st.screen().cell(0, 0).character, 'a');
@@ -1064,7 +1100,7 @@ mod tests {
     #[test]
     fn resize_preserves_hard_line_breaks() {
         // 用 \r\n 分隔的两行在放大后不应被合并
-        let mut st = TerminalState::new(3, 5, Default::default());
+        let mut st = TerminalState::new(3, 5, Default::default(), 1000);
         feed(&mut st, "abcde\r\nfghij");
         // row 0 = "abcde", row 1 = "fghij"（硬换行分隔）
         assert_eq!(st.screen().cell(0, 0).character, 'a');
@@ -1082,7 +1118,7 @@ mod tests {
     #[test]
     fn resize_reflow_wide_chars_not_split() {
         // 宽字符在缩小不应被截断："AB你CD" (6 列) 缩小到 3 列
-        let mut st = TerminalState::new(2, 6, Default::default());
+        let mut st = TerminalState::new(2, 6, Default::default(), 1000);
         feed(&mut st, "AB你CD");
         // row 0: A(0) B(1) 你(2,3) C(4) D(5)
         assert_eq!(st.screen().cell(0, 2).character, '你');
@@ -1104,7 +1140,7 @@ mod tests {
     #[test]
     fn resize_reflow_scrollback() {
         // scrollback 历史行也应参与 reflow
-        let mut st = TerminalState::new(2, 5, Default::default());
+        let mut st = TerminalState::new(2, 5, Default::default(), 1000);
         // 写入 3 行触发滚动，scrollback 有 1 行
         feed(&mut st, "AAAAA\r\nBBBBB\r\nCCCCC");
         assert_eq!(st.screen().scrollback.len(), 1);
@@ -1128,7 +1164,7 @@ mod tests {
     fn resize_narrowing_no_panic_at_exact_boundary() {
         // 回归：内容恰好填满一行后再缩小列宽，尾部零宽空 cell 不得在 col_pos==new_cols
         // 处被写出，否则触发列索引越界 panic。
-        let mut st = TerminalState::new(2, 10, Default::default());
+        let mut st = TerminalState::new(2, 10, Default::default(), 1000);
         feed(&mut st, "abc"); // row 0 = "abc"，尾部为默认空 cell（\0）
         st.resize(3, 3); // 3 列恰好整除，旧实现会越界 panic
         assert_eq!(st.screen().cell(0, 0).character, 'a');
@@ -1141,7 +1177,7 @@ mod tests {
     fn resize_narrowing_wide_char_at_1col_truncates() {
         // 回归：new_cols==1 时宽字符无法容纳，应截断为空格占位，后续字符换到下一行；
         // 且不得残留「无续列的宽字符首格」，也不得产生多余空行。
-        let mut st = TerminalState::new(2, 4, Default::default());
+        let mut st = TerminalState::new(2, 4, Default::default(), 1000);
         feed(&mut st, "你A");
         st.resize(3, 1);
         // 你 → 空格占位（非宽字符首格）
@@ -1156,7 +1192,7 @@ mod tests {
     fn resize_narrowing_cursor_tracks_wide_chars() {
         // 回归：光标追踪应按「内容 cell → 重排后行列」精确定位，
         // 旧实现用 col/new_cols 近似，宽字符在奇数/较小列宽下会算错行。
-        let mut st = TerminalState::new(2, 6, Default::default());
+        let mut st = TerminalState::new(2, 6, Default::default(), 1000);
         feed(&mut st, "AB你CD"); // A(0) B(1) 你(2,3) C(4) D(5)，光标停在 D 后
         assert_eq!(st.cursor.col, 5);
         st.resize(3, 3);
@@ -1169,7 +1205,7 @@ mod tests {
     #[test]
     fn resize_narrowing_blank_line_stays_single_row() {
         // 回归：内容中的空行在缩小后应保持为一个空行，不产生额外空白行。
-        let mut st = TerminalState::new(3, 10, Default::default());
+        let mut st = TerminalState::new(3, 10, Default::default(), 1000);
         feed(&mut st, "abc\r\n\r\ndef"); // 两行内容中间夹一个空行
         st.resize(4, 3);
         assert_eq!(st.screen().cell(0, 0).character, 'a');
@@ -1183,7 +1219,7 @@ mod tests {
     fn resize_widening_preserves_interword_spaces() {
         // 回归：放大列宽时，软换行行组中的空格是「内容」（如单词分隔符），
         // 旧实现误把中间行的尾部空格当填充裁剪，导致 "abc  def" 被挤成 "abcdef"。
-        let mut st = TerminalState::new(2, 5, Default::default());
+        let mut st = TerminalState::new(2, 5, Default::default(), 1000);
         feed(&mut st, "abc  def"); // row0="abc  " wrapped, row1="def.."
         st.resize(2, 10);
         assert_eq!(st.screen().cell(0, 0).character, 'a');
@@ -1198,7 +1234,7 @@ mod tests {
     fn resize_widening_no_spurious_empty_row() {
         // 回归：放大列宽时，尾部 `\0` 空 cell 不应被当作内容参与拆分，
         // 否则会额外挤出一条空行，且末行 wrapped 标志错误。
-        let mut st = TerminalState::new(2, 5, Default::default());
+        let mut st = TerminalState::new(2, 5, Default::default(), 1000);
         feed(&mut st, "abcdef"); // row0="abcde" wrapped, row1="f...."
         st.resize(2, 6);
         // 6 列恰好装下 "abcdef"，应合并为单行且非软换行
@@ -1212,7 +1248,7 @@ mod tests {
     fn resize_narrowing_trims_trailing_spaces() {
         // 回归：硬换行行末尾的空白空格是填充，缩小列宽时裁剪，
         // 旧实现会把尾部空格拆成一行只有空格的「多余行」。
-        let mut st = TerminalState::new(2, 8, Default::default());
+        let mut st = TerminalState::new(2, 8, Default::default(), 1000);
         feed(&mut st, "abc  "); // row0 = "abc  ..."（尾部 2 个显式空格）
         st.resize(3, 3);
         // 应只有 "abc" 一行内容，不产生只有空格的行
@@ -1227,7 +1263,7 @@ mod tests {
     fn resize_widening_wide_char_not_truncated() {
         // 回归：放大列宽按「列宽」而非「cell 数量」拆分，宽字符跨片段边界时不越界/不截断。
         // 2 列写 "你A"（你占满一行，A 软换行到下一行），放大到 4 列应正确合并。
-        let mut st = TerminalState::new(2, 2, Default::default());
+        let mut st = TerminalState::new(2, 2, Default::default(), 1000);
         feed(&mut st, "你A");
         // row0 = [你, cont] wrapped, row1 = [A, \0]
         st.resize(2, 4);
@@ -1240,7 +1276,7 @@ mod tests {
     #[test]
     fn resize_reflow_roundtrip_preserves_content() {
         // 回归：先缩小再放大，内容与空格应完整往返，不丢失、不合并。
-        let mut st = TerminalState::new(3, 10, Default::default());
+        let mut st = TerminalState::new(3, 10, Default::default(), 1000);
         feed(&mut st, "hello world");
         st.resize(4, 5); // 缩小 → 软换行
         st.resize(3, 12); // 放大 → 合并
@@ -1255,7 +1291,7 @@ mod tests {
     fn resize_preserves_content_below_cursor() {
         // 回归：光标不在最后一行时 resize，光标下方的行内容必须保留（不得因只重排
         // `..=cursor_row` 而被静默丢弃）。
-        let mut st = TerminalState::new(3, 10, Default::default());
+        let mut st = TerminalState::new(3, 10, Default::default(), 1000);
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
         // 光标回到第 0 行，此时下方两行仍有内容 BBBB/CCCC
         feed(&mut st, "\x1b[1;1H");
@@ -1294,13 +1330,13 @@ mod tests {
         // 撕成若干单字符竖排行（多余空行 + 内容错位）。修复后 reflow 先按
         // wrapped 链合并逻辑行、再按新列宽拆分，逐步缩小与单步缩小结果一致。
         let long_line = "vm            database        logs            project-build";
-        let mut stepwise = TerminalState::new(3, 60, Default::default());
+        let mut stepwise = TerminalState::new(3, 60, Default::default(), 1000);
         feed(&mut stepwise, long_line);
         for c in (26..60).rev() {
             stepwise.resize(3, c);
         }
 
-        let mut single = TerminalState::new(3, 60, Default::default());
+        let mut single = TerminalState::new(3, 60, Default::default(), 1000);
         feed(&mut single, long_line);
         single.resize(3, 26);
 
@@ -1313,7 +1349,7 @@ mod tests {
     fn resize_stepwise_narrowing_no_single_char_rows() {
         // 回归：逐步缩小后内容必须按原始顺序完整保留，不得出现撕裂
         //（多余空行、单字符独占一行、宽字符丢失）。宽字符行同样覆盖。
-        let mut st = TerminalState::new(5, 40, Default::default());
+        let mut st = TerminalState::new(5, 40, Default::default(), 1000);
         feed(
             &mut st,
             "WorkBuddy      Desktop        Movies\r\n中企开发            soft",
@@ -1354,7 +1390,7 @@ mod tests {
     #[test]
     fn decsc_decrc_roundtrip() {
         // ESC 7 保存 / ESC 8 恢复光标
-        let mut st = TerminalState::new(3, 20, Default::default());
+        let mut st = TerminalState::new(3, 20, Default::default(), 1000);
         feed(&mut st, "hello");
         feed(&mut st, "\x1b7"); // 保存 (0,5)
         feed(&mut st, "\x1b[2;3H");
@@ -1369,7 +1405,7 @@ mod tests {
         // ESC 8（DECRC）恢复到 prompt 起点再整行重绘。保存的光标位置必须
         // 跟随内容 reflow 锚定到同一字符，否则恢复落到错误行，
         // shell 从错误位置重绘 → 重复 prompt 行 / 内容错乱。
-        let mut st = TerminalState::new(4, 40, Default::default());
+        let mut st = TerminalState::new(4, 40, Default::default(), 1000);
         feed(&mut st, "\x1b[1;1H");
         feed(&mut st, "user@bogon ~ $ "); // 15 字符，光标 (0,15)
         feed(&mut st, "\x1b7"); // shell 在输入行起点保存光标
@@ -1389,7 +1425,7 @@ mod tests {
         // 保存光标正确跟随 reflow 时，重绘恰好覆盖重排后的行，
         // 屏幕上 prompt 只出现一次、无重复行。
         let prompt_input = "user@bogon ~ $ 0123456789ABCDEFGHIJ";
-        let mut st = TerminalState::new(4, 30, Default::default());
+        let mut st = TerminalState::new(4, 30, Default::default(), 1000);
         feed(&mut st, "\x1b[1;1H\x1b7"); // 保存 prompt 起点 (0,0)
         feed(&mut st, prompt_input); // 35 字符，30 列下软换行为两行
 

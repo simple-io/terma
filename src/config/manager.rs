@@ -4,7 +4,7 @@
 //! 文件不存在时生成平台默认并落盘。支持 Profile CRUD + 通用配置更新 + 持久化。
 
 use crate::config::color_scheme::{self, ColorScheme};
-use crate::config::general::GeneralConfig;
+use crate::config::general::{GeneralConfig, clamp_scrollback_limit};
 use crate::config::loader::{self, ConfigFile};
 use crate::config::profile::Profile;
 use crate::session::session_id::ProfileId;
@@ -28,10 +28,13 @@ impl Default for ConfigManager {
 impl ConfigManager {
     // 加载配置 config.toml, 若不存在时生成平台默认并落盘。
     pub fn new() -> Self {
-        if let Some(file) = loader::load() {
+        if let Some(mut file) = loader::load() {
             if file.profiles.is_empty() {
                 return Self::default_platform();
             }
+
+            // 手改配置可能越界，加载时统一钳制到合法区间
+            file.general.scrollback_limit = clamp_scrollback_limit(file.general.scrollback_limit);
 
             // 校验 default_profile 是否有效，无效则回退到第一个
             let default_id = ProfileId::new(file.general.default_profile.clone());
@@ -185,7 +188,8 @@ impl ConfigManager {
     }
 
     // 更新通用配置并持久化。
-    pub fn update_general(&mut self, general: GeneralConfig) {
+    pub fn update_general(&mut self, mut general: GeneralConfig) {
+        general.scrollback_limit = clamp_scrollback_limit(general.scrollback_limit);
         // 确保 default_profile 仍然有效
         let default_id = ProfileId::new(general.default_profile.clone());
         if self.profiles.iter().any(|p| p.id == default_id) {

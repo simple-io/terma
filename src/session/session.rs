@@ -127,6 +127,7 @@ impl TerminalSession {
         rows: u16,
         cols: u16,
         color_scheme: ColorScheme,
+        scrollback_limit: usize,
         event_tx: SyncSender<WindowEvent>,
         active_tracker: Arc<ActiveSession>,
         bell: Bell,
@@ -136,6 +137,7 @@ impl TerminalSession {
             rows as usize,
             cols as usize,
             bell,
+            scrollback_limit,
         )));
         let state_for_thread = state.clone();
 
@@ -232,6 +234,12 @@ impl TerminalSession {
     pub fn set_color_scheme(&mut self, scheme: ColorScheme) {
         self.renderer.set_color_scheme(scheme);
         self.state.lock().unwrap().mark_all_dirty();
+    }
+
+    // 调整会话内容缓存数（scrollback 上限）。上限调小时超出的最老历史被丢弃，
+    // 若当前滚动偏移已越过新的历史长度，由下次渲染的 `scroll_settle` 钳制回有效范围。
+    pub fn set_scrollback_limit(&mut self, limit: usize) {
+        self.state.lock().unwrap().set_scrollback_limit(limit);
     }
 
     // 读取本会话当前的 scrollback 历史长度。

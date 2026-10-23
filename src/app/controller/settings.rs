@@ -8,8 +8,9 @@
 use super::*;
 use crate::config::color_scheme::{self, ColorScheme};
 use crate::config::cursor_color::{CursorColor, DEFAULT_CURSOR};
+use crate::config::general::clamp_scrollback_limit;
 use crate::config::profile::{format_env_vars_text, parse_env_vars_text};
-use crate::config::{GeneralConfig, Profile};
+use crate::config::{GeneralConfig, MAX_SCROLLBACK_LIMIT, MIN_SCROLLBACK_LIMIT, Profile};
 
 impl App {
     // 打开设置窗口
@@ -40,12 +41,16 @@ impl App {
             color_scheme: info.color_scheme.to_string(),
             color_schemes: self.config.general().color_schemes.clone(),
             bell_sound: info.bell_sound,
-            scrollback_limit: info.scrollback_limit as usize,
+            scrollback_limit: clamp_scrollback_limit(info.scrollback_limit.max(0) as usize),
         };
         self.config.update_general(config);
 
         // 响铃开关即时生效：更新共享 Bell 的启用状态，后续终端 BEL 据此决定是否发声
         self.bell.set_enabled(info.bell_sound);
+
+        // 会话内容缓存数即时生效：同步到所有已存在会话
+        self.sessions
+            .apply_scrollback_limit(self.config.general().scrollback_limit);
 
         // 配色方案即时生效：窗口背景/光标色 + 各会话配色
         self.apply_window_colors();
@@ -165,7 +170,8 @@ impl App {
     pub(super) fn on_apply_scheme_preview(&mut self, colors: SchemeColors) {
         let scheme = scheme_from_ui(&colors);
         // 终端区背景色（临时，读取草稿方案而非已保存配置）
-        self.main_window.set_bg_color(rgb_to_color(scheme.background));
+        self.main_window
+            .set_bg_color(rgb_to_color(scheme.background));
         // 会话配色（临时）
         self.sessions.apply_color_scheme(scheme);
         self.render_active_force();
@@ -376,9 +382,7 @@ impl App {
         // 「另存为」弹窗名称输入 → 实时校验回填
         let command_tx = self.event_tx.clone();
         window.on_save_as_name_edited(move |name| {
-            command_tx
-                .send(WindowEvent::CheckSchemeName(name))
-                .unwrap();
+            command_tx.send(WindowEvent::CheckSchemeName(name)).unwrap();
         });
 
         // 窗口关闭请求 → 隐藏而非销毁
@@ -413,6 +417,9 @@ impl App {
         });
         // 光标色预览色块初值
         window.set_cursor_color_preview(rgb_to_brush(general.cursor_color.color));
+        // 会话内容缓存数的允许区间（面板保存时据此钳制，与 Rust 侧同一来源）
+        window.set_min_scrollback(MIN_SCROLLBACK_LIMIT as i32);
+        window.set_max_scrollback(MAX_SCROLLBACK_LIMIT as i32);
 
         // Profile 列表
         let profiles: Vec<ProfileEditInfo> = self

@@ -515,9 +515,19 @@ impl App {
         let event_tx = self.event_tx.clone();
         let color_scheme = self.active_color_scheme();
         let bell = self.bell.clone();
+        // 会话内容缓存数：来自通用配置（加载与保存路径均已钳制到合法区间）
+        let scrollback_limit = self.config.general().scrollback_limit;
         if self
             .sessions
-            .create_session(&profile, rows, cols, color_scheme, event_tx, bell)
+            .create_session(
+                &profile,
+                rows,
+                cols,
+                color_scheme,
+                scrollback_limit,
+                event_tx,
+                bell,
+            )
             .is_ok()
         {
             self.sync_tabs();

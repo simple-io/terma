@@ -63,6 +63,7 @@ impl SessionManager {
         rows: u16,
         cols: u16,
         color_scheme: ColorScheme,
+        scrollback_limit: usize,
         event_tx: SyncSender<WindowEvent>,
         bell: Bell,
     ) -> Result<SessionId> {
@@ -75,6 +76,7 @@ impl SessionManager {
             rows,
             cols,
             color_scheme,
+            scrollback_limit,
             event_tx,
             self.active_tracker.clone(),
             bell,
@@ -171,6 +173,14 @@ impl SessionManager {
     pub fn apply_color_scheme(&mut self, scheme: ColorScheme) {
         for s in self.sessions.values_mut() {
             s.set_color_scheme(scheme.clone());
+        }
+    }
+
+    // 把新的会话内容缓存数应用到所有已存在的会话（设置保存时调用），
+    // 新建会话由 `create_session` 按配置传入，两者共同保证配置即时生效。
+    pub fn apply_scrollback_limit(&mut self, limit: usize) {
+        for s in self.sessions.values_mut() {
+            s.set_scrollback_limit(limit);
         }
     }
 }

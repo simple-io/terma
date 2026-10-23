@@ -65,13 +65,13 @@ impl Clone for ScreenBuffer {
 }
 
 impl ScreenBuffer {
-    pub fn new(rows: usize, cols: usize) -> Self {
+    pub fn new(rows: usize, cols: usize, scrollback_limit: usize) -> Self {
         Self {
             rows,
             cols,
             grid: (0..rows).map(|_| Row::new_row(cols)).collect(),
             scrollback: Vec::new(),
-            scrollback_limit: rows * 5,
+            scrollback_limit,
             scrollback_total: 0,
             saved_cursor: None,
             dirty_rows: RefCell::new(Vec::new()),
@@ -487,6 +487,17 @@ impl ScreenBuffer {
                 let excess = self.scrollback.len() - self.scrollback_limit;
                 self.scrollback.drain(0..excess);
             }
+        }
+    }
+
+    /// 调整 scrollback 上限（设置面板「会话内容缓存数」变更时调用）。
+    /// 上限调小时按「丢弃最老历史」裁掉超出的行，与滚动溢出行为一致；
+    /// `scrollback_total` 不变，滚动锚点补偿仍按逻辑累计长度计算。
+    pub fn set_scrollback_limit(&mut self, limit: usize) {
+        self.scrollback_limit = limit;
+        let excess = self.scrollback.len().saturating_sub(limit);
+        if excess > 0 {
+            self.scrollback.drain(0..excess);
         }
     }
 
