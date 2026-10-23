@@ -11,12 +11,12 @@
 //!       光标移动、清屏/清行、Scrollback、Alternate Screen(1049)、
 //!       光标可见性(?25)、Bracketed Paste(?2004)、Scroll Region(DECSTBM)。
 
-use vte::{Params, Perform};
-use crate::audio::Bell;
+use crate::app::audio::Bell;
 use crate::terminal::cell::{Cell, CellStyle};
 use crate::terminal::color::Color;
 use crate::terminal::cursor::Cursor;
 use crate::terminal::screen::ScreenBuffer;
+use vte::{Params, Perform};
 
 /// 激活的屏幕类型, 终端有两个屏幕，适用于不同的模式
 /// Primary: 支持 CLI 模式，正常屏幕, 逐行输入命令，逐行输出结果，支持窗口滚动等, 例如：bash、ls、git 等

@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn follow_first_render_is_full() {
-        let mut st = TerminalState::new(4, 10);
+        let mut st = TerminalState::new(4, 10, Default::default());
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
         let rc = RenderCells::new();
         rc.render_follow(st.screen(), st.take_dirty_rows());
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn follow_incremental_updates_only_dirty_row() {
-        let mut st = TerminalState::new(4, 10);
+        let mut st = TerminalState::new(4, 10, Default::default());
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
         let rc = RenderCells::new();
         rc.render_follow(st.screen(), st.take_dirty_rows());
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn follow_row_shrink_removes_items() {
-        let mut st = TerminalState::new(2, 10);
+        let mut st = TerminalState::new(2, 10, Default::default());
         feed(&mut st, "AAAA\r\nBBBB");
         let rc = RenderCells::new();
         rc.render_follow(st.screen(), st.take_dirty_rows());
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn follow_row_grow_inserts_items() {
-        let mut st = TerminalState::new(2, 10);
+        let mut st = TerminalState::new(2, 10, Default::default());
         feed(&mut st, "AA\r\nBBBB");
         let rc = RenderCells::new();
         rc.render_follow(st.screen(), st.take_dirty_rows());
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn viewport_full_rebuild_on_key_change() {
         // 2 行屏，产生 2 行 scrollback：grid=CCCC/DDDD，scrollback=AAAA/BBBB
-        let mut st = TerminalState::new(2, 10);
+        let mut st = TerminalState::new(2, 10, Default::default());
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD");
         assert_eq!(st.screen().scrollback.len(), 2);
         let rc = RenderCells::new();
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn viewport_incremental_updates_dirty_grid_row() {
         // 3 行屏：scrollback=[AAAA]，grid=BBBB/CCCC/DDDD
-        let mut st = TerminalState::new(3, 10);
+        let mut st = TerminalState::new(3, 10, Default::default());
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD");
         let rc = RenderCells::new();
         rc.render_follow(st.screen(), st.take_dirty_rows());
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn viewport_return_to_follow_uses_fresh_cache() {
         // 3 行屏：scrollback=[AAAA]，grid=BBBB/CCCC/DDDD
-        let mut st = TerminalState::new(3, 10);
+        let mut st = TerminalState::new(3, 10, Default::default());
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD");
         let rc = RenderCells::new();
         rc.render_follow(st.screen(), st.take_dirty_rows());
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn clear_forces_full_rebuild_after_resize() {
-        let mut st = TerminalState::new(4, 10);
+        let mut st = TerminalState::new(4, 10, Default::default());
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
         let rc = RenderCells::new();
         rc.render_follow(st.screen(), st.take_dirty_rows());
@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn follow_many_dirty_rows_falls_back_to_full() {
-        let mut st = TerminalState::new(3, 10);
+        let mut st = TerminalState::new(3, 10, Default::default());
         feed(&mut st, "AAAA\r\nBBBB\r\nCCCC");
         let rc = RenderCells::new();
         rc.render_follow(st.screen(), st.take_dirty_rows());

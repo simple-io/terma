@@ -18,15 +18,15 @@
 //!     解析线程据此判断是否唤醒 UI 渲染（仅激活会话唤醒）
 
 use std::collections::HashMap;
-use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
+use std::sync::mpsc::SyncSender;
 
+use crate::app::audio::Bell;
 use crate::app::events::WindowEvent;
-use crate::audio::Bell;
 use crate::config::{ColorScheme, Profile};
 use crate::session::active::ActiveSession;
 use crate::session::session::TerminalSession;
-use crate::session::session_id::{IdGenerator, ProfileId, SessionId};
+use crate::session::session_id::{IdGenerator, SessionId};
 use anyhow::Result;
 
 pub struct SessionManager {

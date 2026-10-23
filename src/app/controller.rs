@@ -24,13 +24,13 @@
 //!   on_key_pressed(text, mods) → 转发到激活 Session 的 PTY
 //!   on_resized()          → 窗口尺寸变化即时同步网格 + PTY + 重绘
 
+use crate::app::audio::Bell;
 use crate::app::events::{TerminalEvent, WindowEvent};
-use crate::audio::Bell;
 use crate::config::ColorScheme;
 use crate::config::ConfigManager;
 use crate::config::fonts;
 use crate::session::session_id::{ProfileId, SessionId};
-use crate::session::{RenderOutput, ScrollAction, SessionManager};
+use crate::session::{ScrollAction, SessionManager};
 use slint::language::KeyboardModifiers;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};

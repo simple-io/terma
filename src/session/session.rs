@@ -36,9 +36,9 @@ use std::rc::Rc;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
+use crate::app::audio::Bell;
 use crate::app::controller::CellRun;
 use crate::app::events::{TerminalEvent, WindowEvent};
-use crate::audio::Bell;
 use crate::config::{ColorScheme, Profile};
 use crate::pty::Pty;
 use crate::renderer::Renderer;

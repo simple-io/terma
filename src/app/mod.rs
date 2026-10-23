@@ -12,5 +12,6 @@
 
 pub mod controller;
 pub mod events;
+pub mod audio;
 
 pub use controller::App;

@@ -3,7 +3,6 @@
 #![allow(dead_code, unused_imports)]
 
 mod app;
-mod audio;
 mod config;
 mod platform;
 mod pty;

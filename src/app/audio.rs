@@ -66,28 +66,31 @@ impl Bell {
     }
 }
 
-/// 合成一段短促的响铃音：880Hz 正弦波，约 150ms，两端淡入淡出避免爆音。
+// 合成一段柔和的响铃音：约 587Hz 钟鸣音色，基频叠加弱二次谐波使音质圆润，起音短暂淡入后按指数自然衰减消散。
 fn beep_source() -> impl Source<Item = f32> + Send + 'static {
     const SAMPLE_RATE: u32 = 44_100;
-    const DURATION: f32 = 0.15;
-    const FREQ: f32 = 880.0;
-    const VOLUME: f32 = 0.3;
+    const DURATION: f32 = 0.4;
+    const FREQ: f32 = 587.33; // D5，柔和的钟鸣音高
+    const VOLUME: f32 = 0.2;
+    const DECAY: f32 = 4.0; // 指数衰减速率，越大消散越快
 
     let len = (SAMPLE_RATE as f32 * DURATION) as usize;
-    // 10ms 淡入淡出窗口
-    let fade = ((SAMPLE_RATE as f32 * 0.01) as usize).max(1);
+    // 15ms 起音淡入，消除起始爆音
+    let attack = ((SAMPLE_RATE as f32 * 0.015) as usize).max(1);
     let samples: Vec<f32> = (0..len)
         .map(|i| {
             let t = i as f32 / SAMPLE_RATE as f32;
-            // 包络：开头淡入、结尾淡出，中间保持满幅
-            let env = if i < fade {
-                i as f32 / fade as f32
-            } else if i + fade > len {
-                (len - i) as f32 / fade as f32
+            // 包络：起音线性淡入，随后指数衰减模拟钟鸣自然消散
+            let env = if i < attack {
+                i as f32 / attack as f32
             } else {
-                1.0
+                let progress = (i - attack) as f32 / (len - attack).max(1) as f32;
+                (-DECAY * progress).exp()
             };
-            (2.0 * std::f32::consts::PI * FREQ * t).sin() * VOLUME * env
+            // 基频 + 弱二次谐波，音色更圆润不刺耳
+            let tone = (2.0 * std::f32::consts::PI * FREQ * t).sin()
+                + 0.3 * (2.0 * std::f32::consts::PI * FREQ * 2.0 * t).sin();
+            tone * VOLUME * env
         })
         .collect();
 
