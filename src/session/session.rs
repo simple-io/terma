@@ -38,6 +38,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::controller::CellRun;
 use crate::app::events::{TerminalEvent, WindowEvent};
+use crate::audio::Bell;
 use crate::config::{ColorScheme, Profile};
 use crate::pty::Pty;
 use crate::renderer::Renderer;
@@ -128,9 +129,14 @@ impl TerminalSession {
         color_scheme: ColorScheme,
         event_tx: SyncSender<WindowEvent>,
         active_tracker: Arc<ActiveSession>,
+        bell: Bell,
     ) -> Result<Self> {
         // 终端状态对象，用于解析回调写 和 UI 线程读。
-        let state = Arc::new(Mutex::new(TerminalState::new(rows as usize, cols as usize)));
+        let state = Arc::new(Mutex::new(TerminalState::new(
+            rows as usize,
+            cols as usize,
+            bell,
+        )));
         let state_for_thread = state.clone();
 
         // 输出处理回调：move 进 Pty 的 Output Thread，逐字节 vte 解析进 state。

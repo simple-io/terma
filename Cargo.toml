@@ -16,6 +16,8 @@ toml = "0.8"
 dirs = "5"
 # 系统字体枚举（macOS: CoreText / Linux: Fontconfig / Windows: DirectWrite）
 font-kit = "0.14"
+# 终端响铃音频播放（关闭默认解码器特性，仅保留 cpal 播放后端，减小体积）
+rodio = { version = "0.20", default-features = false }
 
 [build-dependencies]
 slint-build = "1"

@@ -22,6 +22,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
 use crate::app::events::WindowEvent;
+use crate::audio::Bell;
 use crate::config::{ColorScheme, Profile};
 use crate::session::active::ActiveSession;
 use crate::session::session::TerminalSession;
@@ -63,6 +64,7 @@ impl SessionManager {
         cols: u16,
         color_scheme: ColorScheme,
         event_tx: SyncSender<WindowEvent>,
+        bell: Bell,
     ) -> Result<SessionId> {
         let id = self.id_gen.next_session_id();
         let title = format!("{} {}", profile.name, self.sessions.len() + 1);
@@ -75,6 +77,7 @@ impl SessionManager {
             color_scheme,
             event_tx,
             self.active_tracker.clone(),
+            bell,
         )?;
         self.sessions.insert(id, session);
         self.order.push(id);

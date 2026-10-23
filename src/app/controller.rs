@@ -25,6 +25,7 @@
 //!   on_resized()          → 窗口尺寸变化即时同步网格 + PTY + 重绘
 
 use crate::app::events::{TerminalEvent, WindowEvent};
+use crate::audio::Bell;
 use crate::config::ColorScheme;
 use crate::config::ConfigManager;
 use crate::config::fonts;
@@ -105,6 +106,8 @@ pub struct App {
     event_tx: SyncSender<WindowEvent>,
     // 命令通道接收端
     event_rx: Arc<Mutex<Receiver<WindowEvent>>>,
+    // 终端响铃播放器（跨会话共享，设置开关即时生效）
+    bell: Bell,
 }
 
 impl App {
@@ -137,6 +140,7 @@ impl App {
             font_entries: RefCell::new(Vec::new()),
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
+            bell: Bell::new(),
         }));
 
         // 初始化
@@ -156,6 +160,8 @@ impl App {
 
     // 应用初始化
     fn app_init(&self) {
+        // 应用响铃开关（终端 BEL 是否发声）
+        self.bell.set_enabled(self.config.general().bell_sound);
         // 应用配置
         self.apply_profiles();
         // 应用字体
@@ -508,9 +514,10 @@ impl App {
         let (rows, cols) = self.current_grid();
         let event_tx = self.event_tx.clone();
         let color_scheme = self.active_color_scheme();
+        let bell = self.bell.clone();
         if self
             .sessions
-            .create_session(&profile, rows, cols, color_scheme, event_tx)
+            .create_session(&profile, rows, cols, color_scheme, event_tx, bell)
             .is_ok()
         {
             self.sync_tabs();

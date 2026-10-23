@@ -44,6 +44,9 @@ impl App {
         };
         self.config.update_general(config);
 
+        // 响铃开关即时生效：更新共享 Bell 的启用状态，后续终端 BEL 据此决定是否发声
+        self.bell.set_enabled(info.bell_sound);
+
         // 配色方案即时生效：窗口背景/光标色 + 各会话配色
         self.apply_window_colors();
         self.sessions
