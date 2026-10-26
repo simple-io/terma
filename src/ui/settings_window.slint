@@ -2524,8 +2524,7 @@ export component SettingsWindow inherits Window {
                                         width: 280px;
                                         input-type: text;
                                         placeholder-text: "启动项名称";
-                                        text: root.profile-draft.name;
-                                        edited => { root.profile-draft.name = self.text; }
+                                        text <=> root.profile-draft.name;
                                     }
                                 }
 
@@ -2546,8 +2545,7 @@ export component SettingsWindow inherits Window {
                                         horizontal-stretch: 1;
                                         input-type: text;
                                         placeholder-text: "启动项命令";
-                                        text: root.profile-draft.command;
-                                        edited => { root.profile-draft.command = self.text; }
+                                        text <=> root.profile-draft.command;
                                     }
 
                                     BrowseBtn {
@@ -2572,8 +2570,7 @@ export component SettingsWindow inherits Window {
                                         horizontal-stretch: 1;
                                         input-type: text;
                                         placeholder-text: "启动项工作目录";
-                                        text: root.profile-draft.working-directory;
-                                        edited => { root.profile-draft.working-directory = self.text; }
+                                        text <=> root.profile-draft.working-directory;
                                     }
 
                                     BrowseBtn {
@@ -2597,8 +2594,7 @@ export component SettingsWindow inherits Window {
                                         width: 280px;
                                         input-type: text;
                                         placeholder-text: "启动项命令参数";
-                                        text: root.profile-draft.args;
-                                        edited => { root.profile-draft.args = self.text; }
+                                        text <=> root.profile-draft.args;
                                     }
                                 }
 
