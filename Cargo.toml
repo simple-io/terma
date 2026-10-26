@@ -18,6 +18,8 @@ dirs = "5"
 font-kit = "0.14"
 # 终端响铃音频播放（关闭默认解码器特性，仅保留 cpal 播放后端，减小体积）
 rodio = { version = "0.20", default-features = false }
+# 原生文件/目录选择对话框（启动项命令、工作目录浏览）
+rfd = "0.15"
 
 [build-dependencies]
 slint-build = "1"

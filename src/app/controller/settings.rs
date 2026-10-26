@@ -118,6 +118,46 @@ impl App {
         self.config.delete_profile(&pid);
     }
 
+    // 浏览命令可执行文件：原生文件选择对话框，选中路径回写草稿（保存时才落盘）
+    pub(super) fn on_browse_command(&mut self) {
+        let start = self
+            .settings_window
+            .as_ref()
+            .and_then(|w| start_dir_for_file(&w.get_profile_draft().command));
+        let mut dialog = rfd::FileDialog::new().set_title("选择命令可执行文件");
+        if let Some(dir) = start {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_file() else {
+            return;
+        };
+        if let Some(w) = self.settings_window.as_ref() {
+            let mut draft = w.get_profile_draft();
+            draft.command = path.to_string_lossy().into_owned().into();
+            w.set_profile_draft(draft);
+        }
+    }
+
+    // 浏览工作目录：原生目录选择对话框，选中路径回写草稿（保存时才落盘）
+    pub(super) fn on_browse_working_dir(&mut self) {
+        let start = self
+            .settings_window
+            .as_ref()
+            .and_then(|w| start_dir_for_dir(&w.get_profile_draft().working_directory));
+        let mut dialog = rfd::FileDialog::new().set_title("选择工作目录");
+        if let Some(dir) = start {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_folder() else {
+            return;
+        };
+        if let Some(w) = self.settings_window.as_ref() {
+            let mut draft = w.get_profile_draft();
+            draft.working_directory = path.to_string_lossy().into_owned().into();
+            w.set_profile_draft(draft);
+        }
+    }
+
     // 按关键词模糊过滤字体候选列表并回填设置窗口（部分匹配、不区分大小写）。
     // 空关键词（或仅空白）= 恢复完整列表，同时回填当前字体索引（下拉打开
     // 时键盘高亮定位用）。current_family 为设置窗口当前草稿的字体（可能
@@ -307,6 +347,18 @@ impl App {
         let command_tx = self.event_tx.clone();
         window.on_delete_profile(move |id| {
             command_tx.send(WindowEvent::DelProfile(id)).unwrap();
+        });
+
+        // 浏览命令可执行文件 → 原生文件选择对话框
+        let command_tx = self.event_tx.clone();
+        window.on_browse_command(move || {
+            command_tx.send(WindowEvent::BrowseCommand).unwrap();
+        });
+
+        // 浏览工作目录 → 原生目录选择对话框
+        let command_tx = self.event_tx.clone();
+        window.on_browse_working_dir(move || {
+            command_tx.send(WindowEvent::BrowseWorkingDir).unwrap();
         });
 
         // 字体搜索：关键词变化 → 模糊过滤候选列表回填
@@ -521,6 +573,20 @@ impl App {
             .map(|i| i as i32)
             .unwrap_or(-1)
     }
+}
+
+/// 文件选择对话框初始目录：取当前命令值的父目录（存在时），否则交由对话框默认定位
+fn start_dir_for_file(value: &str) -> Option<std::path::PathBuf> {
+    std::path::Path::new(value)
+        .parent()
+        .filter(|d| d.is_dir())
+        .map(|d| d.to_path_buf())
+}
+
+/// 目录选择对话框初始目录：当前值本身为已存在目录时直接用之
+fn start_dir_for_dir(value: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(value);
+    p.is_dir().then(|| p.to_path_buf())
 }
 
 /// 配置层 ColorScheme → 设置窗口编辑器草稿（色值规范化为 `#rrggbb`）。

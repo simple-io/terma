@@ -726,6 +726,32 @@ component SchemeBtn {
     }
 }
 
+// 路径浏览按钮（「…」）：点击经 clicked 请求 Rust 侧打开原生文件/目录选择对话框。
+// 高度不声明，作为 HorizontalLayout 子项纵向拉伸，与同行输入框等高。
+component BrowseBtn {
+    callback clicked();
+    Rectangle {
+        min-width: 32px;
+        preferred-width: 32px;
+        max-width: 32px;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: #dadce0;
+        background: browse-touch.has-hover ? #e8eaed : #ffffff;
+        Text {
+            text: "…";
+            color: #5f6368;
+            font-size: 14px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        browse-touch := TouchArea {
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
 // 「另存为」按钮：点击弹出输入名称弹窗，确认后经 confirmed 回传新名称。
 // 弹窗内含实时校验提示（validation），确认按钮仅在校验通过时可点击。
 // 固定尺寸经 min/preferred/max 三元约束声明（原因见 SchemeBtn 顶部注释）。
@@ -1004,10 +1030,15 @@ export component SettingsWindow inherits Window {
     callback add-profile();
     callback delete-profile(string);
     callback cancelled();
+    // 浏览命令可执行文件：Rust 侧打开原生文件选择对话框，选中路径回写 profile-draft
+    callback browse-command();
+    // 浏览工作目录：Rust 侧打开原生目录选择对话框，选中路径回写 profile-draft
+    callback browse-working-dir();
 
     // ─── 本地草稿 ───
     property <GeneralSettingsInfo> general-draft: root.general-settings;
-    property <ProfileEditInfo> profile-draft;
+    // in-out：Rust 侧浏览对话框选中后需回写草稿字段
+    in-out property <ProfileEditInfo> profile-draft;
 
     // 会话内容缓存数（scrollback 历史行数）允许区间，由 Rust 侧注入，避免两处硬编码漂移。
     in property <int> min-scrollback: 100;
@@ -2471,11 +2502,11 @@ export component SettingsWindow inherits Window {
                             }
 
                             // 仅在有选中项时显示编辑表单
-                                if root.profile-list.length > 0: VerticalLayout {
+                            if root.profile-list.length > 0: VerticalLayout {
                                 spacing: 18px;
 
                                 // 名称
-                                    HorizontalLayout {
+                                HorizontalLayout {
                                     spacing: 10px;
                                     Text {
                                         text: "名称";
@@ -2485,16 +2516,18 @@ export component SettingsWindow inherits Window {
                                         width: 90px;
                                     }
 
-                                    TextInput {
+                                    LineEdit {
                                         font-size: 14px;
-                                        width: 250px;
+                                        width: 280px;
+                                        input-type: text;
+                                        placeholder-text: "启动项名称";
                                         text: root.profile-draft.name;
                                         edited => { root.profile-draft.name = self.text; }
                                     }
                                 }
 
-                                // 命令
-                                    HorizontalLayout {
+                                // 命令（可输入 + 可浏览选择可执行文件）
+                                HorizontalLayout {
                                     spacing: 10px;
                                     Text {
                                         text: "命令";
@@ -2504,35 +2537,23 @@ export component SettingsWindow inherits Window {
                                         width: 90px;
                                     }
 
-                                    TextInput {
+                                    LineEdit {
                                         font-size: 14px;
-                                        width: 250px;
+                                        width: 280px;
+                                        horizontal-stretch: 1;
+                                        input-type: text;
+                                        placeholder-text: "启动项命令";
                                         text: root.profile-draft.command;
                                         edited => { root.profile-draft.command = self.text; }
                                     }
-                                }
 
-                                // 参数
-                                    HorizontalLayout {
-                                    spacing: 10px;
-                                    Text {
-                                        text: "参数";
-                                        color: root.c-text-secondary;
-                                        font-size: 14px;
-                                        vertical-alignment: center;
-                                        width: 90px;
-                                    }
-
-                                    TextInput {
-                                        font-size: 14px;
-                                        width: 250px;
-                                        text: root.profile-draft.args;
-                                        edited => { root.profile-draft.args = self.text; }
+                                    BrowseBtn {
+                                        clicked => { root.browse-command(); }
                                     }
                                 }
 
-                                // 工作目录
-                                    HorizontalLayout {
+                                // 工作目录（可输入 + 可浏览选择目录）
+                                HorizontalLayout {
                                     spacing: 10px;
                                     Text {
                                         text: "工作目录";
@@ -2542,16 +2563,44 @@ export component SettingsWindow inherits Window {
                                         width: 90px;
                                     }
 
-                                    TextInput {
+                                    LineEdit {
                                         font-size: 14px;
-                                        width: 250px;
+                                        width: 280px;
+                                        horizontal-stretch: 1;
+                                        input-type: text;
+                                        placeholder-text: "启动项工作目录";
                                         text: root.profile-draft.working-directory;
                                         edited => { root.profile-draft.working-directory = self.text; }
+                                    }
+
+                                    BrowseBtn {
+                                        clicked => { root.browse-working-dir(); }
+                                    }
+                                }
+
+                                // 参数
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    Text {
+                                        text: "参数";
+                                        color: root.c-text-secondary;
+                                        font-size: 14px;
+                                        vertical-alignment: center;
+                                        width: 90px;
+                                    }
+
+                                    LineEdit {
+                                        font-size: 14px;
+                                        width: 280px;
+                                        input-type: text;
+                                        placeholder-text: "启动项命令参数";
+                                        text: root.profile-draft.args;
+                                        edited => { root.profile-draft.args = self.text; }
                                     }
                                 }
 
                                 // 环境变量
-                                    VerticalLayout {
+                                VerticalLayout {
                                     spacing: 6px;
                                     Text {
                                         text: "环境变量";
@@ -2590,12 +2639,12 @@ export component SettingsWindow inherits Window {
                             }
 
                             // 操作按钮：删除 + 保存
-                                HorizontalLayout {
+                            HorizontalLayout {
                                 alignment: end;
                                 spacing: 10px;
 
                                 // 删除按钮（功能自原列表面板迁入）
-                                    Rectangle {
+                                Rectangle {
                                     width: 104px;
                                     height: 32px;
                                     background: del-btn.has-hover ? #fdecec : #ffffff;

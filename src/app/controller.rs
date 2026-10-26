@@ -476,6 +476,10 @@ impl App {
             WindowEvent::AddProfile() => self.on_add_profile(),
             // 删除配置文件
             WindowEvent::DelProfile(id) => self.on_delete_profile(id),
+            // 浏览命令可执行文件
+            WindowEvent::BrowseCommand => self.on_browse_command(),
+            // 浏览工作目录
+            WindowEvent::BrowseWorkingDir => self.on_browse_working_dir(),
             // 模糊搜索字体
             WindowEvent::FilterFonts(keyword, current) => self.on_filter_fonts(&keyword, &current),
             // 配色方案选中（回填编辑器与预览）

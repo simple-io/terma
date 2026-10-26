@@ -55,6 +55,10 @@ pub enum WindowEvent {
     AddProfile(),
     // 删除配置文件
     DelProfile(SharedString),
+    // 浏览命令可执行文件（原生文件选择对话框，选中路径回写设置草稿）
+    BrowseCommand,
+    // 浏览工作目录（原生目录选择对话框，选中路径回写设置草稿）
+    BrowseWorkingDir,
     // 模糊搜索字体
     FilterFonts(SharedString, SharedString),
     // 配色方案选中（回填编辑器与预览）
