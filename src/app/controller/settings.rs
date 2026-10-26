@@ -93,10 +93,12 @@ impl App {
             color_scheme: None,
         };
         self.config.update_profile(profile);
-        // 刷新面板列表，使已保存的环境变量等字段立即可见，
+        // 刷新面板列表，使已保存的环境变量等字段立即可见
         if let Some(w) = self.settings_window.as_ref() {
             self.sync_profile_list(w);
         }
+        // 同步主窗口 ▼ Profile 菜单（名称/命令可能变化）
+        self.apply_profiles();
     }
 
     // 添加新 Profile
@@ -110,16 +112,29 @@ impl App {
         let profile = Profile::new(id, "New Profile", "/bin/sh");
         let idx = self.config.add_profile(profile);
 
-        // 选中新添加的 Profile
-        if let Some(w) = self.settings_window.as_mut() {
+        // 立即生效：先重建面板列表，再选中新项（Slint 侧据此刷新草稿表单）
+        if let Some(w) = self.settings_window.as_ref() {
+            self.sync_profile_list(w);
             w.set_selected_index(idx as i32);
         }
+        // 同步主窗口 ▼ Profile 菜单
+        self.apply_profiles();
     }
 
     // 删除 Profile
     pub(super) fn on_delete_profile(&mut self, id: SharedString) {
         let pid = ProfileId::new(id.to_string());
-        self.config.delete_profile(&pid);
+        if !self.config.delete_profile(&pid) {
+            return;
+        }
+        // 立即生效：重建面板列表并钳制选中索引（Slint 侧列表变化会自动刷新草稿）
+        if let Some(w) = self.settings_window.as_ref() {
+            self.sync_profile_list(w);
+            let new_idx = w.get_selected_index().min(self.config.profiles().len() as i32 - 1);
+            w.set_selected_index(new_idx);
+        }
+        // 同步主窗口 ▼ Profile 菜单
+        self.apply_profiles();
     }
 
     // 浏览命令可执行文件：原生文件选择对话框，选中路径回写草稿（保存时才落盘）
