@@ -43,6 +43,12 @@ pub enum WindowEvent {
     Resize,
     // 打开设置窗口
     OpenSettings,
+    // 打开关于窗口
+    OpenAbout,
+    // 关闭关于窗口
+    CloseAbout,
+    // 打开关于窗口中的仓库地址（调用系统浏览器）
+    OpenAboutRepo,
 
     // ==== 设置窗口回调事件 =======
     // 关闭设置窗口

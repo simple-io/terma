@@ -2,8 +2,10 @@
 name = "terma"
 version = "0.1.0"
 edition = "2024"
-description = "Cross-platform AI terminal built with Rust + Slint"
+description = "Cross-platform terminal built with Rust + Slint"
 license = "MIT"
+authors = ["simple"]
+repository = "https://github.com/simple-io/terma"
 
 [dependencies]
 slint = {version = "1", features = ["renderer-skia"]}

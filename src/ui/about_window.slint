@@ -1,0 +1,194 @@
+// about_window.slint — 关于窗口
+//
+// 职责：
+//   - 独立 OS 窗口，展示软件基本信息（名称、版本、仓库、作者、构建时间等）
+//   - 仓库地址可点击，触发 open-repo 回调由 Rust 侧调用系统浏览器打开
+//
+// 通信（与 Rust 侧 controller 交互）：
+//   入：info (AboutInfo)
+//   出：callback close-requested()
+//   出：callback open-repo()
+//
+// 注意：此文件独立编译，不 import 项目内其他 .slint 文件，
+// 避免跨编译单元 struct 类型冲突。所有 struct 在此文件内独立定义。
+
+// 关于信息
+export struct AboutInfo {
+    // 软件名称
+    name: string,
+    // 版本号
+    version: string,
+    // 一句话简介
+    description: string,
+    // 仓库地址
+    repo: string,
+    // 作者
+    author: string,
+    // 许可证
+    license: string,
+    // 构建时间
+    build-time: string,
+}
+
+export component AboutWindow inherits Window {
+    title: "关于 terma";
+    preferred-width: 440px;
+    preferred-height: 380px;
+    min-width: 380px;
+    min-height: 340px;
+    background: #1e1e1e;
+
+    in property <AboutInfo> info;
+    callback close-requested();
+    callback open-repo();
+
+    VerticalLayout {
+        padding: 28px;
+        spacing: 18px;
+
+        // ── 应用名 + 版本 ──
+        VerticalLayout {
+            alignment: center;
+            spacing: 6px;
+            Text {
+                text: root.info.name;
+                color: #ffffff;
+                font-size: 28px;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "版本 " + root.info.version;
+                color: #9aa0a6;
+                font-size: 13px;
+                horizontal-alignment: center;
+            }
+        }
+
+        // ── 简介 ──
+        Text {
+            text: root.info.description;
+            color: #c8c8c8;
+            font-size: 13px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        // ── 分隔线 ──
+        Rectangle {
+            height: 1px;
+            background: #3a3a3a;
+        }
+
+        // ── 信息行 ──
+        VerticalLayout {
+            spacing: 10px;
+
+            // 仓库地址（可点击）
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: "仓库";
+                    color: #9aa0a6;
+                    font-size: 13px;
+                    width: 64px;
+                    vertical-alignment: center;
+                }
+                repo-touch := TouchArea {
+                    horizontal-stretch: 1;
+                    clicked => { root.open-repo(); }
+                    Text {
+                        text: root.info.repo;
+                        color: repo-touch.has-hover ? #6cb6ff : #4a9eff;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: "作者";
+                    color: #9aa0a6;
+                    font-size: 13px;
+                    width: 64px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.info.author;
+                    color: #e6e6e6;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: "许可证";
+                    color: #9aa0a6;
+                    font-size: 13px;
+                    width: 64px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.info.license;
+                    color: #e6e6e6;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: "构建时间";
+                    color: #9aa0a6;
+                    font-size: 13px;
+                    width: 64px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.info.build-time;
+                    color: #e6e6e6;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
+        // 弹性填充，把关闭按钮推到底部
+        Rectangle {
+            vertical-stretch: 1;
+        }
+
+        // ── 关闭按钮 ──
+        HorizontalLayout {
+            alignment: center;
+            close-touch := TouchArea {
+                width: 96px;
+                height: 32px;
+                clicked => { root.close-requested(); }
+                Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    background: close-touch.pressed ? #2f6feb : (close-touch.has-hover ? #3a7bf0 : #3478f6);
+                    border-radius: 6px;
+                    Text {
+                        text: "关闭";
+                        color: #ffffff;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

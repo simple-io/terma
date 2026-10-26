@@ -45,9 +45,12 @@ mod ui_generated {
 // 设置窗口（SettingsWindow）相关逻辑：懒创建、回调绑定、配置/Profile CRUD 与字体搜索
 mod settings;
 
+// 关于窗口（AboutWindow）相关逻辑：懒创建、软件信息注入、仓库地址打开
+mod about;
+
 pub use ui_generated::{
-    CellRun, ColorSchemeEntry, FontEntry, GeneralSettingsInfo, MainWindow, ProfileEditInfo,
-    ProfileInfo, SaveAsValidation, SchemeColors, SettingsWindow, TabInfo,
+    AboutInfo, AboutWindow, CellRun, ColorSchemeEntry, FontEntry, GeneralSettingsInfo, MainWindow,
+    ProfileEditInfo, ProfileInfo, SaveAsValidation, SchemeColors, SettingsWindow, TabInfo,
 };
 
 /// Tab 栏 + 分隔线高度（逻辑像素）
@@ -94,6 +97,8 @@ pub struct App {
     config: ConfigManager,
     // 设置窗口
     settings_window: Option<SettingsWindow>,
+    // 关于窗口
+    about_window: Option<AboutWindow>,
     // 上次同步给 PTY 的 (rows, cols)，用于检测窗口尺寸变化
     last_size: Cell<(u16, u16)>,
     // 终端字体宽度
@@ -130,6 +135,7 @@ impl App {
             sessions: SessionManager::new(),
             config: ConfigManager::new(),
             settings_window: None,
+            about_window: None,
             tabs_model,
             profiles_model,
             cells_model,
@@ -436,6 +442,12 @@ impl App {
         self.main_window.on_open_settings(move || {
             command_tx.send(WindowEvent::OpenSettings).unwrap();
         });
+
+        // 打开关于窗口
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_open_about(move || {
+            command_tx.send(WindowEvent::OpenAbout).unwrap();
+        });
     }
 
     // 响应窗口回调事件
@@ -468,6 +480,12 @@ impl App {
             WindowEvent::OpenSettings => self.on_open_settings(),
             // 关闭设置窗口
             WindowEvent::CloseSettings => self.on_close_settings(),
+            // 打开关于窗口
+            WindowEvent::OpenAbout => self.on_open_about(),
+            // 关闭关于窗口
+            WindowEvent::CloseAbout => self.on_close_about(),
+            // 打开关于窗口的仓库地址
+            WindowEvent::OpenAboutRepo => self.on_open_about_repo(),
             // 保存设置
             WindowEvent::SaveSettings(settings) => self.on_save_settings(settings),
             // 保存配置文件

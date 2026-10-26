@@ -16,6 +16,7 @@ import { TabBar, TabInfo } from "tab_bar.slint";
 import { TerminalView, CellRun } from "terminal_view.slint";
 import { ProfileMenu, ProfileInfo } from "profile_menu.slint";
 import { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry, ColorSchemeEntry, SchemeColors } from "settings_window.slint";
+import { AboutWindow, AboutInfo } from "about_window.slint";
 
 // 导入内置字体
 import "../../fonts/JetBrainsMono-Regular.ttf";
@@ -24,6 +25,7 @@ import "../../fonts/CascadiaCode.ttf";
 
 
 export { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry, ColorSchemeEntry, SchemeColors }
+export { AboutWindow, AboutInfo }
 
 export component MainWindow inherits Window {
     // ─── 基本设置 ───
@@ -81,6 +83,7 @@ export component MainWindow inherits Window {
     callback select-tab(string);
     callback select-profile(string);
     callback open-settings();
+    callback open-about();
     callback key-pressed(string, KeyboardModifiers) -> bool;
     callback ime-commit(string);
     callback terminal-clicked();
@@ -196,6 +199,10 @@ export component MainWindow inherits Window {
         }
         open-settings => {
             root.open-settings();
+            root.profile-menu-visible = false;
+        }
+        open-about => {
+            root.open-about();
             root.profile-menu-visible = false;
         }
         dismissed => {

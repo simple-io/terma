@@ -4,11 +4,13 @@
 //   - 显示可用的 Profile 列表
 //   - 用户选中某项时触发 select-profile 回调
 //   - 底部提供「设置」入口，打开独立配置窗口
+//   - 底部提供「关于」入口，打开软件信息窗口
 //
 // 通信：
 //   入：profiles (Model<ProfileInfo>)
 //   出：callback select-profile(profile-id)
 //   出：callback open-settings()
+//   出：callback open-about()
 //   出：callback dismissed()
 
 export struct ProfileInfo {
@@ -24,6 +26,7 @@ export component ProfileMenu inherits Rectangle {
     callback select-profile(string /* profile-id */);
     callback dismissed();
     callback open-settings();
+    callback open-about();
 
     // 简单垂直列表浮层
     if menu-visible : vertical-layout := VerticalLayout {
@@ -90,6 +93,28 @@ export component ProfileMenu inherits Rectangle {
                     settings-touch := TouchArea {
                         clicked => {
                             root.open-settings();
+                            root.dismissed();
+                        }
+                    }
+                }
+
+                // ── 关于选项 ──
+                Rectangle {
+                    height: 30px;
+                    background: about-touch.pressed ? #3a3a3a : (about-touch.has-hover ? #353535 : transparent);
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        spacing: 8px;
+                        Text {
+                            text: "\u{2139} 关于";
+                            color: #e6e6e6;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    about-touch := TouchArea {
+                        clicked => {
+                            root.open-about();
                             root.dismissed();
                         }
                     }
