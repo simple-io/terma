@@ -1117,6 +1117,9 @@ export component SettingsWindow inherits Window {
     // ─── 当前激活的分类页：0=通用配置, 1=启动项配置 ───
     property <int> active-tab: 0;
 
+    // 删除启动项确认弹框可见性
+    property <bool> show-delete-confirm: false;
+
     HorizontalLayout {
         // ═══ 左侧：侧边导航栏 ═══
         Rectangle {
@@ -2627,62 +2630,46 @@ export component SettingsWindow inherits Window {
                                         }
                                     }
                                 }
-                            }
 
-                            Rectangle {
-                                vertical-stretch: 1;
-                            }
+                                // 删除启动项（顺序排列于环境变量下方，点击弹出确认框）
+                                HorizontalLayout {
+                                    spacing: 10px;
 
-                            // 操作按钮：删除 + 保存
-                            HorizontalLayout {
-                                alignment: end;
-                                spacing: 10px;
-
-                                // 删除按钮（功能自原列表面板迁入）
-                                Rectangle {
-                                    width: 104px;
-                                    height: 32px;
-                                    background: del-btn.has-hover ? #fdecec : #ffffff;
-                                    border-radius: 4px;
-                                    border-width: 1px;
-                                    border-color: root.c-danger;
                                     Text {
-                                        text: "删除启动项";
-                                        color: root.c-danger;
-                                        font-size: 14px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                        width: 90px;
                                     }
 
-                                    del-btn := TouchArea {
-                                        clicked => {
-                                            if root.profile-list.length > 0 {
-                                                root.delete-profile(root.profile-draft.id);
+                                    Rectangle {
+                                        width: 104px;
+                                        height: 32px;
+                                        background: del-btn.has-hover ? #fdecec : #ffffff;
+                                        border-radius: 4px;
+                                        border-width: 1px;
+                                        border-color: root.c-danger;
+                                        Text {
+                                            text: "删除启动项";
+                                            color: root.c-danger;
+                                            font-size: 14px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+
+                                        del-btn := TouchArea {
+                                            clicked => {
+                                                if root.profile-list.length > 0 {
+                                                    root.show-delete-confirm = true;
+                                                }
                                             }
                                         }
                                     }
                                 }
 
+                                // 占位用的无边矩形，使下方的垂直布局能满屏显示
                                 Rectangle {
-                                    width: 100px;
-                                    height: 32px;
-                                    background: save-prof.has-hover ? root.c-primary-hover : root.c-primary;
-                                    border-radius: 4px;
-                                    Text {
-                                        text: "保存修改";
-                                        color: #ffffff;
-                                        font-size: 14px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-
-                                    save-prof := TouchArea {
-                                        clicked => {
-                                            root.save-profile(root.profile-draft);
-                                        }
-                                    }
+                                     vertical-stretch: 1;
                                 }
                             }
+
                         }
                     }
                 }
@@ -2728,12 +2715,12 @@ export component SettingsWindow inherits Window {
                         }
                     }
 
-                    // 保存通用配置按钮（仅通用配置页显示）
-                    if root.active-tab == 0: Rectangle {
+                    // 统一保存按钮：通用配置页保存通用设置，启动项页保存当前启动项
+                    if root.active-tab == 0 || root.profile-list.length > 0: Rectangle {
                         width: 88px;
                         height: 32px;
                         y: (parent.height - self.height) / 2;
-                        background: save-gen.has-hover ? root.c-primary-hover : root.c-primary;
+                        background: save-btn.has-hover ? root.c-primary-hover : root.c-primary;
                         border-radius: 4px;
                         Text {
                             text: "保存";
@@ -2743,10 +2730,101 @@ export component SettingsWindow inherits Window {
                             vertical-alignment: center;
                         }
 
-                        save-gen := TouchArea {
+                        save-btn := TouchArea {
                             clicked => {
-                                root.clamp-scrollback-draft();
-                                root.save-general(root.general-draft);
+                                if root.active-tab == 0 {
+                                    root.clamp-scrollback-draft();
+                                    root.save-general(root.general-draft);
+                                } else {
+                                    root.save-profile(root.profile-draft);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── 删除启动项确认弹框（全窗口遮罩 + 居中对话框） ───
+    if root.show-delete-confirm: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #66000000;
+
+        // 遮罩层拦截点击，避免穿透到下层控件
+        TouchArea { }
+
+        Rectangle {
+            width: 340px;
+            height: 156px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: root.c-border;
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+
+                Text {
+                    text: "删除启动项";
+                    color: root.c-text;
+                    font-size: 15px;
+                    font-weight: 700;
+                }
+
+                Text {
+                    text: "确定要删除启动项「" + root.profile-draft.name + "」吗？此操作不可撤销。";
+                    color: root.c-text-secondary;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                    vertical-stretch: 1;
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+
+                    Rectangle {
+                        width: 72px;
+                        height: 32px;
+                        background: cancel-del.has-hover ? root.c-hover : #ffffff;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: root.c-border;
+                        Text {
+                            text: "取消";
+                            color: root.c-text;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        cancel-del := TouchArea {
+                            clicked => { root.show-delete-confirm = false; }
+                        }
+                    }
+
+                    Rectangle {
+                        width: 72px;
+                        height: 32px;
+                        background: ok-del.has-hover ? #b3261e : root.c-danger;
+                        border-radius: 4px;
+                        Text {
+                            text: "删除";
+                            color: #ffffff;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        ok-del := TouchArea {
+                            clicked => {
+                                root.show-delete-confirm = false;
+                                root.delete-profile(root.profile-draft.id);
                             }
                         }
                     }
