@@ -159,6 +159,18 @@ export component MainWindow inherits Window {
         }
     }
 
+    // 菜单打开时的全窗口透明遮罩：点击菜单以外任意区域即隐藏（失焦关闭）。
+    // 置于 profile-menu 之前，确保菜单本身渲染在遮罩之上，菜单项点击不受影响。
+    if root.profile-menu-visible : TouchArea {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        clicked => {
+            root.profile-menu-visible = false;
+        }
+    }
+
     // Profile 下拉菜单（浮层，跟随 menu-touch 按钮位置动态展开）
     profile-menu := ProfileMenu {
         width: 170px;
