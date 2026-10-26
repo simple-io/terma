@@ -92,33 +92,53 @@ impl App {
             icon: None,
             color_scheme: None,
         };
-        self.config.update_profile(profile);
-        // 刷新面板列表，使已保存的环境变量等字段立即可见
+        let saved_id = profile.id.0.clone();
+        // 已存在则更新，否则（新增草稿保存）追加到配置并落盘
+        if !self.config.update_profile(profile.clone()) {
+            self.config.add_profile(profile);
+        }
+
+        // 保存后该项在列表中的索引，用于回填选中态
+        let idx = self
+            .config
+            .profiles()
+            .iter()
+            .position(|p| p.id.0 == saved_id)
+            .unwrap_or(0);
+
+        // 刷新面板列表，使已保存的环境变量等字段立即可见；退出草稿态并选中该项
         if let Some(w) = self.settings_window.as_ref() {
             self.sync_profile_list(w);
+            w.set_is_new_profile(false);
+            w.set_selected_index(idx as i32);
         }
-        // 同步主窗口 ▼ Profile 菜单（名称/命令可能变化）
+        // 同步主窗口 ▼ Profile 菜单（新增/名称/命令变化在此才生效）
         self.apply_profiles();
     }
 
-    // 添加新 Profile
+    // 添加新 Profile：仅进入「待保存草稿」态，不写入配置、不刷新主窗口下拉。
+    // 用户在表单填写后点击「保存」才真正生效（见 on_save_profile）。
     pub(super) fn on_add_profile(&mut self) {
-        // 新建 profile
+        // 预生成唯一 id，保存时据此判定为新增
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let id = format!("profile-{}", ts);
-        let profile = Profile::new(id, "New Profile", "/bin/sh");
-        let idx = self.config.add_profile(profile);
 
-        // 立即生效：先重建面板列表，再选中新项（Slint 侧据此刷新草稿表单）
         if let Some(w) = self.settings_window.as_ref() {
-            self.sync_profile_list(w);
-            w.set_selected_index(idx as i32);
+            // selected-index = -1：脱离列表选中态，避免 refresh-profile-draft 覆盖草稿
+            w.set_selected_index(-1);
+            w.set_profile_draft(ProfileEditInfo {
+                id: id.as_str().into(),
+                name: "New Profile".into(),
+                command: "/bin/sh".into(),
+                args: "".into(),
+                working_directory: "".into(),
+                env_vars: "".into(),
+            });
+            w.set_is_new_profile(true);
         }
-        // 同步主窗口 ▼ Profile 菜单
-        self.apply_profiles();
     }
 
     // 删除 Profile
@@ -333,6 +353,16 @@ impl App {
     // 打开设置窗口（懒创建：首次打开时创建，后续仅激活）
     fn open_settings_window(&mut self) {
         if let Some(w) = self.settings_window.as_ref() {
+            // 重新打开时丢弃上一次未保存的「新增启动项」草稿，回到已保存项
+            if w.get_is_new_profile() {
+                w.set_is_new_profile(false);
+                let idx = if self.config.profiles().is_empty() {
+                    -1
+                } else {
+                    0
+                };
+                w.set_selected_index(idx);
+            }
             // 窗口已存在，重新显示并激活
             w.show().ok();
             return;

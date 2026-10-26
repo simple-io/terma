@@ -1039,6 +1039,9 @@ export component SettingsWindow inherits Window {
     property <GeneralSettingsInfo> general-draft: root.general-settings;
     // in-out：Rust 侧浏览对话框选中后需回写草稿字段
     in-out property <ProfileEditInfo> profile-draft;
+    // 「添加启动项」进入的待保存草稿态：为 true 时编辑表单展示空白草稿，
+    // 但该项尚未写入 profile-list / 主窗口下拉，点击「保存」后才生效。
+    in-out property <bool> is-new-profile: false;
 
     // 会话内容缓存数（scrollback 历史行数）允许区间，由 Rust 侧注入，避免两处硬编码漂移。
     in property <int> min-scrollback: 100;
@@ -1231,6 +1234,7 @@ export component SettingsWindow inherits Window {
                                 clicked => {
                                     // 选中子节点 = 切到启动项页并选中对应 Profile
                                     root.active-tab = 1;
+                                    root.is-new-profile = false;
                                     root.selected-index = i;
                                 }
                             }
@@ -2497,15 +2501,15 @@ export component SettingsWindow inherits Window {
                             padding: 24px;
                             spacing: 18px;
 
-                            // 无启动项时的空状态提示
-                            if root.profile-list.length == 0: Text {
+                            // 无启动项且未处于新增草稿态时的空状态提示
+                            if root.profile-list.length == 0 && !root.is-new-profile: Text {
                                 text: "暂无启动项，点击左侧导航「+ 添加启动项」创建";
                                 color: root.c-text-hint;
                                 font-size: 14px;
                             }
 
-                            // 仅在有选中项时显示编辑表单
-                            if root.profile-list.length > 0: VerticalLayout {
+                            // 有选中项或处于新增草稿态时显示编辑表单
+                            if root.profile-list.length > 0 || root.is-new-profile: VerticalLayout {
                                 spacing: 18px;
 
                                 // 名称
@@ -2628,7 +2632,8 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 // 删除启动项（顺序排列于环境变量下方，点击弹出确认框）
-                                HorizontalLayout {
+                                // 新增草稿尚未落盘，无可删除项，故隐藏删除按钮
+                                if !root.is-new-profile: HorizontalLayout {
                                     spacing: 10px;
 
                                     Text {
@@ -2712,7 +2717,7 @@ export component SettingsWindow inherits Window {
                     }
 
                     // 统一保存按钮：通用配置页保存通用设置，启动项页保存当前启动项
-                    if root.active-tab == 0 || root.profile-list.length > 0: Rectangle {
+                    if root.active-tab == 0 || root.profile-list.length > 0 || root.is-new-profile: Rectangle {
                         width: 88px;
                         height: 32px;
                         y: (parent.height - self.height) / 2;
