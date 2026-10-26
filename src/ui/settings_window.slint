@@ -19,7 +19,7 @@
 // 注意：此文件独立编译，不 import 项目内其他 .slint 文件，
 // 避免跨编译单元 struct 类型冲突。所有 struct 在此文件内独立定义。
 
-import { ScrollView, LineEdit } from "std-widgets.slint";
+import { ScrollView, LineEdit, TextEdit } from "std-widgets.slint";
 
 // 通用配置信息
 export struct GeneralSettingsInfo {
@@ -2599,36 +2599,31 @@ export component SettingsWindow inherits Window {
                                     }
                                 }
 
-                                // 环境变量
-                                VerticalLayout {
-                                    spacing: 6px;
+                                // 环境变量（多行输入，样式与其它字段统一）
+                                HorizontalLayout {
+                                    spacing: 10px;
+
                                     Text {
                                         text: "环境变量";
+                                        width: 90px;
                                         color: root.c-text-secondary;
                                         font-size: 14px;
+                                        vertical-alignment: top;
                                     }
 
-                                    Text {
-                                        text: "每行 KEY=VALUE 格式";
-                                        color: root.c-text-hint;
-                                        font-size: 12px;
-                                    }
+                                    VerticalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: "KEY=VALUE，多个用逗号/分号分隔，或每行一个";
+                                            color: root.c-text-hint;
+                                            font-size: 12px;
+                                        }
 
-                                    Rectangle {
-                                        height: 80px;
-                                        background: #ffffff;
-                                        border-radius: 4px;
-                                        border-width: 1px;
-                                        border-color: root.c-border;
-                                        clip: true;
-                                        TextInput {
+                                        env-input := TextEdit {
+                                            height: 120px;
+                                            width: 320px;
                                             font-size: 14px;
                                             text: root.profile-draft.env-vars;
-                                            single-line: false;
-                                            wrap: word-wrap;
-                                            edited => {
-                                                root.profile-draft.env-vars = self.text;
-                                            }
                                         }
                                     }
                                 }

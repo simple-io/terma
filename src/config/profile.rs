@@ -96,16 +96,21 @@ impl Profile {
     }
 }
 
-// 把 env_vars 文本（KEY=VALUE 每行一对）解析为 BTreeMap。
+// 把 env_vars 文本解析为 BTreeMap。
+// 每个条目为 KEY=VALUE，条目之间支持以换行、逗号、分号（含中文全角）分隔。
 pub fn parse_env_vars_text(text: &str) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+    for entry in text.split(['\n', '\r', ',', ';', '，', '；']) {
+        let entry = entry.trim();
+        if entry.is_empty() || entry.starts_with('#') {
             continue;
         }
-        if let Some((key, value)) = line.split_once('=') {
-            map.insert(key.trim().to_string(), value.trim().to_string());
+        if let Some((key, value)) = entry.split_once('=') {
+            let key = key.trim();
+            if key.is_empty() {
+                continue;
+            }
+            map.insert(key.to_string(), value.trim().to_string());
         }
     }
     map
