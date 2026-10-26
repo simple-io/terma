@@ -93,6 +93,10 @@ impl App {
             color_scheme: None,
         };
         self.config.update_profile(profile);
+        // 刷新面板列表，使已保存的环境变量等字段立即可见，
+        if let Some(w) = self.settings_window.as_ref() {
+            self.sync_profile_list(w);
+        }
     }
 
     // 添加新 Profile
@@ -446,6 +450,29 @@ impl App {
         self.settings_window = Some(window);
     }
 
+    // 从当前配置重建 Profile 列表并同步到 UI，保存/新增 Profile 后调用
+    fn sync_profile_list(&self, window: &SettingsWindow) {
+        let profiles: Vec<ProfileEditInfo> = self
+            .config
+            .profiles()
+            .iter()
+            .map(|p| ProfileEditInfo {
+                id: p.id.0.as_str().into(),
+                name: p.name.as_str().into(),
+                command: p.command.as_str().into(),
+                args: p.args.join(" ").into(),
+                working_directory: p
+                    .working_directory
+                    .as_ref()
+                    .map(|d| d.display().to_string())
+                    .unwrap_or_default()
+                    .into(),
+                env_vars: format_env_vars_text(&p.env_vars).into(),
+            })
+            .collect();
+        window.set_profile_list(Rc::new(VecModel::from(profiles)).into());
+    }
+
     // 把当前配置同步到 SettingsWindow UI
     fn apply_settings(&self, window: &SettingsWindow) {
         // let mgr = self.config.borrow();
@@ -474,25 +501,7 @@ impl App {
         window.set_max_scrollback(MAX_SCROLLBACK_LIMIT as i32);
 
         // Profile 列表
-        let profiles: Vec<ProfileEditInfo> = self
-            .config
-            .profiles()
-            .iter()
-            .map(|p| ProfileEditInfo {
-                id: p.id.0.as_str().into(),
-                name: p.name.as_str().into(),
-                command: p.command.as_str().into(),
-                args: p.args.join(" ").into(),
-                working_directory: p
-                    .working_directory
-                    .as_ref()
-                    .map(|d| d.display().to_string())
-                    .unwrap_or_default()
-                    .into(),
-                env_vars: format_env_vars_text(&p.env_vars).into(),
-            })
-            .collect();
-        window.set_profile_list(Rc::new(VecModel::from(profiles)).into());
+        self.sync_profile_list(window);
         window.set_selected_index(0);
 
         // 字体下拉框候选列表：内置字体置顶，其后系统字体（同名剔除在
