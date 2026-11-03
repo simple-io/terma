@@ -49,6 +49,24 @@ pub enum WindowEvent {
     CloseAbout,
     // 打开关于窗口中的仓库地址（调用系统浏览器）
     OpenAboutRepo,
+    // 快捷键命中（参数为动作 id，如 "new_tab"）
+    ShortcutActivated(SharedString),
+
+    // ==== 快捷键管理窗口回调事件 =======
+    // 打开快捷键管理窗口
+    OpenShortcuts,
+    // 关闭快捷键管理窗口
+    CloseShortcuts,
+    // 保存快捷键（草稿落盘 + 应用到主窗口 KeyBinding）
+    SaveShortcuts,
+    // 恢复默认快捷键（仅重置草稿）
+    ResetShortcuts,
+    // 开始录制某动作的快捷键（参数为动作 id）
+    StartRecordShortcut(SharedString),
+    // 取消录制
+    CancelRecordShortcut,
+    // 录制到一次按键（文本 + 修饰符）
+    RecordShortcutKey(SharedString, KeyboardModifiers),
 
     // ==== 设置窗口回调事件 =======
     // 关闭设置窗口

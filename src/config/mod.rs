@@ -10,9 +10,11 @@ pub mod general;
 pub mod loader;
 pub mod manager;
 pub mod profile;
+pub mod shortcut;
 
 pub use color_scheme::ColorScheme;
 pub use cursor_color::CursorColor;
 pub use general::{GeneralConfig, MAX_SCROLLBACK_LIMIT, MIN_SCROLLBACK_LIMIT};
 pub use manager::ConfigManager;
 pub use profile::Profile;
+pub use shortcut::{ShortcutAction, ShortcutConfig};

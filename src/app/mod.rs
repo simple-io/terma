@@ -13,5 +13,6 @@
 pub mod controller;
 pub mod events;
 pub mod audio;
+pub mod keymap;
 
 pub use controller::App;

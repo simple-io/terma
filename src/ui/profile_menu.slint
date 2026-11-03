@@ -26,6 +26,7 @@ export component ProfileMenu inherits Rectangle {
     callback select-profile(string /* profile-id */);
     callback dismissed();
     callback open-settings();
+    callback open-shortcuts();
     callback open-about();
 
     // 简单垂直列表浮层
@@ -76,6 +77,28 @@ export component ProfileMenu inherits Rectangle {
                     }
                 }
 
+                // ── 快捷键选项 ──
+                Rectangle {
+                    height: 30px;
+                    background: shortcuts-touch.pressed ? #3a3a3a : (shortcuts-touch.has-hover ? #353535 : transparent);
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        spacing: 8px;
+                        Text {
+                            text: "\u{2318} 快捷键";
+                            color: #e6e6e6;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    shortcuts-touch := TouchArea {
+                        clicked => {
+                            root.open-shortcuts();
+                            root.dismissed();
+                        }
+                    }
+                }
+
                 // ── 设置选项 ──
                 Rectangle {
                     height: 30px;
@@ -84,7 +107,7 @@ export component ProfileMenu inherits Rectangle {
                         padding-left: 12px;
                         spacing: 8px;
                         Text {
-                            text: "\u{2699} 设置...";
+                            text: "\u{2699} 设置";
                             color: #e6e6e6;
                             font-size: 13px;
                             vertical-alignment: center;

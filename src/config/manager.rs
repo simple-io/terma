@@ -7,6 +7,7 @@ use crate::config::color_scheme::{self, ColorScheme};
 use crate::config::general::{GeneralConfig, clamp_scrollback_limit};
 use crate::config::loader::{self, ConfigFile};
 use crate::config::profile::Profile;
+use crate::config::shortcut::{ShortcutAction, ShortcutConfig, default_shortcuts};
 use crate::session::session_id::ProfileId;
 
 // 配置管理对象
@@ -17,6 +18,8 @@ pub struct ConfigManager {
     profiles: Vec<Profile>,
     // 通用配置
     general: GeneralConfig,
+    // 快捷键配置
+    shortcuts: Vec<ShortcutConfig>,
 }
 
 impl Default for ConfigManager {
@@ -48,6 +51,7 @@ impl ConfigManager {
                 default_profile_id: default_id,
                 profiles: file.profiles,
                 general: file.general,
+                shortcuts: normalize_shortcuts(file.shortcuts),
             };
         }
 
@@ -70,6 +74,7 @@ impl ConfigManager {
             profiles,
             default_profile_id,
             general,
+            shortcuts: default_shortcuts(),
         }
     }
 
@@ -213,7 +218,37 @@ impl ConfigManager {
         let config = ConfigFile {
             general: self.general.clone(),
             profiles: self.profiles.clone(),
+            shortcuts: self.shortcuts.clone(),
         };
         loader::save(&config)
     }
+
+    // 获取快捷键配置列表。
+    pub fn shortcuts(&self) -> &[ShortcutConfig] {
+        &self.shortcuts
+    }
+
+    // 整体替换快捷键配置并持久化。
+    pub fn update_shortcuts(&mut self, shortcuts: Vec<ShortcutConfig>) {
+        self.shortcuts = normalize_shortcuts(shortcuts);
+        let _ = self.save();
+    }
+}
+
+/// 把（可能来自手改文件的）快捷键配置规范化：
+///   - 按 [`ShortcutAction::all`] 的注册顺序输出，保证 UI 列表顺序稳定；
+///   - 未登记 / 未知动作的条目丢弃；
+///   - 缺失的动作回退到平台默认按键。
+fn normalize_shortcuts(raw: Vec<ShortcutConfig>) -> Vec<ShortcutConfig> {
+    ShortcutAction::all()
+        .iter()
+        .map(|action| {
+            let keys = raw
+                .iter()
+                .find(|c| c.action == action.id())
+                .map(|c| c.keys.clone())
+                .unwrap_or_else(|| action.default_parts());
+            ShortcutConfig::new(action.id(), keys)
+        })
+        .collect()
 }

@@ -17,6 +17,7 @@ import { TerminalView, CellRun } from "terminal_view.slint";
 import { ProfileMenu, ProfileInfo } from "profile_menu.slint";
 import { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry, ColorSchemeEntry, SchemeColors } from "settings_window.slint";
 import { AboutWindow, AboutInfo } from "about_window.slint";
+import { ShortcutsWindow, ShortcutBinding, ShortcutEntry } from "shortcuts_window.slint";
 
 // 导入内置字体
 import "../../fonts/JetBrainsMono-Regular.ttf";
@@ -26,6 +27,7 @@ import "../../fonts/CascadiaCode.ttf";
 
 export { SettingsWindow, GeneralSettingsInfo, ProfileEditInfo, FontEntry, ColorSchemeEntry, SchemeColors }
 export { AboutWindow, AboutInfo }
+export { ShortcutsWindow, ShortcutBinding, ShortcutEntry }
 
 export component MainWindow inherits Window {
     // ─── 基本设置 ───
@@ -64,6 +66,8 @@ export component MainWindow inherits Window {
     in-out property <length> tab-width: 160px;
     // 配置文件
     in-out property <[ProfileInfo]> profiles;
+    // 快捷键绑定（Rust 侧注入，驱动终端区 KeyBinding 动态生成）
+    in-out property <[ShortcutBinding]> shortcuts;
     in-out property <string> active-title;
     in-out property <string> active-profile-name;
     // 终端网格数据（二维：外层为行，内层为该行 CellRun）
@@ -84,6 +88,10 @@ export component MainWindow inherits Window {
     callback select-profile(string);
     callback open-settings();
     callback open-about();
+    // 打开快捷键管理窗口
+    callback open-shortcuts();
+    // KeyBinding 命中：参数为动作 id（如 "new_tab"）
+    callback shortcut-activated(string);
     callback key-pressed(string, KeyboardModifiers) -> bool;
     callback ime-commit(string);
     callback terminal-clicked();
@@ -127,37 +135,52 @@ export component MainWindow inherits Window {
             background: transparent;
         }
 
-        // Terminal 区域
-        terminal-area := TerminalView {
-            cells: root.cells;
-            font-family: root.font-family;
-            font-size: root.font-size;
-            char-w: root.char-w;
-            char-h: root.char-h;
-            bg-color: root.bg-color;
-            cursor-color: root.cursor-color;
-            cursor-style: root.cursor-style;
-            cursor-blink: root.cursor-blink;
-            cursor-row: root.cursor-row;
-            cursor-col: root.cursor-col;
-            cursor-visible: root.cursor-visible;
-            has-scrollback: root.has-scrollback;
-            scroll-ratio: root.scroll-ratio;
-            viewport-ratio: root.viewport-ratio;
-            key-pressed(text, mods) => {
-                root.key-pressed(text, mods)
+        // Terminal 区域：外层 FocusScope 承载动态 KeyBinding。
+        // 终端输入框（ime-input）对命中快捷键的按键返回 reject，带修饰符的按键据此
+        // 冒泡至此 FocusScope，由其 KeyBinding 匹配并触发 shortcut-activated；
+        // 未命中的按键仍由 ime-input accept 并写入 PTY（见 Rust 侧 on_key_pressed 门禁）。
+        terminal-scope := FocusScope {
+            focus-on-click: false;
+            vertical-stretch: 1;
+
+            for sc in root.shortcuts: KeyBinding {
+                keys: sc.keys;
+                activated => { root.shortcut-activated(sc.id); }
             }
-            ime-commit(text) => {
-                root.ime-commit(text)
-            }
-            clicked => {
-                root.terminal-clicked();
-            }
-            scroll-delta(dy) => {
-                root.scroll-delta(dy)
-            }
-            scroll-to(ratio) => {
-                root.scroll-to(ratio)
+
+            terminal-area := TerminalView {
+                width: 100%;
+                height: 100%;
+                cells: root.cells;
+                font-family: root.font-family;
+                font-size: root.font-size;
+                char-w: root.char-w;
+                char-h: root.char-h;
+                bg-color: root.bg-color;
+                cursor-color: root.cursor-color;
+                cursor-style: root.cursor-style;
+                cursor-blink: root.cursor-blink;
+                cursor-row: root.cursor-row;
+                cursor-col: root.cursor-col;
+                cursor-visible: root.cursor-visible;
+                has-scrollback: root.has-scrollback;
+                scroll-ratio: root.scroll-ratio;
+                viewport-ratio: root.viewport-ratio;
+                key-pressed(text, mods) => {
+                    root.key-pressed(text, mods)
+                }
+                ime-commit(text) => {
+                    root.ime-commit(text)
+                }
+                clicked => {
+                    root.terminal-clicked();
+                }
+                scroll-delta(dy) => {
+                    root.scroll-delta(dy)
+                }
+                scroll-to(ratio) => {
+                    root.scroll-to(ratio)
+                }
             }
         }
     }
@@ -199,6 +222,10 @@ export component MainWindow inherits Window {
         }
         open-settings => {
             root.open-settings();
+            root.profile-menu-visible = false;
+        }
+        open-shortcuts => {
+            root.open-shortcuts();
             root.profile-menu-visible = false;
         }
         open-about => {

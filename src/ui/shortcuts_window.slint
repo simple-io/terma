@@ -1,0 +1,198 @@
+// shortcuts_window.slint — 快捷键管理窗口
+//
+// 职责：
+//   - 独立 OS 窗口，列出全部可绑定动作及其当前按键，支持查看 / 修改 / 恢复默认 / 保存。
+//   - 修改通过「录制」完成：点击某行的按键框进入录制态，随后按下的组合键由 Rust 侧
+//     解析校验（需含 ⌘/Ctrl 或 Alt/Option 修饰键），成功即回填该行、退出录制态。
+//
+// 通信（与 Rust 侧 controller 交互）：
+//   入：entries ([ShortcutEntry])   当前草稿的展示列表（id / 名称 / 原生按键串）
+//   入：recording-id                 正在录制的动作 id（"" = 无）
+//   入：message                      提示 / 错误信息
+//   出：start-record(id) / cancel-record() / record-key(text, mods)
+//   出：reset-all() / save() / close-requested()
+//
+// 注意：ShortcutBinding 供主窗口的 KeyBinding 使用，与本窗口独立；两者一并在此定义并导出，
+// 经 main_window.slint 再导出后由 Rust 侧统一生成类型（同一编译单元，避免类型冲突）。
+
+// 主窗口 KeyBinding 模型项：动作 id + Slint 按键
+export struct ShortcutBinding {
+    id: string,
+    keys: keys,
+}
+
+// 管理窗口列表项：动作 id + 展示名 + 平台原生按键串
+export struct ShortcutEntry {
+    id: string,
+    name: string,
+    keys-text: string,
+}
+
+// 底部通用按钮
+component DialogButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    callback clicked();
+
+    width: 88px;
+    height: 32px;
+    border-radius: 6px;
+    background: ta.pressed
+        ? (root.primary ? #2f6feb : #3a3a3a)
+        : (ta.has-hover
+            ? (root.primary ? #3a7bf0 : #333333)
+            : (root.primary ? #3478f6 : #2b2b2b));
+    Text {
+        text: root.label;
+        color: root.primary ? #ffffff : #d0d0d0;
+        font-size: 13px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component ShortcutsWindow inherits Window {
+    title: "快捷键";
+    preferred-width: 460px;
+    preferred-height: 420px;
+    min-width: 400px;
+    min-height: 320px;
+    background: #1e1e1e;
+
+    in property <[ShortcutEntry]> entries;
+    in property <string> recording-id: "";
+    in property <string> message: "";
+
+    callback close-requested();
+    callback reset-all();
+    callback save();
+    callback start-record(string);
+    callback cancel-record();
+    callback record-key(string, KeyboardModifiers);
+
+    // 录制态按键捕获：覆盖整个窗口内容。仅在录制时消费按键并上抛 Rust，
+    // 否则拒绝（让事件正常冒泡，不影响按钮点击等交互）。
+    recorder := FocusScope {
+        focus-on-click: false;
+        width: 100%;
+        height: 100%;
+
+        key-pressed(e) => {
+            if (root.recording-id != "") {
+                root.record-key(e.text, e.modifiers);
+                accept
+            } else {
+                reject
+            }
+        }
+
+        VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+
+            // ── 标题 + 说明 ──
+            VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "快捷键";
+                    color: #ffffff;
+                    font-size: 20px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: "点击右侧按键框录入新快捷键；需包含 ⌘/Ctrl 或 Alt/Option 修饰键。按 Esc 取消录入。";
+                    color: #9aa0a6;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: #3a3a3a;
+            }
+
+            // ── 快捷键列表 ──
+            VerticalLayout {
+                spacing: 8px;
+
+                for entry[idx] in root.entries : HorizontalLayout {
+                    spacing: 12px;
+
+                    Text {
+                        text: entry.name;
+                        color: #e6e6e6;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    // 按键框（点击进入录制态）
+                    Rectangle {
+                        width: 160px;
+                        height: 30px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: root.recording-id == entry.id ? #4a9eff : #444444;
+                        background: key-touch.pressed
+                            ? #333333
+                            : (key-touch.has-hover ? #2f2f2f : #262626);
+                        Text {
+                            text: root.recording-id == entry.id
+                                ? "按下新快捷键…"
+                                : (entry.keys-text == "" ? "未设置" : entry.keys-text);
+                            color: root.recording-id == entry.id ? #4a9eff : #e6e6e6;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        key-touch := TouchArea {
+                            clicked => {
+                                recorder.focus();
+                                root.start-record(entry.id);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 提示 / 错误信息 ──
+            Text {
+                text: root.message;
+                color: #e0a040;
+                font-size: 12px;
+                wrap: word-wrap;
+                min-height: 16px;
+            }
+
+            // 弹性填充，把按钮推到底部
+            Rectangle {
+                vertical-stretch: 1;
+            }
+
+            // ── 底部按钮 ──
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+
+                DialogButton {
+                    label: "恢复默认";
+                    clicked => { root.reset-all(); }
+                }
+                DialogButton {
+                    label: "保存";
+                    primary: true;
+                    clicked => { root.save(); }
+                }
+                DialogButton {
+                    label: "关闭";
+                    clicked => { root.close-requested(); }
+                }
+            }
+        }
+    }
+}

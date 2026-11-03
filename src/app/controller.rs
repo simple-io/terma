@@ -26,9 +26,11 @@
 
 use crate::app::audio::Bell;
 use crate::app::events::{TerminalEvent, WindowEvent};
+use crate::app::keymap::KeyMap;
 use crate::config::ColorScheme;
 use crate::config::ConfigManager;
 use crate::config::fonts;
+use crate::config::shortcut::{ShortcutAction, ShortcutConfig};
 use crate::session::session_id::{ProfileId, SessionId};
 use crate::session::{ScrollAction, SessionManager};
 use slint::language::KeyboardModifiers;
@@ -48,9 +50,13 @@ mod settings;
 // 关于窗口（AboutWindow）相关逻辑：懒创建、软件信息注入、仓库地址打开
 mod about;
 
+// 快捷键管理窗口（ShortcutsWindow）相关逻辑：懒创建、草稿录制、保存应用
+mod shortcuts;
+
 pub use ui_generated::{
     AboutInfo, AboutWindow, CellRun, ColorSchemeEntry, FontEntry, GeneralSettingsInfo, MainWindow,
-    ProfileEditInfo, ProfileInfo, SaveAsValidation, SchemeColors, SettingsWindow, TabInfo,
+    ProfileEditInfo, ProfileInfo, SaveAsValidation, SchemeColors, SettingsWindow, ShortcutBinding,
+    ShortcutEntry, ShortcutsWindow, TabInfo,
 };
 
 /// Tab 栏 + 分隔线高度（逻辑像素）
@@ -95,6 +101,14 @@ pub struct App {
     sessions: SessionManager,
     // 配置管理器
     config: ConfigManager,
+    // 快捷键运行时映射（主窗口 KeyBinding 门禁与模型来源）
+    keymap: KeyMap,
+    // 快捷键管理窗口
+    shortcuts_window: Option<ShortcutsWindow>,
+    // 快捷键管理窗口的编辑草稿（保存前不影响生效中的 keymap）
+    shortcut_draft: Vec<ShortcutConfig>,
+    // 正在录制快捷键的动作（None = 未在录制）
+    recording_action: Option<ShortcutAction>,
     // 设置窗口
     settings_window: Option<SettingsWindow>,
     // 关于窗口
@@ -130,10 +144,18 @@ impl App {
         // 事件管道
         let (event_tx, event_rx) = mpsc::sync_channel(32);
 
+        // 配置 + 快捷键运行时映射（keymap 由配置构建，供门禁与主窗口 KeyBinding 使用）
+        let config = ConfigManager::new();
+        let keymap = KeyMap::from_config(config.shortcuts());
+
         let app = Rc::new(RefCell::new(Self {
             main_window,
             sessions: SessionManager::new(),
-            config: ConfigManager::new(),
+            config,
+            keymap,
+            shortcuts_window: None,
+            shortcut_draft: Vec::new(),
+            recording_action: None,
             settings_window: None,
             about_window: None,
             tabs_model,
@@ -174,6 +196,8 @@ impl App {
         self.apply_font();
         // 应用配色方案（窗口背景/光标色）
         self.apply_window_colors();
+        // 应用快捷键（注入主窗口 KeyBinding 模型）
+        self.apply_shortcuts();
         // 应用初始窗口尺寸
         self.apply_initial_window_size();
         // 设置 UI 回调函数
@@ -234,6 +258,19 @@ impl App {
             })
             .collect();
         self.profiles_model.set_vec(items);
+    }
+
+    // 把当前生效的快捷键映射注入主窗口（驱动终端区 for 循环 KeyBinding 动态生成）。
+    fn apply_shortcuts(&self) {
+        self.main_window
+            .set_shortcuts(Rc::new(VecModel::from(self.keymap.ui_bindings())).into());
+    }
+
+    // 终端输入门禁：判断某次按键是否命中已配置快捷键。
+    // 命中 → 回调返回 false，输入框拒绝该键，带修饰符的按键冒泡到终端区
+    // FocusScope 的 KeyBinding 触发 shortcut-activated；未命中 → 照常写入 PTY。
+    fn is_shortcut_key(&self, text: &str, mods: KeyboardModifiers) -> bool {
+        self.keymap.matches(text, mods).is_some()
     }
 
     // 设置终端窗口初始尺寸：按配置的初始行/列数结合字体度量
@@ -412,11 +449,26 @@ impl App {
             command_tx.send(WindowEvent::Resize).unwrap();
         });
 
-        // 键盘回调，处理键盘输入转发到激活会话的 PTY
+        // 键盘回调：命中已配置快捷键则拒绝（返回 false），让带修饰符的按键从终端
+        // 输入框冒泡到终端区 FocusScope 的 KeyBinding 触发 shortcut-activated；
+        // 未命中则照常转发到激活会话的 PTY 并返回 true（accept）。
+        // 门禁需同步读取当前 keymap，故经 WEAK_APP 回访 App（此回调在 UI 线程、
+        // 且不与 on_event 的 &mut 借用重叠，try_borrow 失败时按「非快捷键」处理）。
         let command_tx = self.event_tx.clone();
         self.main_window.on_key_pressed(move |text, mods| {
-            command_tx.send(WindowEvent::KeyInput(text, mods)).unwrap();
-            true
+            let is_shortcut = WEAK_APP.with(|ptr| {
+                let Some(app) = ptr.borrow().as_ref().and_then(|w| w.upgrade()) else {
+                    return false;
+                };
+                let Ok(app) = app.try_borrow() else {
+                    return false;
+                };
+                app.is_shortcut_key(text.as_str(), mods)
+            });
+            if !is_shortcut {
+                command_tx.send(WindowEvent::KeyInput(text, mods)).unwrap();
+            }
+            !is_shortcut
         });
 
         // IME 提交回调
@@ -448,6 +500,18 @@ impl App {
         self.main_window.on_open_about(move || {
             command_tx.send(WindowEvent::OpenAbout).unwrap();
         });
+
+        // 打开快捷键管理窗口
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_open_shortcuts(move || {
+            command_tx.send(WindowEvent::OpenShortcuts).unwrap();
+        });
+
+        // KeyBinding 命中 → 按动作 id 分发
+        let command_tx = self.event_tx.clone();
+        self.main_window.on_shortcut_activated(move |id| {
+            command_tx.send(WindowEvent::ShortcutActivated(id)).unwrap();
+        });
     }
 
     // 响应窗口回调事件
@@ -476,6 +540,24 @@ impl App {
             // IME 提交
             WindowEvent::ImeCommit(text) => self.on_ime_commit(text),
 
+            // --- 快捷键 ---
+            // 快捷键命中（按动作 id 分发）
+            WindowEvent::ShortcutActivated(id) => self.on_shortcut_activated(&id),
+            // 打开快捷键管理窗口
+            WindowEvent::OpenShortcuts => self.on_open_shortcuts(),
+            // 关闭快捷键管理窗口
+            WindowEvent::CloseShortcuts => self.on_close_shortcuts(),
+            // 保存快捷键
+            WindowEvent::SaveShortcuts => self.on_save_shortcuts(),
+            // 恢复默认快捷键（草稿）
+            WindowEvent::ResetShortcuts => self.on_reset_shortcuts(),
+            // 开始录制某动作快捷键
+            WindowEvent::StartRecordShortcut(id) => self.on_start_record_shortcut(&id),
+            // 取消录制
+            WindowEvent::CancelRecordShortcut => self.on_cancel_record_shortcut(),
+            // 录制到一次按键
+            WindowEvent::RecordShortcutKey(text, mods) => self.on_record_shortcut_key(&text, mods),
+            
             // 打开设置窗口
             WindowEvent::OpenSettings => self.on_open_settings(),
             // 关闭设置窗口
